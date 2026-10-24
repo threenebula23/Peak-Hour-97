@@ -1,71 +1,81 @@
 # AI_REPORT — PEAK HOUR 97
 
-Отчёт об использовании ИИ. Требование джем-регламента: перечислить модели,
-что именно сгенерировано и что проверено вручную.
+## 1. Инструменты и модели
 
-## 1. Какие ИИ использовались
+Работа велась в **OpenCode** с субагентами (backend, frontend, designer,
+test-writer, explorer, feis-regulator):
 
-| Модель / агент | Роль | Что делал |
-| --- | --- | --- |
-| DeepSeek V4.1 Flash (через OpenCode, субагент `devops`) | инфраструктура | скелет проекта, `project.godot`, `export_presets.cfg`, .gitignore, документация, проверка headless-запуска и web-экспорта |
-| _TODO_ | геймдизайн | _заполнить_ |
-| _TODO_ | код геймплея | _заполнить_ |
-| _TODO_ | арт/звук | _заполнить_ |
+| Модель | Роль |
+| --- | --- |
+| **DeepSeek V4.1 Flash** | оркестратор, основной код Godot/GDScript |
+| **GLM-5.3-Flash** | документация, RU-тексты, данные |
+| **MiniMax M3.1 Flash** | баланс и экономика |
+| **MiMo-V2.6-Flash** | аудио: синтез SFX и фона |
+| дефолтные модели субагентов | поиск, тесты, ревью |
 
-## 2. Что сгенерировано ИИ
+Других моделей не использовали.
 
-- `project.godot` — конфигурация (1280×720, canvas_items/keep/integer, GL Compatibility,
-  nearest-фильтр, max_fps=60, автолоады).
-- `export_presets.cfg` — пресет Web (HTML5), no threads, adaptive canvas resize.
-- `scenes/Main.tscn`, `scenes/Prep.tscn`, `scenes/Hour.tscn`, `scenes/ui/HUD.tscn`,
-  `scenes/minigames/MinigameBase.tscn`, `scenes/modals/ModalBase.tscn` — каркас сцен.
-- `scripts/main.gd`, `scripts/autoload/*.gd`, `scripts/**` — заглушки без игровой логики.
-- `art/fonts/ui_theme.tres` — тема с дефолтным шрифтом.
-- `icon.svg` — простая иконка (формы, без текста).
-- `data/*.json` — скелеты данных (значения намеренно не заданы).
-- `README.md`, `ASSETS.md`, `AI_REPORT.md`, `LICENSE`, `.gitignore`, `docs/`.
+## 2. Где применялся ИИ
 
-_Игровой код, баланс, сценарий, финальный арт — TODO._
+- **Код Godot/GDScript:** `GameController`, `HourDirector`, `AttackDirector`,
+  `FileRegistry`, `SlotManager`, `Shop`, `SaveManager`, мини-игры, UI.
+- **UI 90-х:** `theme90.gd` — палитра, фаски, гравировка, иконки; всё
+  рисуется кодом, без текстур.
+- **Тесты:** unit/fuzz/интеграция/полный забег/UI-смоук.
+- **Баланс:** таблицы сложности, цены, формулы канала и зоны.
+- **Документация:** `docs/`, `README.md`, `ASSETS.md`, `strings_ru.json`.
+- **Звук:** `audio/generate_sfx.py` — 18 SFX и `hum.wav` на Python.
 
-## 3. Что проверено вручную
+## 3. Приём: «враждебный критик»
 
-- [ ] Просмотр сцены `Main.tscn` в редакторе.
-- [ ] Запуск игры в окне, проверка масштабирования при 1280×720 / 1920×1080 / 2560×1440.
-- [ ] Кириллица в UI на выбранном шрифте (в т.ч. `Ё`, `П`, `О`).
-- [ ] Web-сборка открывается по HTTP локально.
-- [ ] Отсутствие ошибок в консоли браузера при старте.
-
-Проверки, выполненные автоматически (headless-запуск, web-экспорт), см. раздел 4.
-
-## 4. Автоматические проверки (лог)
-
-Окружение: Godot `4.7.2.stable.official.ed1daf0bf`, export templates 4.7.2.stable.
+Промпт просил быть враждебным критиком: «найди блокеры, из-за которых
+прототип нельзя собрать; не хвали». Нашлось **6 блокеров**. Один из них:
+выбор мини-игры по самому сложному типу ломал смешанные запросы. Заменили на
+средний коэффициент:
 
 ```
-$ "$GODOT" --headless --path /home/eq/techlb/peak-hour --quit
-Godot Engine v4.7.2.stable.official.ed1daf0bf - https://godotengine.org
-
-exit=0            # ни одного SCRIPT ERROR / Parse Error
-
-$ "$GODOT" --headless --path /home/eq/techlb/peak-hour \
-    --export-release "Web" build/web/index.html
-exit=0
-
-$ ls -lh build/web/index.html build/web/index.pck build/web/index.wasm
--rw-r--r-- 1 eq eq 5,4K index.html
--rw-r--r-- 1 eq eq 123K index.pck
--rw-r--r-- 1 eq eq  38M index.wasm
-# всего build/web ≈ 39M
+difficulty = sum(coeff(required)) / n
+coeff = {text: 1.0, sound: 2.0, photo: 3.0, video: 4.0}
 ```
 
-Дополнительно: web-сборка проверена на чистом клоне (`git clone` → `--import` →
-`--export-release`), ассеты и `.gitignore` воспроизводятся без ручных шагов.
+Это изменило §8.4 и §10 GDD и решение D17; пороги `<1.5 / <2.5 / <3.5`
+зафиксированы в `data/balance.json` и проверяются в `test_minigame.gd`.
 
-## 5. Замечания и ограничения
+## 4. Что сделано без ИИ
 
-- Godot 4.7.2, GL Compatibility: без Forward+/Vulkan — совместимо с web и слабыми GPU.
-- Web-сборка без threads: не требует COOP/COEP, но `Thread`/`WorkerThreadPool`
-  в игре использовать нельзя (или только после переключения пресета).
-- Шрифты: основной — Press Start 2P (полная кириллица, OFL). Pixelify Sans
-  не содержит глифов `П`/`О`, поэтому не годится для русского UI (детали в `ASSETS.md`).
-- Секретов и токенов в репозитории нет; экспортные credentials игнорируются git.
+Идея, логлайн, исходная спецификация, ключевые решения (1997 год, 9 часов,
+4 атаки, экономика, тон 90-х) и финальная приёмка — человеком, автором
+проекта. ИИ не придумывал игру: он помогал формулировать, писать код,
+считать баланс и искать противоречия. Ручной плейтест — за человеком.
+
+## 5. Ассеты и лицензии
+
+- **Handjet** и **Press Start 2P** — SIL OFL 1.1, тексты в
+  `art/fonts/OFL-Handjet.txt` и `OFL-PressStart2P.txt`.
+- Pixelify Sans в теме не используется (нет глифов `О`/`П`); файл и OFL
+  оставлены в `art/fonts/`.
+- UI, иконки и `icon.svg` — команда проекта, MIT.
+- SFX и `hum.wav` — скрипт проекта, MIT/CC0.
+- Код — MIT (`LICENSE`); OFL-шрифты совместимы с MIT при сохранении
+  лицензий. Подробности — в `ASSETS.md`.
+
+## 6. Проверки и ограничения
+
+Headless, Godot 4.7.2:
+
+- `run_tests.gd` — **460** (реестр, экономика, save, RNG); `test_fuzz` —
+  **3249**; `test_integration` — **232**; `test_attacks` — **166**;
+  `test_controller` — **139**.
+- `test_full_playthrough` — **294** проверки на сидах `1/42/777`: 9/9 часов,
+  победа; `ui_smoke` — **130**; наборы `test_main_*` — **156**.
+- `test_hour` — **106**, `test_shop` — **83**, `test_slots` — **34**,
+  `test_minigame` — **42**, `test_audio` — **37**.
+- Итого ≈**5 100** проверок, **0 провалов**.
+- `godot --headless --path . --quit` — exit 0; Web-экспорт — exit 0;
+  браузерный смоук Chromium: меню → «Новый забег» → подготовка,
+  canvas 1280×720, JS-ошибок нет.
+
+Ограничения: поиск по файлам и пошаговый туториал упрощены (подсказки-тосты,
+без отдельного окна поиска); web-save зависит от IndexedDB; ручной плейтест,
+масштабирование и громкость остаются человеку. «Всё проверено вручную» не
+утверждаем.
