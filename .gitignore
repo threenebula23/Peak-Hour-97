@@ -1,0 +1,23 @@
+# Godot 4
+.godot/
+*.translation
+
+# Сборки и артефакты экспорта
+build/
+export/
+
+# Временные файлы
+*.tmp
+*.log
+
+# ОС
+.DS_Store
+Thumbs.db
+
+# Python (тулинг/скрипты проверок)
+__pycache__/
+*.pyc
+
+# Локальные секреты экспорта/деплоя — в репозиторий не попадают
+export_credentials.cfg
+.env

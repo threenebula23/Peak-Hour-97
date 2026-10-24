@@ -1,0 +1,40 @@
+; Engine configuration file.
+; PEAK HOUR 97 — Godot 4.7.2 (GL Compatibility / web-friendly)
+; Документация: docs/architecture.md
+
+config_version=5
+
+[application]
+
+config/name="PEAK HOUR 97"
+config/description="Час пик. Одна смена. Ни одного свободного места."
+config/version="0.1.0"
+run/main_scene="res://scenes/Main.tscn"
+run/max_fps=60
+config/features=PackedStringArray("4.7", "GL Compatibility")
+config/icon="res://icon.svg"
+
+[autoload]
+
+Game="*res://scripts/autoload/game.gd"
+Data="*res://scripts/autoload/data.gd"
+Audio="*res://scripts/autoload/audio.gd"
+Rng="*res://scripts/autoload/rng.gd"
+
+[display]
+
+window/size/viewport_width=1280
+window/size/viewport_height=720
+window/size/window_width_override=1280
+window/size/window_height_override=720
+window/size/resizable=true
+window/stretch/mode="canvas_items"
+window/stretch/aspect="keep"
+window/stretch/scale_mode="integer"
+
+[rendering]
+
+renderer/rendering_method="gl_compatibility"
+renderer/rendering_method.mobile="gl_compatibility"
+textures/canvas_textures/default_texture_filter=0
+environment/defaults/default_clear_color=Color(0.752941, 0.752941, 0.752941, 1)
