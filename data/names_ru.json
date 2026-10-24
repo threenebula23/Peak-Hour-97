@@ -1,0 +1,10 @@
+{
+  "_meta": {
+    "file": "names_ru.json",
+    "status": "stub",
+    "note": "TODO: пул имён посетителей (ru). Пока пустой."
+  },
+  "first_names": [],
+  "last_names": [],
+  "nicknames": []
+}

@@ -1,0 +1,14 @@
+{
+  "_meta": {
+    "file": "strings_ru.json",
+    "status": "stub",
+    "note": "TODO: ключи UI. Пока только те, что нужны каркасу."
+  },
+  "menu_title": "PEAK HOUR 97",
+  "menu_start": "Начать смену",
+  "menu_quit": "Выход",
+  "hud_hour": "Час",
+  "hud_score": "Очки",
+  "common_back": "Назад",
+  "common_ok": "ОК"
+}

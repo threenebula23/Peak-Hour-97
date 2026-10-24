@@ -1,0 +1,21 @@
+{
+  "_meta": {
+    "file": "balance.json",
+    "status": "stub",
+    "note": "TODO: заполнить после прототипа. Значения здесь намеренно не заданы."
+  },
+  "hour": {
+    "duration_sec": 0,
+    "spawn_curve": [],
+    "max_visitors": 0
+  },
+  "scoring": {
+    "served": 0,
+    "missed": 0,
+    "combo_step": 0
+  },
+  "prep": {
+    "budget": 0,
+    "upgrades": []
+  }
+}
