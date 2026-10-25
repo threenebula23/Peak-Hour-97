@@ -1,8 +1,8 @@
 # TEST_PLAN — матрица тестов PEAK HOUR
 
 > Числовые данные — только `data/balance.json` и `docs/DECISIONS.md`.
-> Юнит-Runner — headless-прогон `tests/run_all.gd`
-> (`Godot --headless --path . --script tests/run_all.gd`).
+> Юнит-Runner — headless-прогон `tests/run_tests.gd`
+> (`godot --headless --path . --script tests/run_tests.gd`).
 > Числа, не заданные в промпте, в данных помечены — тесты для них берут
 > значения из JSON, а не хардкодят их.
 

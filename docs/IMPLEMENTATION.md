@@ -63,21 +63,21 @@ fields/настройки: music_volume: float, sfx_volume: float
 
 ## 2. Классы
 
-| Класс | Файл (предполагаемый) | Ответственность |
+| Класс | Файл | Ответственность |
 | --- | --- | --- |
-| `FileRegistry` | `scripts/systems/file_registry.gd` | создаёт/хранит `FileItem`, выдаёт по id, счётчики буфера, `required`-карты запросов |
+| `FileRegistry` | `scripts/core/file_registry.gd` | создаёт/хранит `FileItem`, выдаёт по id, счётчики буфера, `required`-карты запросов |
 | `FileItem` | `scripts/entities/file_item.gd` | данные файла: id, тип, name, ext, folder, флаги D09 |
 | `Folder` | `scripts/entities/folder.gd` | список файлов, capacity 8, отображалка |
 | `Section` | `scripts/entities/section.gd` | страницы папок, докупаемые позиции |
 | `Packet` | `scripts/entities/packet.gd` | входящий пакет + свой таймер (тики слишком идут из директора) |
 | `Request` | `scripts/entities/request.gd` | клиентский запрос: `required` (id), флаги `slot_reserved/connected/minigame_active`, таймер |
-| `SlotManager` | `scripts/systems/slot_manager.gd` | слоты соединений (start→max по D13), резерв/освобождение |
-| `HourDirector` | `scripts/systems/hour_director.gd` | ЕДИНЫЙ тик `tick(delta)` всех таймеров часа, спавны, канонический Clock |
+| `SlotManager` | `scripts/core/slot_manager.gd` | слоты соединений (start→max по D13), резерв/освобождение |
+| `HourDirector` | `scripts/core/hour_director.gd` | ЕДИНЫЙ тик `tick(delta)` всех таймеров часа, спавны, канонический Clock |
 | `AttackDirector` | `scripts/systems/attack_director.gd` | выбор атаки, её эффект, отражение щитом |
 | `Shop` | `scripts/systems/shop.gd` | 9 позиций D13, уровни, цены, применение эффектов |
-| `SaveManager` | `scripts/systems/save_manager.gd` | save/load между часами, JSON, `commit()` |
+| `SaveManager` | `scripts/systems/save_system.gd` | save/load между часами, JSON, `commit()` |
 | `MiniGame` | `scripts/minigames/minigame_base.gd` | базовая модалка мини-игры, `start(type, difficulty)` |
-| `ConnectionGame` | `scripts/systems/connection_game.gd` | полоска соединения по формуле D04 |
+| `ConnectionGame` | `scripts/minigames/connection_game.gd` | полоска соединения по формуле D04 |
 
 ### FileRegistry
 ```gdscript
@@ -165,15 +165,23 @@ invariants:
 ## 3. Схемы сцен
 
 ```
-Main.tscn  (корень Control + main.gd; только сцена-панель, UI кодом)
-  └─ Prep.tscn  (подготовка: магазин, чистка папок)
-      └─ Hour.tscn (HUD, несколько дочерних Control; карта прямых детей)
-         modals: ModalBase.tscn, minigame_* и connection-панель
+scenes/Main.tscn  (корень Control + scripts/main.gd)
+  └─ UI собирается кодом из scripts/ui/*.gd
+       ├─ компоненты: panel90, button90, tree_panel, file_grid,
+       │  file_card, packet_card, request_card, slot_cell, status_bar…
+       └─ модалки: main_menu.gd, shop_modal.gd, pause_modal.gd,
+          settings_modal.gd, hour_result_modal.gd, run_result_modal.gd,
+          confirm_modal.gd
+scripts/game_controller.gd  (menu → prep → hour → hour_result → run_result)
+scripts/core/hour_director.gd  (единый тикер часа)
 ```
 
-- `.tscn` файлах — только корень сцены; все контролы строятся `_ready()`-кодом.
-- Переходы сцен — только через автолоад `Game` (`state_changed`).
-- Модалки и соединяшки — на `PROCESS_MODE_ALWAYS` (D03/D11).
+- `Main.tscn` — единственная сцена игрового потока; отдельных сцен подготовки,
+  часа и базы модалок нет.
+- В `.tscn` — только корень сцены; все контролы строятся `_ready()`-кодом.
+- Фазами управляет `GameController`, глобальное состояние — автолоад `Game`;
+  сцены не переключают друг друга.
+- Модалки и мини-игры — `Control`-скрипты на `PROCESS_MODE_ALWAYS` (D03/D11).
 
 ## 4. Drag & drop
 
@@ -219,7 +227,8 @@ return {
   только для тестов, в release НЕ включать (disable-флаг по D11).
 - **Инжект сид:** env `PEAKHOUR_SEED=123` читает рание `Rng.set_seed`.
 - **Headless:** запуск `/home/eq/techlb/tools/godot/Godot_v4.7.2-stable_linux.x86_64
-  --headless --path . --script tests/run_all.gd` (без окно, нативный).
+  --headless --path . --script tests/run_tests.gd` (или отдельные
+  `tests/test_*.gd`).
 - **Web smoke:** локальный `python3 -m http.server 8000 --directory build/web`.
 
 ## 8. Распределение файлов
@@ -227,7 +236,7 @@ return {
 | Владелец | Зона |
 | --- | --- |
 | Lane A (core) | `scripts/autoload/*`, `scripts/core/*`, `data/balance.json` |
-| Lane B (entities) | `scripts/entities/*` (FileItem, Folder, Section, Packet, Request, Visitor) |
-| Lane C (systems) | `scripts/systems/*` (FileRegistry, SlotManager, HourDirector, AttackDirector, Shop, SaveManager, ConnectionGame) |
-| Lane D (ui/minigames) | `scripts/ui/*`, `scripts/minigames/*`, сцены, HUD, strings_ru.json |
+| Lane B (entities) | `scripts/entities/*` (FileItem, Folder, Section, Packet, Request) |
+| Lane C (core/systems) | `scripts/core/*` (FileRegistry, SlotManager, HourDirector, Economy), `scripts/systems/*` (AttackDirector, Shop, SaveManager) |
+| Lane D (ui/minigames) | `scripts/ui/*`, `scripts/minigames/*`, dev-сцены, `strings_ru.json` |
 | Общие (не трогать) | `project.godot`, `scenes/Main.tscn`, `scripts/main.gd`, `export_presets.cfg`, шрифты, git |
