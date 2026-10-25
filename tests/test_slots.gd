@@ -1,5 +1,5 @@
 extends SceneTree
-## Headless-тест слотов соединений.
+## Headless-тест слотов соединений v2 (база 1, максимум 5).
 ## Запуск: godot --headless --path . --script tests/test_slots.gd
 
 const SM := preload("res://scripts/core/slot_manager.gd")
@@ -30,22 +30,37 @@ func _test_sizes() -> void:
 	var game = root.get_node("Game")
 	game.upgrades.clear()
 	var sm = SM.new()
-	_eq(sm.max_slots(), 2, "старт: 2 слота")
-	_eq(sm.slots.size(), 2, "массив слотов размера 2")
+	_eq(SM.BASE_SLOTS, 1, "BASE_SLOTS = 1")
+	_eq(SM.MAX_SLOTS, 5, "MAX_SLOTS = 5")
+	_eq(sm.max_slots(), 1, "старт: 1 слот")
+	_eq(sm.slots.size(), 1, "массив слотов размера 1")
 	_eq(sm.used_count(), 0, "на старте слоты свободны")
 	game.upgrades["slot_level"] = 1
-	_eq(sm.max_slots(), 3, "slot_level=1 → 3 слота")
-	game.upgrades["slot_level"] = 2
-	_eq(sm.max_slots(), 4, "slot_level=2 → 4 слота")
+	_eq(sm.max_slots(), 2, "slot_level=1 → 2 слота")
+	game.upgrades["slot_level"] = 4
+	_eq(sm.max_slots(), 5, "slot_level=4 → 5 слотов")
 	game.upgrades["slot_level"] = 99
-	_eq(sm.max_slots(), 4, "cap: максимум 4 слота")
-	game.upgrades["slot_level"] = 0
+	_eq(sm.max_slots(), 5, "cap: максимум 5 слотов")
+	# Агрегат читается и по id лота (v2-сейв пишет оба ключа).
+	game.upgrades.clear()
+	game.upgrades["lot_slots"] = 2
+	_eq(sm.max_slots(), 3, "lot_slots=2 → 3 слота")
+	game.upgrades.clear()
 
 
 func _test_reserve_release() -> void:
 	_set_case("reserve/release")
 	var game = root.get_node("Game")
-	game.upgrades["slot_level"] = 0
+	# База: 1 слот — второй reserve отклоняется.
+	game.upgrades.clear()
+	var one = SM.new()
+	_eq(one.reserve("in", "pkt_solo", "A"), 0, "1 слот: reserve → 0")
+	_eq(one.reserve("out", "req_solo", "B"), -1, "1 слот: второй reserve → -1")
+	_eq(one.used_count(), 1, "1 слот: занят 1")
+	_eq(one.free_count(), 0, "1 слот: свободно 0")
+	_ok(one.release(0), "release(0)")
+
+	game.upgrades["slot_level"] = 1
 	var sm = SM.new()
 	sm.changed.connect(_on_changed)
 	_changes = 0
@@ -65,6 +80,7 @@ func _test_reserve_release() -> void:
 	_eq(sm.release_by_entity("pkt_c"), 1, "release_by_entity")
 	_eq(sm.release_by_entity("нет"), 0, "release_by_entity неизвестного → 0")
 	_eq(sm.free_count(), 1, "свободен один слот")
+	game.upgrades["slot_level"] = 0
 
 
 func _test_directions_and_entity() -> void:
@@ -99,7 +115,7 @@ func _test_weights() -> void:
 		var weights: Array = sm.active_weights(reg)
 		_eq(weights.size(), 1, "один вес для одного файла")
 		if weights.size() == 1:
-			_approx(float(weights[0]), 14.0, 0.0001, "вес photo = 14")
+			_approx(float(weights[0]), 4.0, 0.0001, "вес photo = 4 (v2)")
 	var reg2_file = reg.create_file("Слотовый запрос", "sound", folder_id)
 	if reg2_file != null:
 		reg.attach_file(reg2_file.id, "req_slot_test")
@@ -108,7 +124,7 @@ func _test_weights() -> void:
 		var weights2: Array = sm2.active_weights(reg)
 		_eq(weights2.size(), 1, "вес запроса по прикреплённым файлам")
 		if weights2.size() == 1:
-			_approx(float(weights2[0]), 10.0, 0.0001, "вес sound = 10")
+			_approx(float(weights2[0]), 2.0, 0.0001, "вес sound = 2 (v2)")
 
 
 # --- assert-хелперы --------------------------------------------------------

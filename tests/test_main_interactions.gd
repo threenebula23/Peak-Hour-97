@@ -1,30 +1,34 @@
 extends SceneTree
-## Headless-тест интеракций экрана часа: Main.tscn ↔ GameController ↔ HourDirector.
+## Headless-тест интеракций экрана часа: Main.tscn ↔ GameController ↔ HourDirector (v2).
 ##
 ## Проверяет реальные обработчики main.gd:
-##   • TCP-пакет: соединение кликом по карточке → приём в папку;
-##   • UDP-пакет: приём без соединения;
-##   • запрос: прикрепление файлов, соединение кликом (TCP), автоотправка;
-##   • отказ от запроса;
-##   • занятость TCP-слотов и освобождение через _on_slot_close.
+##   • пакет: drag/drop в папку без соединения (ConnectButton удалён);
+##   • запрос: attach файла, явная кнопка ОТПРАВИТЬ, модалка мини-игры,
+##     пауза таймера запроса, завершение мини-игры;
+##   • очередь out-слота: запрос ждёт слот, таймер стоит;
+##   • отмена/таймаут запроса сохраняют файлы (расход только при успехе);
+##   • отказ от запроса, переключение TCP/UDP, 5 ячеек слотов.
 ##
 ## Запуск:
 ##   godot --headless --path . --script tests/test_main_interactions.gd
 
 const MAIN_SCENE := "res://scenes/Main.tscn"
-const CONNECTION_SCRIPT := preload("res://scripts/minigames/connection_game.gd")
-const MINIGAME_SCRIPT := preload("res://scripts/minigames/minigame_base.gd")
+const ECONOMY := preload("res://scripts/core/economy.gd")
 
 var _checks := 0
 var _fails := 0
+var _finished := false
 var _main: Node = null
 var _controller = null
 var _director = null
 var _game = null
 var _folder_id := ""
+var _fake_game = null
 
 
 func _init() -> void:
+	var watchdog := create_timer(90.0)
+	watchdog.timeout.connect(_on_timeout)
 	await process_frame
 	var packed := load(MAIN_SCENE) as PackedScene
 	if packed == null:
@@ -53,25 +57,26 @@ func _init() -> void:
 
 	_folder_id = _first_folder_id()
 	_ok(not _folder_id.is_empty(), "в реестре есть папка")
-	for i in 3:
+	for i in 8:
 		_ok(_game.registry.create_file("тест_%d" % i, "text", _folder_id) != null,
 			"создан файл тест_%d" % i)
 
 	_main._on_start_hour()
 	await process_frame
 	_eq(_controller.phase, &"hour", "фаза контроллера — hour")
+	_eq(_main.slot_cells.size(), 5, "пять ячеек слотов")
+	if _main.slot_cells.size() == 5:
+		_ok(_main.slot_cells[0].state != "locked", "слот 0 доступен (база 1)")
+		_eq(_main.slot_cells[4].state, "locked", "слот 5 закрыт (максимум 5)")
 
-	_test_connection_fail()
-	_test_tcp_packet()
-	_test_udp_packet()
-	_test_request_send()
-	_test_reject()
-	_test_slots()
+	await _test_packet_drop()
+	await _test_attach_and_explicit_send()
+	await _test_queue_pause_and_timeout()
+	await _test_reject()
+	_test_protocol_toggle()
+	_test_prediction()
 
-	# Дать queue_free из последнего сценария отработать до выхода.
 	await process_frame
-	await process_frame
-
 	print("")
 	print("Проверок: %d, провалов: %d" % [_checks, _fails])
 	_finish()
@@ -79,216 +84,252 @@ func _init() -> void:
 
 # --- сценарии ---------------------------------------------------------------
 
-## Провал соединения закрывает модалку; автоповтора нет — нужно нажать снова.
-func _test_connection_fail() -> void:
+## Пакет принимается drag&drop в папку: соединения больше нет.
+func _test_packet_drop() -> void:
 	var pid: String = _director.spawn_packet_now("text", "tcp")
-	_ok(not pid.is_empty(), "пакет для провала соединения заспавнен")
-	if pid.is_empty():
-		return
-	_main._on_packet_connect(pid)
-	var conn = _find_modal(CONNECTION_SCRIPT)
-	_ok(conn != null, "модалка соединения открыта")
-	_eq(int(_director.slots.used_count()), 1, "слот занят до провала")
-
-	# Модалка сама сообщает о провале: директор освобождает слот, Main удаляет окно.
-	_director._on_connection_finished(false, pid)
-	_main._on_modal_game_finished(false, pid, conn)
-	_eq(str(_director.active_packets[pid].state), "waiting", "пакет снова ждёт")
-	_eq(int(_director.slots.used_count()), 0, "слот освобождён после провала")
-	_ok(_main._modal_game == null, "модалка закрыта после провала")
-	_ok(_find_modal(CONNECTION_SCRIPT) == null, "модалка не висит в дереве")
-
-	# Никакого автоповтора: без нового нажатия соединение не начинается.
-	_main._refresh_hour()
-	_ok(_find_modal(CONNECTION_SCRIPT) == null, "автоповтора соединения нет")
-
-	# Повторное нажатие снова открывает модалку и доводит до успеха.
-	_main._on_packet_connect(pid)
-	var conn2 = _find_modal(CONNECTION_SCRIPT)
-	_ok(conn2 != null, "повторное нажатие открывает соединение снова")
-	if conn2 == null:
-		return
-	_eq(int(_director.slots.used_count()), 1, "слот снова занят")
-	_director._on_connection_finished(true, pid)
-	_main._on_modal_game_finished(true, pid, conn2)
-	_eq(str(_director.active_packets[pid].state), "connected", "повторное соединение успешно")
-	# Убираем пакет из приёма, чтобы не мешал следующим сценариям.
-	if _director.active_packets.has(pid):
-		_director.active_packets.erase(pid)
-		if _director.slots != null:
-			_director.slots.release_by_entity(pid)
-
-
-func _test_tcp_packet() -> void:
-	var pid: String = _director.spawn_packet_now("text", "tcp")
-	_ok(not pid.is_empty(), "TCP-пакет заспавнен")
+	_ok(not pid.is_empty(), "пакет для приёма заспавнен")
 	if pid.is_empty():
 		return
 	_main._refresh_hour()
-	var buffer_before := int(_director.buffer_used())
-	var files_before: int = _game.registry.files.size()
-	_eq(str(_director.active_packets[pid].state), "waiting", "пакет ждёт соединения")
-
+	await process_frame
 	var card = _packet_card(pid)
-	_ok(card != null, "карточка TCP-пакета найдена")
+	_ok(card != null, "карточка пакета найдена")
 	if card == null:
 		return
 	_ok(card.get_node_or_null("ConnectButton") == null, "у пакета нет кнопки СОЕДИНИТЬСЯ")
 
-	# Drag не должен считаться кликом.
-	var clicks := [0]
-	card.connect_pressed.connect(func(_id: String) -> void: clicks[0] += 1)
-	_press_card(card, Vector2(120, 20))
-	var motion := InputEventMouseMotion.new()
-	motion.position = Vector2(150, 20)
-	card._gui_input(motion)
-	_release_card(card, Vector2(150, 20))
-	_eq(clicks[0], 0, "перетаскивание не запускает соединение")
+	# Legacy-клик по пакету не открывает модалку и не занимает слот.
+	_main._on_packet_connect(pid)
+	_ok(_main._modal_game == null, "клик по пакету не открывает модалку")
+	_eq(int(_director.slots.used_count()), 0, "клик по пакету не занимает слот")
+	_eq(str(_director.active_packets[pid].state), "waiting", "пакет ждёт папку")
 
-	_click_card(card, Vector2(120, 20))
-	_eq(clicks[0], 1, "клик по карточке эмитит connect_pressed")
-	var conn = _find_modal(CONNECTION_SCRIPT)
-	_ok(conn != null, "ConnectionGame добавлен в modal_root")
-	_ok(_main._modal_game == conn, "Main запомнил активную модалку")
-	_eq(int(_director.slots.used_count()), 1, "TCP-слот занят соединением")
-
-	# Пользователь прошёл полосу — директор уже обработал успех.
-	_director._on_connection_finished(true, pid)
-	_main._on_modal_game_finished(true, pid, conn)
-	_eq(str(_director.active_packets[pid].state), "connected", "пакет соединён")
-	_ok(_main._modal_game == null, "ссылка на модалку очищена")
-
-	_main._on_drop_to_folder(_folder_id, {"kind": "packet", "id": pid, "name": "тест"})
-	_ok(str(_director.active_packets[pid].state) == "loading", "пакет начал загрузку в папку")
-	_tick(40)
+	var files_before: int = _game.registry.files.size()
+	var buffer_before := int(_director.buffer_used())
+	var payload := {
+		"kind": "packet", "id": pid, "name": str(card.file_name),
+		"shape_id": str(card.shape_id), "rotation": int(card.shape_rotation),
+	}
+	_main._on_drop_to_folder(_folder_id, payload)
+	_eq(str(_director.active_packets[pid].state), "loading", "drop в папку начал загрузку")
+	_eq(int(_director.slots.used_count()), 1, "загрузка занимает in-слот")
+	_tick(60)
+	_ok(not _director.active_packets.has(pid), "пакет ушёл из приёма после загрузки")
 	_ok(_game.registry.files.size() > files_before,
 		"файл появился в реестре (%d → %d)" % [files_before, _game.registry.files.size()])
 	_ok(int(_director.buffer_used()) < buffer_before,
 		"буфер уменьшился (%d → %d)" % [buffer_before, int(_director.buffer_used())])
-	_ok(not _director.active_packets.has(pid), "пакет ушёл из приёма")
+	_eq(int(_director.slots.used_count()), 0, "in-слот освобождён")
 
 
-func _test_udp_packet() -> void:
-	var pid: String = _director.spawn_packet_now("text", "udp")
-	_ok(not pid.is_empty(), "UDP-пакет заспавнен")
-	if pid.is_empty():
-		return
-	# UDP-потеря (20%) — карточка возвращается через 1.5 с; для теста ждём сразу.
-	if str(_director.active_packets[pid].state) == "lost":
-		_director.active_packets[pid].state = "waiting"
-	var files_before: int = _game.registry.files.size()
-
-	_main._on_packet_connect(pid)
-	_ok(_find_modal(CONNECTION_SCRIPT) == null, "для UDP модалка соединения не открывается")
-
-	_main._on_drop_to_folder(_folder_id, {"kind": "packet", "id": pid, "name": "udp"})
-	_ok(str(_director.active_packets[pid].state) == "loading", "UDP-пакет грузится без соединения")
-	_tick(40)
-	_ok(_game.registry.files.size() > files_before,
-		"UDP-файл появился в реестре (%d → %d)" % [files_before, _game.registry.files.size()])
-	_ok(not _director.active_packets.has(pid), "UDP-пакет ушёл из приёма")
-
-
-func _test_request_send() -> void:
-	# Свежие файлы: предыдущие принятые могут быть на cooldown/прикреплены.
-	for i in 3:
-		_game.registry.create_file("запрос_%d" % i, "text", _folder_id)
-
-	var rid: String = _director.spawn_request_now()
+## Attach не запускает отправку. ОТПРАВИТЬ открывает мини-игру, таймер стоит.
+func _test_attach_and_explicit_send() -> void:
+	var rid: String = _director.spawn_request_now(1)
 	_ok(not rid.is_empty(), "запрос заспавнен")
 	if rid.is_empty():
 		return
 	var req = _director.active_requests[rid]
-	_ok(req.required.size() > 0, "у запроса есть required-файлы")
+	_eq(int(_director.request_required_count(rid)), 1, "запросу нужен 1 файл")
+	var fid := _available_file()
+	_ok(not fid.is_empty(), "есть свободный файл для attach")
+	if fid.is_empty():
+		return
 
-	# Прикрепляем каждый required-файл через UI-обработчик.
-	for i in req.required.size():
-		var fid := str(req.required[i])
-		_main._on_file_to_request(rid, i, {"kind": "file", "id": fid})
-		_ok(req.attached.has(fid), "файл %s прикреплён" % fid)
-	_eq(req.attached.size(), req.required.size(), "все файлы прикреплены")
+	_main._on_file_to_request(rid, 0, {"kind": "file", "id": fid, "from": "folder"})
+	_eq(req.attached.size(), 1, "файл прикреплён через UI")
+	_ok(req.attached.has(fid), "req.attached содержит файл")
+	_ok(not req.sending, "attach НЕ запускает отправку")
+	_ok(not req.minigame_active, "attach НЕ открывает мини-игру")
+	_ok(_main._modal_game == null, "после attach модалки нет")
 
 	_main._refresh_hour()
+	await process_frame
 	var card = _request_card(rid)
 	_ok(card != null, "карточка запроса найдена")
 	if card == null:
 		return
 	_ok(card.get_node_or_null("ConnectButton") == null, "у запроса нет кнопки СОЕДИНИТЬСЯ")
+	_ok(card.can_send(), "ОТПРАВИТЬ доступна после attach")
+	_ok(not card.send_disabled(), "кнопка ОТПРАВИТЬ включена")
 
-	var is_tcp := str(req.protocol).to_lower() == "tcp"
-	if is_tcp:
-		_ok(not req.sending, "TCP ждёт соединения перед отправкой")
-		_click_card(card, Vector2(140, 20))
-		var conn = _find_modal(CONNECTION_SCRIPT)
-		_ok(conn != null, "клик по TCP-запросу открыл ConnectionGame")
-		_ok(req.slot_reserved, "слот запроса зарезервирован")
-		_director._on_connection_finished(true, rid)
-		_main._on_modal_game_finished(true, rid, conn)
-		_ok(req.connected, "TCP-запрос подключён")
-	else:
-		_ok(req.sending, "UDP-запрос отправляется сразу после сборки")
+	# Подменная мини-игра: проверяем реальный путь show_minigame → modal_root.
+	var holder := {"game": null}
+	_director.send_game_factory = func(_id, _tier, _seed, _ctx):
+		var g := FakeGame.new()
+		holder["game"] = g
+		return g
+	card._send_btn.pressed.emit()
+	await process_frame
+	_fake_game = holder.get("game")
+	_ok(_fake_game != null, "мини-игра отправки создана")
+	_ok(req.minigame_active, "ОТПРАВИТЬ включает мини-игру")
+	_ok(_main._modal_game == _fake_game, "Main запомнил модалку мини-игры")
+	_ok(_fake_game.get_parent() == _main.modal_root, "мини-игра лежит в modal_root")
+	_ok(bool(_controller.modal_open), "controller.modal_open = true на мини-игре")
 
-	# Отправка стартует автоматически (core), без MiniGame-окна и лишнего клика.
-	_ok(req.sending, "отправка началась автоматически")
-	_ok(not req.minigame_active, "мини-игра отправки не включается")
-	_ok(_director._minigame == null, "директор не создаёт MiniGame")
-	_ok(_find_modal(MINIGAME_SCRIPT) == null, "MiniGame не добавлен в modal_root")
+	# Пока мини-игра открыта, таймер запроса не идёт.
+	var left_before := float(req.time_left)
+	_tick(10)
+	_approx(float(req.time_left), left_before, 0.001,
+		"таймер запроса стоит во время мини-игры")
 
+	if _fake_game != null:
+		_fake_game.finished.emit(0.8)
+		await process_frame
+		await process_frame
+	_eq(_main._modal_game, null, "после finished модалка снята")
+	_ok(not bool(_controller.modal_open), "controller.modal_open сброшен")
+	_ok(not req.minigame_active, "мини-игра снята с запроса")
+	_ok(req.sending or _director.is_request_queued(rid),
+		"после мини-игры запрос отправляется или ждёт слот")
+
+	# Успешная отправка: файл расходуется, деньги растут.
 	var money_before := int(_game.money)
-	var ticks := int(ceil(maxf(0.1, float(req.send_duration)) / 0.1)) + 10
-	_tick(ticks)
+	_tick(120)
 	_ok(not _director.active_requests.has(rid), "запрос закрыт после отправки")
-	_ok(req.attached.is_empty(), "attached очищен после отправки")
+	_ok(not _game.registry.files.has(fid), "файл израсходован при успешной отправке")
 	_ok(int(_game.money) > money_before,
 		"деньги выросли (%d → %d)" % [money_before, int(_game.money)])
+	_director.send_game_factory = Callable()
+	_fake_game = null
+	holder.clear()
 
 
-func _test_reject() -> void:
-	for i in 2:
-		_game.registry.create_file("отказ_%d" % i, "text", _folder_id)
-	var rid: String = _director.spawn_request_now()
-	_ok(not rid.is_empty(), "запрос для отказа заспавнен")
-	if rid.is_empty():
+## Out-слот занят приёмом → запрос в очереди; таймер стоит; таймаут сохраняет файл.
+func _test_queue_pause_and_timeout() -> void:
+	var pid: String = _director.spawn_packet_now("text", "tcp")
+	_ok(not pid.is_empty(), "пакет для занятия слота создан")
+	if pid.is_empty():
 		return
+	_ok(_director.receive_packet(pid, _folder_id), "пакет занял in-слот")
+	_eq(int(_director.slots.used_count()), 1, "in-слот занят")
+
+	var rid: String = _director.spawn_request_now(1)
+	var req = _director.active_requests.get(rid)
+	_ok(req != null, "запрос для очереди создан")
+	if req == null:
+		return
+	var fid := _available_file()
+	_ok(not fid.is_empty(), "есть файл для запроса в очередь")
+	if fid.is_empty():
+		return
+	_ok(_director.attach_file(rid, fid), "файл прикреплён к запросу очереди")
+
+	var holder := {"game": null}
+	_director.send_game_factory = func(_id, _tier, _seed, _ctx):
+		var g := FakeGame.new()
+		holder["game"] = g
+		return g
+	_main._on_request_send(rid)
+	await process_frame
+	var fake = holder.get("game")
+	_ok(fake != null, "мини-игра запроса очереди создана")
+	if fake != null:
+		fake.finished.emit(0.8)
+		await process_frame
+		await process_frame
+	_ok(_director.is_request_queued(rid), "запрос встал в очередь «ОЖИДАНИЕ СЛОТА»")
+	_ok(not req.sending, "в очереди запрос ещё не отправляется")
+
+	var left_before := float(req.time_left)
+	_tick(10)
+	_approx(float(req.time_left), left_before, 0.001,
+		"таймер запроса стоит, пока он в очереди")
+
+	# Загрузка пакета завершается → очередь получает слот.
+	for i in 200:
+		if not _director.active_packets.has(pid):
+			break
+		_tick(1)
+	_ok(not _director.active_packets.has(pid), "пакет освободил слот")
+	_ok(req.sending, "после освобождения слота запрос начал отправку")
+
+	# D2: после старта отправки таймер заморожен — низкий time_left не
+	# обрывает передачу, файл доходит до клиента.
+	req.time_left = 0.01
+	var money_send: int = _game.money
+	_tick(1)
+	_ok(_director.active_requests.has(rid),
+		"отправка не падает по таймауту при time_left=0.01")
+	_ok(req.sending, "запрос всё ещё отправляется")
+	_ok(_game.registry.files.has(fid), "файл не израсходован до конца передачи")
+	for i in 200:
+		if not _director.active_requests.has(rid):
+			break
+		_tick(1)
+	_ok(not _director.active_requests.has(rid), "запрос завершился успешно")
+	_ok(_game.money > money_send, "выплата за отправку начислена")
+	_ok(not _game.registry.files.has(fid), "файл израсходован успешной отправкой")
+	_director.send_game_factory = Callable()
+	_fake_game = null
+	holder.clear()
+
+
+## Отказ: −5 $ / −5 SLA, прикреплённый файл возвращается в папку.
+func _test_reject() -> void:
+	var rid: String = _director.spawn_request_now(1)
+	var req = _director.active_requests.get(rid)
+	_ok(req != null, "запрос для отказа создан")
+	if req == null:
+		return
+	var fid := _available_file()
+	if not fid.is_empty():
+		_ok(_director.attach_file(rid, fid), "файл прикреплён перед отказом")
+	var money_before := int(_game.money)
+	var sla_before := float(_game.sla)
 	_main._on_request_reject(rid)
 	_ok(not _director.active_requests.has(rid), "отклонённый запрос исчез")
+	_eq(int(_game.money), money_before - 5, "отказ: −5 $")
+	_approx(float(_game.sla), sla_before - 5.0, 0.001, "отказ: −5 SLA")
+	if not fid.is_empty():
+		_ok(_game.registry.files.has(fid), "файл не израсходован при отказе")
 
 
-func _test_slots() -> void:
-	var ids: Array[String] = []
-	for i in 3:
-		var pid: String = _director.spawn_packet_now("text", "tcp")
-		_ok(not pid.is_empty(), "слотовый TCP-пакет %d заспавнен" % i)
-		ids.append(pid)
-	if ids.size() != 3:
+func _test_protocol_toggle() -> void:
+	var rid: String = _director.spawn_request_now(1)
+	var req = _director.active_requests.get(rid)
+	_ok(req != null, "запрос для смены протокола создан")
+	if req == null:
 		return
+	_eq(str(req.protocol), "tcp", "по умолчанию TCP")
+	_main._on_request_protocol_toggle(rid)
+	_eq(str(req.protocol), "udp", "переключение на UDP")
+	_main._on_request_protocol_toggle(rid)
+	_eq(str(req.protocol), "tcp", "переключение обратно на TCP")
+	_director.reject_request(rid)
 
-	# Два первых соединения занимают оба базовых слота.
-	for i in 2:
-		_main._on_packet_connect(ids[i])
-		var conn = _find_modal(CONNECTION_SCRIPT)
-		_ok(conn != null, "слот %d: модалка открыта" % i)
-		_director._on_connection_finished(true, ids[i])
-		_main._on_modal_game_finished(true, ids[i], conn)
-	_eq(int(_director.slots.used_count()), 2, "оба TCP-слота заняты")
 
-	# Третий не должен подключиться.
-	_main._on_packet_connect(ids[2])
-	_eq(int(_director.slots.used_count()), 2, "третий пакет слот не занял")
-	_eq(str(_director.active_packets[ids[2]].state), "waiting", "третий пакет ждёт")
-	_ok(_find_modal(CONNECTION_SCRIPT) == null, "для третьего модалки нет")
-
-	# Закрываем первый слот — третий должен подключиться.
-	_main._on_slot_close(ids[0])
-	_eq(int(_director.slots.used_count()), 1, "слот освобождён")
-	_eq(str(_director.active_packets[ids[0]].state), "waiting", "пакет вернулся в ожидание")
-
-	_main._on_packet_connect(ids[2])
-	var conn3 = _find_modal(CONNECTION_SCRIPT)
-	_ok(conn3 != null, "третий пакет подключился после освобождения слота")
-	_eq(int(_director.slots.used_count()), 2, "снова заняты два слота")
-	_director._on_connection_finished(true, ids[2])
-	_main._on_modal_game_finished(true, ids[2], conn3)
+## Предсказание RequestCard совпадает с реальным выбором Economy (B4) для
+## всех ключевых сумм, включая S=8 (dots/T2) и S=24 (video/T4).
+func _test_prediction() -> void:
+	var cases := [
+		{"types": ["text"], "sum": 1, "id": "dots", "tier": 1},
+		{"types": ["text", "sound"], "sum": 3, "id": "wires", "tier": 1},
+		{"types": ["photo"], "sum": 4, "id": "text", "tier": 1},
+		{"types": ["video"], "sum": 8, "id": "dots", "tier": 2},
+		{"types": ["video", "video", "video"], "sum": 24, "id": "video", "tier": 4},
+	]
+	for entry in cases:
+		var tc: Dictionary = entry
+		var types: Array = tc["types"]
+		var slots: Array = []
+		for t in types:
+			slots.append({"type": str(t), "attached": true})
+		var card := RequestCard.new()
+		root.add_child(card)
+		card.setup("req_pred", "Клиент", "cli_1", "TCP", slots, 30.0, 30.0,
+			0.0, slots.size())
+		var p: Dictionary = card.prediction()
+		var expected: Dictionary = ECONOMY.send_minigame_for(types)
+		_eq(str(p.get("id", "")), str(expected.get("id", "")),
+			"S=%d: id совпадает с Economy" % int(tc["sum"]))
+		_eq(int(p.get("tier", 0)), int(expected.get("tier", 0)),
+			"S=%d: tier совпадает с Economy" % int(tc["sum"]))
+		_eq(int(p.get("sum", 0)), int(expected.get("sum", 0)),
+			"S=%d: sum совпадает с Economy" % int(tc["sum"]))
+		_eq(str(p.get("id", "")), str(tc["id"]), "S=%d: ожидаемая игра" % int(tc["sum"]))
+		_eq(int(p.get("tier", 0)), int(tc["tier"]), "S=%d: ожидаемая ступень" % int(tc["sum"]))
+		card.free()
 
 
 # --- хелперы ----------------------------------------------------------------
@@ -298,6 +339,15 @@ func _tick(count: int) -> void:
 		_controller.tick(0.1)
 
 
+func _available_file() -> String:
+	if _game == null or _game.registry == null:
+		return ""
+	for file in _game.registry.get_available_files():
+		if str(file.location) == "folder" and str(file.attached_request).is_empty():
+			return str(file.id)
+	return ""
+
+
 func _first_folder_id() -> String:
 	if _game == null or _game.registry == null:
 		return ""
@@ -305,18 +355,6 @@ func _first_folder_id() -> String:
 		if not section.folder_ids.is_empty():
 			return str(section.folder_ids[0])
 	return ""
-
-
-func _find_modal(script) -> Node:
-	if _main == null or _main.modal_root == null:
-		return null
-	for c in _main.modal_root.get_children():
-		# Узлы, удалённые в этом же кадре (queue_free), ещё висят в дереве.
-		if c.is_queued_for_deletion():
-			continue
-		if c.get_script() == script:
-			return c
-	return null
 
 
 func _packet_card(id: String):
@@ -333,33 +371,52 @@ func _request_card(id: String):
 	return null
 
 
-func _click_card(card: Control, pos: Vector2) -> void:
-	_press_card(card, pos)
-	_release_card(card, pos)
-
-
-func _press_card(card: Control, pos: Vector2) -> void:
-	var press := InputEventMouseButton.new()
-	press.button_index = MOUSE_BUTTON_LEFT
-	press.pressed = true
-	press.position = pos
-	card._gui_input(press)
-
-
-func _release_card(card: Control, pos: Vector2) -> void:
-	var release := InputEventMouseButton.new()
-	release.button_index = MOUSE_BUTTON_LEFT
-	release.pressed = false
-	release.position = pos
-	card._gui_input(release)
+func _on_timeout() -> void:
+	if _finished:
+		return
+	print("FAIL: тест превысил 90 секунд")
+	_finished = true
+	quit(1)
 
 
 func _finish() -> void:
+	if _finished:
+		return
+	_finished = true
+	if _main != null and is_instance_valid(_main):
+		_main.queue_free()
+	_stop_audio()
+	await process_frame
+	await process_frame
+	await process_frame
+	var audio = root.get_node_or_null("Audio")
+	if audio != null:
+		audio.queue_free()
+	await process_frame
+	await create_timer(0.1).timeout
 	if _fails == 0:
 		print("PASS")
 	else:
 		print("FAIL")
 	quit(0 if _fails == 0 else 1)
+
+
+## Гасим AudioStreamPlayer перед выходом, чтобы не было утечки WAV.
+func _stop_audio() -> void:
+	var audio = root.get_node_or_null("Audio")
+	if audio == null:
+		return
+	if audio.has_method("stop_music"):
+		audio.call("stop_music")
+	for child in audio.get_children():
+		if child is AudioStreamPlayer:
+			var player := child as AudioStreamPlayer
+			player.stop()
+			player.stream = null
+	if audio.get("_sfx_streams") is Dictionary:
+		(audio.get("_sfx_streams") as Dictionary).clear()
+	if audio.get("_music_streams") is Dictionary:
+		(audio.get("_music_streams") as Dictionary).clear()
 
 
 func _ok(condition: bool, message: String) -> void:
@@ -378,7 +435,25 @@ func _eq(actual, expected, message: String) -> void:
 	print("FAIL: %s — получено %s, ожидалось %s" % [message, actual, expected])
 
 
+func _approx(actual: float, expected: float, eps: float, message: String) -> void:
+	_checks += 1
+	if absf(float(actual) - float(expected)) <= eps:
+		return
+	_fails += 1
+	print("FAIL: %s — получено %.6f, ожидалось %.6f" % [message, actual, expected])
+
+
 func _fail(message: String) -> void:
 	_checks += 1
 	_fails += 1
 	print("FAIL: %s" % message)
+
+
+## Минимальная мини-игра для теста: сигнал finished(q) и running для Main.
+class FakeGame:
+	extends Node
+
+	signal finished(quality: float)
+
+	var running := true
+	var id := "fake"

@@ -1,317 +1,481 @@
-extends RefCounted
-## Тесты экономики: канал, таймеры, мини-игры, выплата, итоговый счёт.
+extends SceneTree
+## Headless-тесты экономики v2: стартовые статы, лоты/капы, SLA, канал,
+## таймеры, время передачи, выплата, выбор мини-игры, данные, прогрессия.
+## Запуск: godot --headless --path . --script tests/test_economy.gd
 
 const E := preload("res://scripts/core/economy.gd")
 const D := preload("res://scripts/autoload/data.gd")
 const G := preload("res://scripts/autoload/game.gd")
 const EPS := 0.0001
 
-
-func run(t) -> void:
-	_test_channel(t)
-	_test_channel_time(t)
-	_test_timers(t)
-	_test_minigame(t)
-	_test_payout(t)
-	_test_score(t)
-	_test_data(t)
-	_test_game_defaults(t)
-	_test_progression(t)
-	_test_meta_awards_on_hours(t)
+var _checks: int = 0
+var _fails: int = 0
+var _case: String = ""
 
 
-func _test_channel(t) -> void:
-	t.set_case("channel")
-	# п.11: load = только активные передачи; слоты и фон не грузят канал.
-	t.approx(E.channel_load(1, 2, [], {}), 0.0, EPS, "hour 1, 2 idle-слота → load 0")
-	t.approx(E.channel_load(1, 4, [22, 22], {}), 44.0, EPS, "2 видео в передаче = 44 (слоты не влияют)")
-	t.approx(E.channel_factor(44.0, {}), 1.0, EPS, "44/80 = 0.55 → factor не ниже 1.0")
-	t.approx(E.channel_load(5, 4, [22, 22], {}), 44.0, EPS, "hour 5: только активные веса, без фона")
-	t.approx(E.channel_load(9, 4, [22, 22, 22, 22], {}), 88.0, EPS, "4 видео в передаче = 88")
-	t.approx(E.channel_factor(88.0, {}), 1.1, EPS, "88/80 → factor 1.1")
-	t.approx(E.channel_factor(E.channel_load(1, 0, [], {}), {}), 1.0, EPS, "час 1, пустой канал → factor 1.0")
-	t.approx(E.channel_factor(E.channel_load(9, 4, [], {}), {}), 1.0, EPS, "час 9, idle-слоты → factor 1.0")
-	t.approx(E.channel_load(1, 0, [], {}), 0.0, EPS, "idle канал = 0")
-	t.approx(E.channel_load(0, 0, [], {}), 0.0, EPS, "hour < 1 → idle 0")
-	t.approx(E.channel_load(1, 0, [1.5, 2.5], {}), 4.0, EPS, "сумма весов активных передач")
-	t.approx(E.channel_load(1, -3, [], {}), 0.0, EPS, "отрицательные слоты игнорируются")
-	t.approx(E.channel_load(1, 0, [-5, 3], {}), 3.0, EPS, "отрицательный вес клампится")
-	t.approx(E.channel_capacity({}), 80.0, EPS, "capacity base")
-	t.approx(E.channel_capacity({"channel": 2}), 130.0, EPS, "capacity +2 уровня")
-	t.approx(E.channel_capacity({"shop_channel": 3}), 155.0, EPS, "capacity по id магазина")
-	t.approx(E.channel_capacity({"channel": 4}), 180.0, EPS, "максимум 180 (80 + 4×25)")
-	t.approx(E.channel_factor(180.0, {"channel": 2}), 180.0 / 130.0, EPS, "factor по upgrades")
-	t.approx(E.channel_factor(10.0, {"channel": 4}), 1.0, EPS, "factor не ниже 1")
-	t.approx(E.channel_factor(102.0, 80.0), 1.275, EPS, "factor по числу capacity")
+func _init() -> void:
+	await process_frame
+	_test_data()
+	_test_start_stats()
+	_test_levels_and_caps()
+	_test_sla_rules()
+	_test_channel_and_timers()
+	_test_transfer_time()
+	_test_payout()
+	_test_send_minigame()
+	_test_attack_tier()
+	_test_score()
+	_test_progression()
+	_test_meta_awards()
+	_finish()
 
 
-func _test_channel_time(t) -> void:
-	t.set_case("channel_time")
-	var def := {"recv_time": 2.0, "send_time": 3.0}
-	t.approx(E.recv_time(def, 1.02, {}), 2.04, EPS, "recv_time × factor")
-	t.approx(E.send_time(def, 1.02, {}), 3.06, EPS, "send_time × factor")
-	t.approx(E.recv_time(def, 1.0, {}), 2.0, EPS, "recv_time factor 1")
-	t.approx(E.send_time({"recv_time": 2.0}, 1.0, {}), 0.0, EPS, "нет send_time → 0")
+# --- данные ---------------------------------------------------------------
+
+func _test_data() -> void:
+	_set_case("data")
+	var data = root.get_node_or_null("Data")
+	if data == null:
+		_fail("autoload Data недоступен")
+		return
+	_ok(not data.balance.is_empty(), "balance.json прочитан")
+	_ok(data.types.has("text"), "тип text есть")
+	var video: Dictionary = data.type_def("video")
+	_eq(int(video.get("cells", 0)), 4, "video: 4 клетки")
+	_approx(float(video.get("base_time_sec", 0.0)), 12.0, EPS, "video: base_time_sec 12")
+	_approx(float(video.get("base_pay", 0.0)), 80.0, EPS, "video: base_pay 80")
+	_approx(float(video.get("weight", 0.0)), 8.0, EPS, "video: weight 8")
+	_approx(float(video.get("minigame_coeff", 0.0)), 8.0, EPS, "video: coeff 8")
+	_approx(float(video.get("sla_loss", 0.0)), 16.0, EPS, "video: sla_loss 16")
+	_eq(int(data.type_def("sound").get("cells", 0)), 2, "sound: 2 клетки")
+	_eq(int(data.type_def("photo").get("cells", 0)), 3, "photo: 3 клетки")
+	_eq(int(data.type_def("nope").get("cells", 0)), 1, "неизвестный тип → text (merge defaults)")
+
+	var h1: Dictionary = data.hour_def(1)
+	_eq(int(h1.get("files", 0)), 4, "H1: 4 файла")
+	_eq(int(h1.get("request_cap", 0)), 2, "H1: кап 2 запроса")
+	_eq(int(h1.get("active_requests", 0)), 1, "H1: 1 активный запрос")
+	_eq(int(h1.get("attacks", 0)), 0, "H1: 0 атак")
+	_approx(float(h1.get("income_target", 0.0)), 65.0, EPS, "H1: цель дохода 65")
+	var w1: Dictionary = h1.get("type_weights", {})
+	_approx(float(w1.get("text", 0.0)), 0.70, EPS, "H1: text 70%")
+	_approx(float(w1.get("sound", 0.0)), 0.30, EPS, "H1: sound 30%")
+	_approx(float(w1.get("photo", 0.0)), 0.0, EPS, "H1: photo 0%")
+	_approx(float(w1.get("video", 0.0)), 0.0, EPS, "H1: video 0%")
+	var m1: Dictionary = h1.get("request_mix", {})
+	_approx(float(m1.get("1", 0.0)), 0.70, EPS, "H1: 1 файл 70%")
+	_approx(float(m1.get("2", 0.0)), 0.30, EPS, "H1: 2 файла 30%")
+	_approx(float(m1.get("3", 0.0)), 0.0, EPS, "H1: 3 файла 0%")
+	_eq(int(data.hour_def(2).get("files", 0)), 8, "H2: 8 файлов")
+	_eq(int(data.hour_def(9).get("files", 0)), 20, "H9: 20 файлов")
+	_eq(int(data.hour_def(9).get("request_cap", 0)), 8, "H9: кап 8 запросов")
+	_eq(int(data.hour_def(100).get("hour", 0)), 9, "hour > 9 → последняя строка")
+	_eq(data.hours.size(), 9, "9 строк бюджета часов")
+
+	for row in data.hours:
+		var weights: Dictionary = row.get("type_weights", {})
+		var total := 0.0
+		for key in ["text", "sound", "photo", "video"]:
+			total += float(weights.get(key, 0.0))
+		_approx(total, 1.0, EPS, "веса типов часа %d суммируются в 1.0" % int(row.get("hour", 0)))
+
+	var lots: Array = data.lot_defs()
+	_eq(lots.size(), 8, "ровно 8 лотов")
+	var expected_ids := ["lot_slots", "lot_speed", "lot_sla", "lot_shield",
+		"lot_money", "lot_folder", "lot_channel", "lot_timer"]
+	var prices_sum := 0
+	for i in range(expected_ids.size()):
+		var lot: Dictionary = data.lot_def(str(expected_ids[i]))
+		_ok(not lot.is_empty(), "лот %s есть" % str(expected_ids[i]))
+		_eq(str(lot.get("id", "")), str(expected_ids[i]), "id лота %d" % i)
+		_eq(int(lot.get("max_level", 0)), [4, 6, 4, 3, 8, 5, 6, 5][i], "max_level %s" % str(expected_ids[i]))
+		_eq((lot.get("weight_by_hour", []) as Array).size(), 9, "weight_by_hour %s: 9 значений" % str(expected_ids[i]))
+		var lot_prices: Array = lot.get("prices", [])
+		_eq(lot_prices.size(), int(lot.get("max_level", 0)), "prices %s по числу уровней" % str(expected_ids[i]))
+		for price in lot_prices:
+			prices_sum += int(price)
+	_eq(prices_sum, 13100, "сумма цен всех лотов = 13 100")
+	_eq(str(data.lot_def("lot_speed").get("effect", "")), "transfer_speed", "lot_speed effect")
+	_eq(str(data.lot_def("lot_channel").get("effect", "")), "channel_capacity", "lot_channel effect")
+	_ok(data.lot_def("lot_nope").is_empty(), "неизвестный лот → {}")
+
+	var rules: Dictionary = data.shop_rules()
+	_eq(int(rules.get("offers", 0)), 3, "shop_rules.offers = 3")
+	_eq(int(rules.get("max_rerolls", 0)), 3, "shop_rules.max_rerolls = 3")
+	_eq((rules.get("reroll_costs", []) as Array).size(), 3, "3 цены реролла")
+
+	var dots: Dictionary = data.minigame_def("dots")
+	_eq((dots.get("tiers", []) as Array).size(), 4, "dots: 4 ступени")
+	for gid in ["dots", "sound", "wires", "text", "video", "photo", "maze", "junk", "ddos", "phishing", "ransomware"]:
+		_ok(not data.minigame_def(gid).is_empty(), "мини-игра %s есть" % gid)
+	var sel: Dictionary = data.minigame_selection()
+	_eq((sel.get("order", []) as Array).size(), 7, "send order: 7 игр")
+	var sums: Array = sel.get("achievable_sums", [])
+	_eq(sums.size(), 19, "19 достижимых сумм")
+	var coeff: Dictionary = sel.get("coeff", {})
+	_eq(int(coeff.get("video", 0)), 8, "coeff video = 8 в selection")
+	_eq((data.attack_def("ddos").get("tiers", []) as Array).size(), 4, "ddos: 4 ступени")
+
+	var grid_rules: Dictionary = data.grid_rules()
+	_eq((grid_rules.get("folder_dims", []) as Array).size(), 6, "6 размеров сетки")
+	_eq((grid_rules.get("shapes", {}) as Dictionary).size(), 26, "26 фигур (моно/домино/три/тетромино)")
+	var s4: Dictionary = data.shape_def("S4")
+	_eq((s4.get("cells", []) as Array).size(), 4, "S4: 4 клетки")
+	_ok(data.shape_def("O1").size() > 0, "O1 есть")
+	_ok(data.tr("ui.title") != "ui.title", "строки читаются")
+	_ok(not str(data.folder_name()).is_empty(), "folder_name")
 
 
-func _test_timers(t) -> void:
-	t.set_case("timers")
-	# п.10: grace h1 1.5, h2 1.35, h3 1.2, h4+ 1.0.
-	t.approx(E.packet_timer(1, {}), 30.0, EPS, "packet hour 1 (20×1.5)")
-	t.approx(E.packet_timer(2, {}), 26.325, EPS, "packet hour 2 (19.5×1.35)")
-	t.approx(E.packet_timer(3, {}), 22.8, EPS, "packet hour 3 (19×1.2)")
-	t.approx(E.packet_timer(4, {}), 18.5, EPS, "packet hour 4 (без grace)")
-	t.approx(E.packet_timer(9, {}), 16.0, EPS, "packet hour 9")
-	t.approx(E.packet_timer(40, {}), 12.0, EPS, "packet min clamp")
-	t.approx(E.packet_timer(1, {"timer": 3}), 42.0, EPS, "packet +3 уровня (grace только на базу)")
-	t.approx(E.packet_timer(1, {"timer": 250}), 999.0, EPS, "packet max clamp")
-	t.approx(E.packet_timer(1, {"shop_timer": 1}), 34.0, EPS, "packet по id магазина")
-	t.approx(E.request_timer(1, {}), 60.0, EPS, "request hour 1 (30×2.0 — отдельный grace)")
-	t.approx(E.request_timer(2, {}), 50.15, EPS, "request hour 2 (29.5×1.7)")
-	t.approx(E.request_timer(3, {}), 40.6, EPS, "request hour 3 (29×1.4)")
-	t.approx(E.request_timer(4, {}), 28.5, EPS, "request hour 4 (без grace)")
-	t.approx(E.request_timer(9, {}), 26.0, EPS, "request hour 9")
-	t.approx(E.request_timer(40, {}), 20.0, EPS, "request min clamp")
-	t.approx(E.request_timer(1, {"timer": 2}), 68.0, EPS, "request +2 уровня")
-	t.approx(E.timer_grace(1), 1.5, EPS, "grace h1")
-	t.approx(E.timer_grace(2), 1.35, EPS, "grace h2")
-	t.approx(E.timer_grace(3), 1.2, EPS, "grace h3")
-	t.approx(E.timer_grace(4), 1.0, EPS, "grace h4+")
-	t.approx(E.request_timer_grace(1), 2.0, EPS, "request grace h1")
-	t.approx(E.request_timer_grace(2), 1.7, EPS, "request grace h2")
-	t.approx(E.request_timer_grace(3), 1.4, EPS, "request grace h3")
-	t.approx(E.request_timer_grace(4), 1.0, EPS, "request grace h4+")
+# --- стартовые статы -------------------------------------------------------
 
-
-func _test_minigame(t) -> void:
-	t.set_case("minigame")
-	t.approx(E.minigame_difficulty([]), 1.0, EPS, "пустой набор → 1.0")
-	t.approx(E.minigame_difficulty(["text", "video"]), 2.5, EPS, "text+video = 2.5")
-	t.approx(E.minigame_difficulty(["text", "text", "text"]), 1.0, EPS, "3 text = 1.0")
-	t.approx(E.minigame_difficulty(["unknown"]), 1.0, EPS, "неизвестный тип = text")
-	t.eq(E.minigame_type([]), "text", "пустой набор → text")
-	t.eq(E.minigame_type(["text", "text", "text"]), "text", "3 text → text")
-	t.eq(E.minigame_type(["text", "video"]), "photo", "avg 2.5 → photo")
-	t.eq(E.minigame_type(["text", "sound"]), "sound", "avg 1.5 → sound")
-	t.eq(E.minigame_type(["text", "photo"]), "sound", "avg 2.0 → sound")
-	t.eq(E.minigame_type(["sound", "photo"]), "photo", "avg 2.5 → photo")
-	t.eq(E.minigame_type(["photo", "video"]), "video", "avg 3.5 → video")
-	t.eq(E.minigame_type(["video"]), "video", "video → video")
-	t.eq(E.minigame_type(["sound"]), "sound", "sound → sound")
-	t.eq(E.minigame_type(["photo"]), "photo", "photo → photo")
-
-
-func _test_payout(t) -> void:
-	t.set_case("payout")
-	# base 100, n=2, 15/30, quality 1, tcp, streak 5:
-	# 100 × 0.8 × 1.0 × 1.1 × 1.15 × 1.1 = 111.32 → 111
-	t.eq(E.payout(100.0, 2, 15.0, 30.0, 1.0, "tcp", 5, {}), 111, "полный TCP-пример")
-	t.eq(E.payout(100.0, 1, 30.0, 30.0, 0.5, "udp", 0, {}), 75, "quality 0.5, udp")
-	t.eq(E.payout(100.0, 3, 30.0, 30.0, 1.0, "udp", 0, {}), 120, "multi n=3")
-	t.eq(E.payout(100.0, 1, 0.0, 30.0, 1.0, "udp", 0, {}), 60, "speed минимум 0.6")
-	t.eq(E.payout(100.0, 1, 60.0, 30.0, 1.0, "udp", 0, {}), 100, "time ratio клампится 1")
-	t.eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "TCP", 10, {}), 138, "TCP + streak 10")
-	t.eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, &"udp", 10, {}), 120, "streak +20%")
-	t.eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 50, {}), 120, "streak cap 10")
-	t.eq(E.payout(100.0, 0, 30.0, 30.0, 1.0, "udp", 0, {}), 0, "n=0 → 0")
-	t.eq(E.payout(0.0, 1, 30.0, 30.0, 1.0, "udp", 0, {}), 0, "base 0 → 0")
-	t.eq(E.payout(100.0, 1, 30.0, 0.0, 1.0, "udp", 0, {}), 100, "timer_total 0 → полная скорость")
-	t.eq(E.payout(100.0, 1, 30.0, 30.0, 2.0, "udp", 0, {}), 100, "quality клампится 1")
-
-
-func _test_score(t) -> void:
-	t.set_case("score")
-	t.eq(E.score(9, 12000, 250.0), 23500, "9 часов, 12000, SLA 250")
-	t.eq(E.score(0, 0, 0.0), 0, "нулевой забег")
-	t.eq(E.score(1, 500, 200.0), 3500, "1 час, 500, SLA 200")
-	t.eq(E.score(-3, -100, -50.0), 0, "отрицательные значения клампятся")
-
-
-func _test_data(t) -> void:
-	t.set_case("data")
-	var data = D.new()
-	data.load_all()
-	t.ok(not data.balance.is_empty(), "balance.json прочитан")
-	t.ok(data.types.has("text"), "тип text есть")
-	t.ok(data.types.size() >= 4, "минимум 4 типа файлов")
-	var text_def = data.type_def("text")
-	t.ok(text_def is Dictionary and not text_def.is_empty(), "type_def(text)")
-	t.ok(not str(text_def.get("ext", "")).is_empty(), "у text есть ext")
-	t.eq(str(data.type_def("nope").get("name_ru", "")), str(text_def.get("name_ru", "")), "неизвестный тип → text")
-
-	t.ok(not data.difficulty.is_empty(), "таблица сложности не пуста")
-	var first = data.difficulty_for(1)
-	t.eq(int(first.get("hour", 0)), 1, "difficulty_for(1)")
-	var last_row = data.difficulty[data.difficulty.size() - 1]
-	var beyond = data.difficulty_for(999)
-	t.eq(int(beyond.get("hour", 0)), int(last_row.get("hour", 0)), "hour > max → последняя строка")
-
-	t.ok(not data.shop.is_empty(), "магазин не пуст")
-	var first_item = data.shop[0]
-	var item_id := str(first_item.get("id", ""))
-	var found = data.shop_item(item_id)
-	t.eq(str(found.get("id", "")), item_id, "shop_item по id")
-	t.eq(data.shop_item("нет_такого_товара").size(), 0, "неизвестный товар → {}")
-
-	t.ok(not data.names.is_empty(), "names_ru.json прочитан")
-	t.ok(not data.strings.is_empty(), "strings_ru.json прочитан")
-	t.ok(data.unlocks.has("shop"), "progression.unlocks.shop прочитан")
-	t.ok(data.meta_rewards.has("survive_hour_3"), "progression.meta_rewards прочитан")
-	t.eq(int(data.unlocks.get("shop", {}).get("run_hour", 0)), 2, "shop открывается на часе 2")
-	t.eq(int(data.unlocks.get("attack_ransomware", {}).get("run_hour", 0)), 4, "ransomware открывается на часе 4")
-	t.ok(data.shop_item("shop_sla").size() > 0, "shop_sla есть в каталоге")
-	t.eq(int(data.shop_item("shop_sla").get("value", 0)), 24, "shop_sla value = 24")
-	t.eq(int(data.shop_item("shop_sla").get("max_level", 0)), 3, "shop_sla max_level = 3")
-	var available = data.available_shop()
-	t.ok(available is Array, "available_shop() — массив")
-	t.ok(not str(data.folder_name()).is_empty(), "folder_name() не пуст")
-	t.ok(data.tr("ui.title") != "ui.title", "вложенный ключ ui.title")
-	t.ok(data.has_string("ui.title"), "has_string для вложенного ключа")
-	t.ok(not data.has_string("точно.нет.ключа"), "has_string для отсутствующего ключа")
-	t.eq(data.tr("точно.нет.ключа"), "точно.нет.ключа", "нет ключа → сам ключ")
-	data.free()
-
-
-func _test_game_defaults(t) -> void:
-	t.set_case("game_defaults")
+func _test_start_stats() -> void:
+	_set_case("start_stats")
 	var game = G.new()
-	game.start_new_run()
-	t.eq(int(game.money), 150, "start_new_run: money=150")
-	t.approx(float(game.sla), 128.0, 0.0001, "start_new_run: sla=128")
-	t.eq(int(game.hour), 1, "start_new_run: hour=1")
-	game.add_sla(1000.0)
-	t.approx(float(game.sla), 200.0, 0.0001, "add_sla(1000) не поднимает SLA выше 200")
+	game.start_new_run(1)
+	_eq(int(game.money), 50, "старт: money = 50")
+	_approx(float(game.sla), 60.0, EPS, "старт: SLA = 60")
+	_approx(game.sla_cap(), 60.0, EPS, "старт: кап SLA = 60")
+	_eq(game.hour, 1, "старт: hour = 1")
+	_eq(game.connection_slots(), 1, "старт: 1 слот")
+	_approx(game.channel_capacity(), 10.0, EPS, "старт: канал 10")
+	_eq(game.buffer_limit(), 6, "старт: буфер 6")
+	_approx(game.request_timer(), 30.0, EPS, "старт: таймер запроса 30")
+	_approx(game.packet_timer(), 20.0, EPS, "старт: таймер пакета 20")
+	_approx(game.money_mult(), 1.0, EPS, "старт: money_mult 1.0")
+	_approx(game.speed_mult(), 1.0, EPS, "старт: speed_mult 1.0")
+	_eq(game.shield_max(), 0, "старт: 0 зарядов щита")
+	_eq(game.shield_charges, 0, "старт: заряды щита = 0")
+	var dims: Vector2i = game.folder_dims()
+	_eq(dims.x, 5, "старт: сетка 5 столбцов")
+	_eq(dims.y, 4, "старт: сетка 4 строки")
+	_eq(game.level("connection_slots"), 0, "level(connection_slots) = 0")
+	_eq(game.level("slot_level"), 0, "level(slot_level) = 0")
+	_ok(game.upgrades.is_empty(), "старт: upgrades пусты")
+	_eq(game.shop_offers.size(), 0, "старт: офферов нет")
+	_eq(game.shop_rerolls, 0, "старт: рероллов 0")
 	game.free()
 
 
-func _test_progression(t) -> void:
-	t.set_case("progression")
-	# run_tests.gd запускается из _init до _ready автолоадов — форсируем Data.
-	var loop := Engine.get_main_loop()
-	if loop is SceneTree:
-		var data = (loop as SceneTree).root.get_node_or_null("Data")
-		if data != null and data.get("unlocks") is Dictionary and (data.unlocks as Dictionary).is_empty():
-			data.load_all()
+func _test_levels_and_caps() -> void:
+	_set_case("levels/caps")
+	var game = G.new()
+	game.start_new_run(2)
+
+	game.set_lot_level("lot_slots", 4)
+	_eq(game.level("lot_slots"), 4, "lot_slots = 4")
+	_eq(game.level("slot_level"), 4, "агрегат slot_level = 4")
+	_eq(int(game.upgrades.get("lot_slots", -1)), 4, "upgrades[lot_slots] = 4")
+	_eq(game.connection_slots(), 5, "4 уровня → 5 слотов")
+
+	game.set_lot_level("lot_speed", 6)
+	_eq(game.level("speed_level"), 6, "speed_level = 6")
+	_approx(game.speed_mult(), 0.606355, 0.0005, "pow(0.92, 6) ≈ 0.606")
+	_approx(E.speed_mult(6), pow(0.92, 6.0), EPS, "speed_mult = pow(0.92, 6) без ^")
+
+	game.set_lot_level("lot_sla", 4)
+	_approx(game.sla_cap(), 200.0, EPS, "4 уровня ИБП → кап 200")
+	_approx(game.sla, 200.0, EPS, "ИБП сразу добавляет +35 за уровень (60 → 200)")
+	game.add_sla(1000.0)
+	_approx(game.sla, 200.0, EPS, "add_sla не выше динамического капа 200")
+
+	game.set_lot_level("lot_money", 8)
+	_approx(game.money_mult(), 1.4, EPS, "8 уровней контракта → ×1.4")
+	_approx(E.money_mult({"money_level": 4}), 1.2, EPS, "Economy.money_mult(level 4) = 1.2")
+
+	game.set_lot_level("lot_folder", 5)
+	var dims: Vector2i = game.folder_dims()
+	_eq(dims.x, 8, "folder level 5: 8 столбцов")
+	_eq(dims.y, 6, "folder level 5: 6 строк")
+	game.set_lot_level("lot_folder", 1)
+	dims = game.folder_dims()
+	_eq(dims.x, 6, "folder level 1: 6×4 → 6 столбцов")
+	_eq(dims.y, 4, "folder level 1: 6×4 → 4 строки")
+
+	game.set_lot_level("lot_channel", 6)
+	_approx(game.channel_capacity(), 46.0, EPS, "6 уровней канала → 46")
+	_eq(game.buffer_limit(), 12, "6 уровней канала → буфер 12")
+
+	game.set_lot_level("lot_timer", 5)
+	_approx(game.request_timer(), 55.0, EPS, "5 уровней таймера → 55")
+	game.set_lot_level("lot_timer", 99)
+	_eq(game.level("lot_timer"), 5, "уровень клампится max_level")
+
+	game.set_lot_level("lot_shield", 3)
+	_eq(game.shield_max(), 3, "3 уровня заземления → 3 заряда")
+	_eq(game.shield_charges, 3, "покупка сразу заряжает щит")
+
+	# Сетка уровней 0..5 из таблицы.
+	var expected := [[5, 4], [6, 4], [6, 5], [7, 5], [7, 6], [8, 6]]
+	for lvl in range(6):
+		game.set_lot_level("lot_folder", lvl)
+		var d: Vector2i = game.folder_dims()
+		_eq(d.x, int(expected[lvl][0]), "folder dims[%d].x" % lvl)
+		_eq(d.y, int(expected[lvl][1]), "folder dims[%d].y" % lvl)
+	game.free()
+
+
+func _test_sla_rules() -> void:
+	_set_case("sla_rules")
+	var game = G.new()
+	game.start_new_run(3)
+	game.sla = 30.0
+	var after: float = game.regen_sla_for_hour()
+	_approx(after, 45.0, EPS, "regen_sla_for_hour: 30 + 15 = 45")
+	_approx(float(game.sla), 45.0, EPS, "SLA обновлён после регена")
+	game.sla = 55.0
+	game.add_sla(100.0)
+	_approx(float(game.sla), 60.0, EPS, "add_sla клампится текущим капом 60")
+	game.set_lot_level("lot_sla", 1)
+	game.sla = 90.0
+	game.hour = 2
+	game.regen_sla_for_hour()
+	_approx(float(game.sla), 95.0, EPS, "реген не превышает кап 95")
+	game.regen_sla_for_hour()
+	_approx(float(game.sla), 95.0, EPS, "повторный реген в том же часу — no-op")
+
+	# SLA 0 во время часа = поражение забега.
+	var reasons: Array = []
+	game.run_ended.connect(func(reason): reasons.append(str(reason)))
+	game.phase = &"hour"
+	game.add_sla(-999.0)
+	_approx(float(game.sla), 0.0, EPS, "SLA падает до 0")
+	_eq(str(game.phase), "results", "SLA 0 → фаза results")
+	_eq(reasons.size(), 1, "run_ended эмитится один раз")
+	if reasons.size() == 1:
+		_eq(str(reasons[0]), "sla", "причина поражения sla")
+	game.free()
+
+
+func _test_channel_and_timers() -> void:
+	_set_case("channel/timers")
+	_approx(E.channel_capacity({}), 10.0, EPS, "capacity base 10")
+	_approx(E.channel_capacity({"channel_level": 1}), 16.0, EPS, "capacity +1 = 16")
+	_approx(E.channel_capacity({"channel": 6}), 46.0, EPS, "capacity +6 = 46")
+	_approx(E.channel_capacity({"lot_channel": 3}), 28.0, EPS, "capacity по id лота")
+	_approx(E.channel_factor(0.0, {}), 1.0, EPS, "пустой канал → factor 1")
+	_approx(E.channel_factor(46.0, {"channel_level": 6}), 1.0, EPS, "load = capacity → factor 1")
+	_approx(E.channel_factor(92.0, {"channel_level": 6}), 2.0, EPS, "load ×2 → factor 2")
+	_approx(E.channel_factor(100.0, 10.0), 10.0, EPS, "factor по числу capacity")
+	_approx(E.channel_load(1, 5, [8, 8], {}), 16.0, EPS, "2 видео в передаче = 16")
+	_approx(E.channel_load(1, 0, [1, 2, 4, 8], {}), 15.0, EPS, "сумма весов 1/2/4/8")
+	_approx(E.channel_load(1, 5, [-5, 3], {}), 3.0, EPS, "отрицательный вес клампится")
+	_eq(E.buffer_limit({}), 6, "буфер base 6")
+	_eq(E.buffer_limit({"channel_level": 6}), 12, "буфер 6 → 12")
+	_eq(E.buffer_limit({"channel_level": 99}), 12, "буфер cap 12")
+
+	_approx(E.packet_timer(1, {}), 20.0, EPS, "packet timer H1 = 20")
+	_approx(E.packet_timer(9, {"timer_level": 5}), 20.0, EPS, "packet timer не меняется")
+	_approx(E.request_timer(1, {}), 30.0, EPS, "request timer base 30")
+	_approx(E.request_timer(5, {"timer_level": 1}), 35.0, EPS, "request timer +1 = 35")
+	_approx(E.request_timer(9, {"timer_level": 5}), 55.0, EPS, "request timer max 55")
+	_approx(E.request_timer(9, {"timer_level": 99}), 55.0, EPS, "request timer cap 55")
+	_approx(E.request_timer(1, {"lot_timer": 2}), 40.0, EPS, "request timer по id лота")
+
+
+func _test_transfer_time() -> void:
+	_set_case("transfer_time")
+	_approx(E.recv_transfer_time({"base_time_sec": 3}, 1.0, 0), 3.0, EPS, "text 3 с")
+	_approx(E.recv_transfer_time({"base_time_sec": 5}, 1.0, 0), 5.0, EPS, "sound 5 с")
+	_approx(E.recv_transfer_time({"base_time_sec": 8}, 1.0, 0), 8.0, EPS, "photo 8 с")
+	_approx(E.recv_transfer_time({"base_time_sec": 12}, 1.0, 0), 12.0, EPS, "video 12 с")
+	_approx(E.recv_transfer_time({"base_time_sec": 12}, 1.0, 1), 12.0 * 0.92, EPS, "speed 1 → ×0.92")
+	_approx(E.recv_transfer_time({"base_time_sec": 12}, 2.0, 0), 24.0, EPS, "channel factor 2")
+	_approx(E.recv_transfer_time({"base_time_sec": 8}, 1.0, 2), 8.0 * pow(0.92, 2.0), EPS, "speed 2")
+	_approx(E.send_transfer_time({"base_time_sec": 12}, 1.0, 0, "tcp"), 12.0, EPS, "TCP ×1.0")
+	_approx(E.send_transfer_time({"base_time_sec": 12}, 1.0, 0, "udp"), 9.6, EPS, "UDP ×0.8")
+	_approx(E.send_transfer_time({"base_time_sec": 12}, 1.0, 0, &"UDP"), 9.6, EPS, "UDP StringName")
+	_approx(E.recv_time({"base_time_sec": 8}, 1.0, {"speed_level": 2}), 8.0 * pow(0.92, 2.0), EPS, "legacy recv_time + speed")
+	_approx(E.send_time({"base_time_sec": 12}, 1.0, {"speed_level": 1}), 12.0 * 0.92, EPS, "legacy send_time")
+	_approx(E.recv_time({"recv_time": 2.0}, 1.0, {}), 2.0, EPS, "legacy поле recv_time")
+
+
+func _test_payout() -> void:
+	_set_case("payout")
+	# 100 × 0.8 × 1.0 × 1.15 × 1.15 × 1.1 = 116.38 → 116
+	_eq(E.payout(100.0, 2, 15.0, 30.0, 1.0, "tcp", 5, {}), 116, "полный TCP-пример (multi 1.15)")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 0.5, "udp", 0, {}), 75, "quality 0.5, udp")
+	_eq(E.payout(100.0, 3, 30.0, 30.0, 1.0, "udp", 0, {}), 130, "multi n=3 (1.30)")
+	_eq(E.payout(100.0, 1, 0.0, 30.0, 1.0, "udp", 0, {}), 60, "speed минимум 0.6")
+	_eq(E.payout(100.0, 1, 60.0, 30.0, 1.0, "udp", 0, {}), 100, "time ratio клампится 1")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "TCP", 10, {}), 138, "TCP + streak 10")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, &"udp", 10, {}), 120, "streak +20%")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 50, {}), 120, "streak cap 10")
+	_eq(E.payout(100.0, 0, 30.0, 30.0, 1.0, "udp", 0, {}), 0, "n=0 → 0")
+	_eq(E.payout(0.0, 1, 30.0, 30.0, 1.0, "udp", 0, {}), 0, "base 0 → 0")
+	_eq(E.payout(100.0, 1, 30.0, 0.0, 1.0, "udp", 0, {}), 100, "timer_total 0 → полная скорость")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 2.0, "udp", 0, {}), 100, "quality клампится 1")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"money_level": 4}), 120, "money_mult +4 = ×1.2")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"money_level": 8}), 140, "money_mult +8 = ×1.4")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"lot_money": 2}), 110, "money_mult по id лота")
+
+	# Float-точность: 1/3 и 2/3 не должны стать int/int.
+	# 100 × (0.6 + 0.4/3) × 0.5 = 36.667 → 37 (при int/int было бы 30).
+	_eq(E.payout(100.0, 1, 1.0, 3.0, 0.0, "udp", 0, {}), 37, "time ratio 1/3 — float")
+	# 100 × (0.6 + 0.8/3) × 0.5 = 43.333 → 43.
+	_eq(E.payout(100.0, 1, 2.0, 3.0, 0.0, "udp", 0, {}), 43, "time ratio 2/3 — float")
+
+
+func _test_send_minigame() -> void:
+	_set_case("send_minigame")
+	var m: Dictionary = E.send_minigame_for(["text"])
+	_eq(int(m.get("sum", 0)), 1, "S=1")
+	_eq(str(m.get("id", "")), "dots", "S=1 → dots")
+	_eq(int(m.get("tier", 0)), 1, "S=1 → T1")
+	_eq(int(m.get("index", -1)), 0, "S=1 → rank 0")
+	m = E.send_minigame_for(["sound"])
+	_eq(int(m.get("sum", 0)), 2, "S=2")
+	_eq(str(m.get("id", "")), "sound", "S=2 → sound")
+	_eq(int(m.get("tier", 0)), 1, "S=2 → T1")
+	m = E.send_minigame_for(["text", "sound"])
+	_eq(int(m.get("sum", 0)), 3, "S=3")
+	_eq(str(m.get("id", "")), "wires", "S=3 → wires")
+	_eq(int(m.get("tier", 0)), 1, "S=3 → T1")
+	m = E.send_minigame_for(["photo"])
+	_eq(int(m.get("sum", 0)), 4, "S=4")
+	_eq(str(m.get("id", "")), "text", "S=4 → text")
+	_eq(int(m.get("tier", 0)), 1, "S=4 → T1")
+	m = E.send_minigame_for(["video"])
+	_eq(int(m.get("sum", 0)), 8, "S=8")
+	_eq(str(m.get("id", "")), "dots", "S=8 → dots")
+	_eq(int(m.get("tier", 0)), 2, "S=8 → T2")
+	_eq(int(m.get("index", -1)), 7, "S=8 → rank 7")
+	m = E.send_minigame_for(["video", "video", "video"])
+	_eq(int(m.get("sum", 0)), 24, "S=24")
+	_eq(int(m.get("tier", 0)), 4, "S=24 → T4")
+	# B4: плотный список достижимых сумм, rank 18 → order[18 % 7] = video.
+	_eq(str(m.get("id", "")), "video", "S=24 → video (B4 reindex)")
+	_eq(int(m.get("index", -1)), 18, "S=24 → rank 18")
+
+	# Все 7 игр и все 4 ступени достижимы при максимум 3 файлах.
+	var pool := ["text", "sound", "photo", "video"]
+	var ids: Dictionary = {}
+	var tiers: Dictionary = {}
+	for a in range(pool.size()):
+		for b in range(pool.size()):
+			for c in range(pool.size()):
+				for combo in [[pool[a]], [pool[a], pool[b]], [pool[a], pool[b], pool[c]]]:
+					var r: Dictionary = E.send_minigame_for(combo)
+					var id := str(r.get("id", ""))
+					ids[id] = true
+					tiers[int(r.get("tier", 0))] = true
+					_ok(E.SEND_ORDER.has(id), "id %s из SEND_ORDER" % id)
+	_eq(ids.size(), 7, "достижимы все 7 игр отправки")
+	for t in [1, 2, 3, 4]:
+		_ok(tiers.has(t), "достижима ступень T%d" % t)
+	_ok(not ids.has("junk"), "атакующие игры не выбираются для отправки")
+
+
+func _test_attack_tier() -> void:
+	_set_case("attack_tier")
+	_eq(E.attack_tier(1), 1, "H1 → T1")
+	_eq(E.attack_tier(2), 1, "H2 → T1")
+	_eq(E.attack_tier(3), 1, "H3 → T1")
+	_eq(E.attack_tier(4), 2, "H4 → T2")
+	_eq(E.attack_tier(5), 2, "H5 → T2")
+	_eq(E.attack_tier(6), 3, "H6 → T3")
+	_eq(E.attack_tier(7), 3, "H7 → T3")
+	_eq(E.attack_tier(8), 4, "H8 → T4")
+	_eq(E.attack_tier(9), 4, "H9 → T4")
+
+
+func _test_score() -> void:
+	_set_case("score")
+	_eq(E.score(9, 8000, 200.0), 19000, "9 часов, 8000, SLA 200")
+	_eq(E.score(0, 0, 0.0), 0, "нулевой забег")
+	_eq(E.score(1, 500, 200.0), 3500, "1 час, 500, SLA 200")
+	_eq(E.score(-3, -100, -50.0), 0, "отрицательные значения клампятся")
+
+
+# --- прогрессия ------------------------------------------------------------
+
+func _test_progression() -> void:
+	_set_case("progression")
 	var game = G.new()
 	game.start_new_run(5)
-	# run_hour-гейты.
-	t.ok(not game.feature_unlocked("shop"), "час 1: магазин закрыт")
-	t.ok(game.feature_unlocked("minigame_text"), "час 1: text открыт")
-	t.ok(not game.feature_unlocked("minigame_sound"), "час 1: sound закрыт")
-	t.ok(not game.feature_unlocked("minigame_photo"), "час 1: photo закрыт")
-	t.ok(not game.feature_unlocked("attack_junk"), "час 1: junk закрыт")
+	_ok(not game.feature_unlocked("shop"), "час 1: магазин закрыт")
+	_ok(game.feature_unlocked("minigame_text"), "час 1: text открыт")
+	_ok(not game.feature_unlocked("minigame_sound"), "час 1: sound закрыт")
+	_ok(not game.feature_unlocked("attack_junk"), "час 1: junk закрыт")
 	game.hour = 2
-	t.ok(game.feature_unlocked("shop"), "час 2: магазин открыт")
-	t.ok(game.feature_unlocked("minigame_sound"), "час 2: sound открыт")
-	t.ok(game.feature_unlocked("attack_ddos"), "час 2: ddos открыт")
-	t.ok(not game.feature_unlocked("attack_phishing"), "час 2: phishing закрыт")
+	_ok(game.feature_unlocked("shop"), "час 2: магазин открыт")
+	_ok(game.feature_unlocked("minigame_sound"), "час 2: sound открыт")
+	_ok(game.feature_unlocked("attack_ddos"), "час 2: ddos открыт")
+	_ok(not game.feature_unlocked("attack_phishing"), "час 2: phishing закрыт")
 	game.hour = 4
-	t.ok(game.feature_unlocked("minigame_video"), "час 4: video открыт")
-	t.ok(game.feature_unlocked("attack_ransomware"), "час 4: ransomware открыт")
-	t.ok(game.feature_unlocked("нет_такой_фичи"), "неизвестная фича считается открытой")
-	# Мета-гейты.
-	t.ok(not game.feature_unlocked("search"), "search закрыт до мета-награды")
-	t.ok(not game.feature_unlocked("shield"), "shield закрыт до мета-награды")
-	t.eq(game.award_meta_for_run(2).size(), 0, "2 часа: мета-наград нет")
+	_ok(game.feature_unlocked("minigame_video"), "час 4: video открыт")
+	_ok(game.feature_unlocked("attack_ransomware"), "час 4: ransomware открыт")
+	_ok(game.feature_unlocked("нет_такой_фичи"), "неизвестная фича считается открытой")
+	_ok(not game.feature_unlocked("search"), "search закрыт до мета-награды")
+	_ok(not game.feature_unlocked("shield"), "shield закрыт до мета-награды")
+	_eq(game.award_meta_for_run(2).size(), 0, "2 часа: мета-наград нет")
 	var at3 := game.award_meta_for_run(3)
-	t.ok(at3.has("survive_hour_3"), "3 часа: survive_hour_3 выдан")
-	t.ok(game.feature_unlocked("search"), "после 3 часов search открыт")
-	t.ok(not game.feature_unlocked("shield"), "shield ещё закрыт")
-	t.eq(game.award_meta_for_run(3).size(), 0, "повторно награда не выдаётся")
+	_ok(at3.has("survive_hour_3"), "3 часа: survive_hour_3 выдан")
+	_ok(game.feature_unlocked("search"), "после 3 часов search открыт")
+	_ok(not game.feature_unlocked("shield"), "shield ещё закрыт")
+	_eq(game.award_meta_for_run(3).size(), 0, "повторно награда не выдаётся")
 	var at5 := game.award_meta_for_run(5)
-	t.ok(at5.has("survive_hour_5"), "5 часов: survive_hour_5 выдан")
-	t.ok(game.feature_unlocked("shield"), "после 5 часов shield открыт")
+	_ok(at5.has("survive_hour_5"), "5 часов: survive_hour_5 выдан")
+	_ok(game.feature_unlocked("shield"), "после 5 часов shield открыт")
 	var at9 := game.award_meta_for_run(9)
-	t.ok(at9.has("complete_run"), "9 часов: complete_run выдан")
-	t.ok(game.feature_unlocked("minigame_advanced"), "после 9 часов advanced открыт")
-	# Мета переживает reset_run и сохраняется/загружается.
+	_ok(at9.has("complete_run"), "9 часов: complete_run выдан")
 	game.reset_run()
-	t.ok(game.feature_unlocked("search"), "reset_run не стирает мету")
+	_ok(game.feature_unlocked("search"), "reset_run не стирает мету")
 	game.start_new_run(6)
-	t.ok(game.feature_unlocked("shield"), "start_new_run не стирает мету")
+	_ok(game.feature_unlocked("shield"), "start_new_run не стирает мету")
 	game.free()
 
 
-## Мета-награды выдаются по ходу забега в Game.end_hour, а не только в _finish_run.
-func _test_meta_awards_on_hours(t) -> void:
-	t.set_case("meta_awards")
-	# run_tests.gd запускается из _init до _ready автолоадов — форсируем Data.
-	var loop := Engine.get_main_loop()
-	if loop is SceneTree:
-		var data = (loop as SceneTree).root.get_node_or_null("Data")
-		if data != null and data.get("unlocks") is Dictionary and (data.unlocks as Dictionary).is_empty():
-			data.load_all()
-
+func _test_meta_awards() -> void:
+	_set_case("meta_awards")
 	var game = G.new()
 	var toasts: Array = []
 	game.toast.connect(func(text): toasts.append(str(text)))
 	game.start_new_run(11)
 	toasts.clear()
 
-	# Обычный час без наград: тостов «Открыто: …» быть не должно.
 	game.end_hour()
-	t.eq(int(game.stats.get("hours_done", 0)), 1, "1 час отработан")
-	t.ok(not game.feature_unlocked("search"), "после 1 часа search закрыт")
-	t.ok(not _has_unlock_toast(toasts), "1 час: тоста об открытии нет")
+	_eq(int(game.stats.get("hours_done", 0)), 1, "1 час отработан")
+	_ok(not game.feature_unlocked("search"), "после 1 часа search закрыт")
+	_ok(not _has_unlock_toast(toasts), "1 час: тоста об открытии нет")
 
-	# 2 часа — ближайшая награда требует 3 часа.
 	game.end_hour()
-	t.eq(int(game.stats.get("hours_done", 0)), 2, "2 часа отработано")
-	t.ok(not game.feature_unlocked("search"), "после 2 часов search закрыт")
-	t.ok(not _has_unlock_toast(toasts), "2 часа: тоста об открытии нет")
+	_eq(int(game.stats.get("hours_done", 0)), 2, "2 часа отработано")
+	_ok(not game.feature_unlocked("search"), "после 2 часов search закрыт")
 
-	# 3 часа → survive_hour_3 сразу, забег не завершён.
 	game.end_hour()
-	t.eq(int(game.stats.get("hours_done", 0)), 3, "3 часа отработано")
-	t.ok(str(game.phase) != "results", "забег не завершён после 3 часов")
-	t.ok(game.feature_unlocked("search"), "после 3 часов search открыт без завершения забега")
-	t.ok(_has_unlock_toast(toasts), "3 часа: тост «Открыто: …» есть")
-	t.ok(game.run_meta_awards.has("survive_hour_3"), "run_meta_awards: survive_hour_3 за текущий забег")
-	t.eq(game.run_meta_awards.size(), 1, "run_meta_awards без дублей после 3 часов")
+	_eq(int(game.stats.get("hours_done", 0)), 3, "3 часа отработано")
+	_ok(str(game.phase) != "results", "забег не завершён после 3 часов")
+	_ok(game.feature_unlocked("search"), "после 3 часов search открыт")
+	_ok(_has_unlock_toast(toasts), "3 часа: тост «Открыто: …» есть")
+	_ok(game.run_meta_awards.has("survive_hour_3"), "run_meta_awards: survive_hour_3")
+	_eq(game.run_meta_awards.size(), 1, "run_meta_awards без дублей")
 
-	# 4 часа — новых наград нет.
 	game.end_hour()
-	t.ok(not game.feature_unlocked("shield"), "после 4 часов shield ещё закрыт")
+	_ok(not game.feature_unlocked("shield"), "после 4 часов shield ещё закрыт")
 
-	# 5 часов → survive_hour_5.
 	game.end_hour()
-	t.eq(int(game.stats.get("hours_done", 0)), 5, "5 часов отработано")
-	t.ok(game.feature_unlocked("shield"), "после 5 часов shield открыт")
-	t.ok(game.meta_unlocks.has("survive_hour_5"), "survive_hour_5 в meta_unlocks")
-	t.ok(game.run_meta_awards.has("survive_hour_5"), "run_meta_awards: survive_hour_5 за текущий забег")
-	t.eq(game.run_meta_awards.size(), 2, "run_meta_awards: 2 награды, без дублей")
+	_eq(int(game.stats.get("hours_done", 0)), 5, "5 часов отработано")
+	_ok(game.feature_unlocked("shield"), "после 5 часов shield открыт")
+	_eq(game.run_meta_awards.size(), 2, "run_meta_awards: 2 награды")
 
-	# 9 часов → complete_run выдаётся в end_hour до _finish_run.
 	for i in range(4):
 		game.end_hour()
-	t.eq(int(game.stats.get("hours_done", 0)), 9, "9 часов отработано")
-	t.eq(str(game.phase), "results", "9-й час завершает забег")
-	t.ok(game.meta_unlocks.has("complete_run"), "complete_run выдан на 9-м часе")
-	t.ok(game.feature_unlocked("minigame_advanced"), "после 9 часов minigame_advanced открыт")
-	t.ok(game.run_meta_awards.has("complete_run"), "run_meta_awards: complete_run за текущий забег")
-	t.eq(game.run_meta_awards.size(), 3, "run_meta_awards: все 3 награды, без дублей")
-	t.ok(game.run_meta_awards.has("survive_hour_3") and game.run_meta_awards.has("survive_hour_5"),
-		"run_meta_awards хранит все награды забега")
+	_eq(int(game.stats.get("hours_done", 0)), 9, "9 часов отработано")
+	_eq(str(game.phase), "results", "9-й час завершает забег")
+	_ok(game.meta_unlocks.has("complete_run"), "complete_run выдан на 9-м часе")
+	_eq(game.run_meta_awards.size(), 3, "run_meta_awards: все 3 награды")
 
-	# Идемпотентность: повторный вызов ничего не дублирует.
 	var size_before: int = game.meta_unlocks.size()
 	var again: Array = game.award_meta_for_run(9)
-	t.eq(again.size(), 0, "повторный award_meta_for_run(9) ничего не выдаёт")
-	t.eq(game.meta_unlocks.size(), size_before, "meta_unlocks не растёт при повторе")
-	t.ok(again.is_empty(), "awarded пуст при повторе")
+	_eq(again.size(), 0, "повторный award_meta_for_run(9) ничего не выдаёт")
+	_eq(game.meta_unlocks.size(), size_before, "meta_unlocks не растёт при повторе")
 
-	# Мета переживает reset_run и start_new_run.
 	game.reset_run()
-	t.ok(game.run_meta_awards.is_empty(), "reset_run очищает run_meta_awards")
-	t.ok(game.feature_unlocked("search"), "reset_run: search остаётся открыт")
-	t.ok(game.feature_unlocked("shield"), "reset_run: shield остаётся открыт")
-	t.ok(game.feature_unlocked("minigame_advanced"), "reset_run: minigame_advanced остаётся открыт")
+	_ok(game.run_meta_awards.is_empty(), "reset_run очищает run_meta_awards")
+	_ok(game.feature_unlocked("search"), "reset_run: search остаётся открыт")
 	game.start_new_run(12)
-	t.eq(int(game.stats.get("hours_done", 0)), 0, "новый забег: часы сброшены")
-	t.ok(game.run_meta_awards.is_empty(), "start_new_run очищает run_meta_awards")
-	t.ok(game.feature_unlocked("search"), "start_new_run: search остаётся открыт")
-	t.ok(game.feature_unlocked("shield"), "start_new_run: shield остаётся открыт")
-	t.ok(game.feature_unlocked("minigame_advanced"), "start_new_run: minigame_advanced остаётся открыт")
+	_eq(int(game.stats.get("hours_done", 0)), 0, "новый забег: часы сброшены")
+	_ok(game.feature_unlocked("shield"), "start_new_run: shield остаётся открыт")
 	game.free()
 
 
@@ -320,3 +484,44 @@ func _has_unlock_toast(toasts: Array) -> bool:
 		if str(text).contains("Открыто"):
 			return true
 	return false
+
+
+# --- assert-хелперы --------------------------------------------------------
+
+func _set_case(name: String) -> void:
+	_case = name
+
+
+func _ok(condition: bool, message: String) -> bool:
+	_checks += 1
+	if condition:
+		return true
+	_fail(message)
+	return false
+
+
+func _eq(actual, expected, message: String) -> bool:
+	_checks += 1
+	if actual == expected:
+		return true
+	_fail("%s — получено %s, ожидалось %s" % [message, str(actual), str(expected)])
+	return false
+
+
+func _approx(actual: float, expected: float, eps: float, message: String) -> bool:
+	_checks += 1
+	if absf(actual - expected) <= eps:
+		return true
+	_fail("%s — получено %.6f, ожидалось %.6f" % [message, actual, expected])
+	return false
+
+
+func _fail(message: String) -> void:
+	_fails += 1
+	print("FAIL [%s] %s" % [_case, message])
+
+
+func _finish() -> void:
+	print("test_economy: проверок %d, провалов %d" % [_checks, _fails])
+	print("PASS test_economy" if _fails == 0 else "FAIL test_economy")
+	quit(0 if _fails == 0 else 1)

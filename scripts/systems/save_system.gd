@@ -8,7 +8,9 @@ extends RefCounted
 
 const SAVE_PATH := "user://save.json"
 const TMP_PATH := "user://save.tmp"
-const VERSION := 1
+## v2: клеточные сетки/фигуры. v1 читается для миграции (Game/FileRegistry).
+const VERSION := 2
+const SUPPORTED_VERSIONS: Array[int] = [1, 2]
 
 
 static func save(data: Dictionary) -> bool:
@@ -70,7 +72,7 @@ static func _read_save() -> Dictionary:
 		return {}
 	var data: Dictionary = parsed
 	var version := int(data.get("version", -1))
-	if version != VERSION:
+	if not SUPPORTED_VERSIONS.has(version):
 		push_warning("SaveManager: версия save %d не поддерживается (ожидается %d)" % [version, VERSION])
 		return {}
 	return data

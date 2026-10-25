@@ -46,7 +46,7 @@ func _init() -> void:
 	_controller.set_paused(true)
 
 	_test_receive_scroll()
-	_test_search()
+	await _test_search()
 	_test_delete_folder()
 	_test_calm_backdrop()
 	await _test_destroy_contents()
@@ -58,34 +58,37 @@ func _init() -> void:
 	_finish()
 
 
-## Магазин: закрыт до часа 2; позиции search/shield — только по мета-наградам.
+## Магазин v2: закрыт до часа 2; 3 лота, без старых shop_search/shield.
 func _test_shop_and_meta() -> void:
 	_eq(int(_game.hour), 1, "подготовка первого часа")
 	_ok(not _game.feature_unlocked("shop"), "магазин закрыт на часе 1")
 	_main._on_shop()
 	_ok(not _main.shop_modal.visible, "клик по МАГАЗИНУ на часе 1 не открывает окно")
+	_ok(not _shop_has("shop_search"), "старого shop_search больше нет")
+	_ok(not _shop_has("shop_shield"), "старого shop_shield больше нет")
+	_ok(_shop_has("lot_sla"), "v2-лот lot_sla доступен")
 
-	# Мета-награда ещё не получена — поиск закрыт и отсутствует в каталоге.
-	_ok(not _game.feature_unlocked("search"), "поиск закрыт до meta survive_hour_3")
-	_ok(not _shop_has("shop_search"), "shop_search отсутствует в доступном каталоге")
-	_ok(not _shop_has("shop_shield"), "shop_shield отсутствует в доступном каталоге")
-	_ok(_shop_has("shop_sla"), "shop_sla доступен всегда")
-
-	# Открываем час 2 → магазин доступен, мета-награда открывает поиск.
+	# Час 2: контроллер генерирует 3 предложения.
 	_game.hour = 2
+	_controller.shop.refresh(2, int(_game.money), true)
+	_controller.shop_changed.emit()
 	_main._update_shop_visibility()
 	_ok(_main._shop_btn.visible, "на часе 2 кнопка МАГАЗИН видна")
+	_ok(_game.feature_unlocked("shop"), "магазин открыт прогрессией часа 2")
+	_eq(_controller.shop_data().size(), 3, "на часе 2 — 3 предложения")
 	_main._on_shop()
 	_ok(_main.shop_modal.visible, "магазин открывается в подготовке часа 2")
+	_eq(_main.shop_modal.card_ids().size(), 3, "в магазине 3 карточки")
 	_main.shop_modal.close()
 	_ok(not _main.shop_modal.visible, "магазин закрывается по Закрыть/Esc")
-	_ok(_game.feature_unlocked("shop"), "магазин открыт прогрессией часа 2")
 
-	_game.meta_unlocks["survive_hour_3"] = true
-	_ok(_game.feature_unlocked("search"), "meta survive_hour_3 открывает поиск")
-	_ok(_shop_has("shop_search"), "shop_search появился в каталоге после meta")
+	# Возвращаем H1, чтобы основной сценарий часа остался прежним.
 	_game.hour = 1
+	_game.shop_offers.clear()
+	_game.shop_offer_hour = 0
+	_game.shop_locked.clear()
 	_main._update_shop_visibility()
+	_ok(not _main._shop_btn.visible, "на часе 1 магазин снова скрыт")
 
 
 func _shop_has(id: String) -> bool:
@@ -108,7 +111,7 @@ func _test_receive_scroll() -> void:
 	if director == null:
 		return
 
-	# 4 пакета (базовый буфер) — всё влезает, скроллбар скрыт.
+	# 4 пакета (базовый буфер 6) — всё влезает, скроллбар скрыт.
 	for i in 4:
 		director.spawn_packet_now("text", "tcp")
 	_main._refresh_hour()
@@ -116,8 +119,8 @@ func _test_receive_scroll() -> void:
 	_eq(_main.packets.size(), 4, "4 карточки пакетов")
 	_ok(not bar.visible, "при 4 пакетах скроллбар скрыт")
 
-	# Апгрейд буфера до 8 — карточки выходят за окно.
-	_game.upgrades["buffer_level"] = 2
+	# Канал+буфер до 8 (лот lot_channel) — карточки выходят за окно.
+	_game.set_lot_level("lot_channel", 2)
 	for i in 4:
 		director.spawn_packet_now("text", "tcp")
 	_main._refresh_hour()
@@ -125,6 +128,8 @@ func _test_receive_scroll() -> void:
 	_eq(_main.packets.size(), 8, "8 карточек пакетов")
 	_ok(bar.visible, "при 8 пакетах скроллбар виден")
 	_ok(bar._limit() > 0.0, "у скроллбара есть запас прокрутки (%.1f)" % bar._limit())
+	if _main.packets.size() < 8:
+		return
 
 	var view_h := float(_main.receive_window.content.size.y)
 	_ok(_main.packets[7].position.y + _main.packets[7].size.y <= view_h + 0.5,
@@ -164,57 +169,61 @@ func _test_search() -> void:
 	_game.registry.create_file("отчёт_демо", "text", folder_id)
 	_game.registry.create_file("прайс_демо", "text", folder_id)
 	_main._refresh_prep()
+	_main.grid.refresh()
 	await process_frame
 
-	var total_before: int = _main.grid.get_cards().size()
+	var total_before: int = _main.grid.file_count()
 	_ok(total_before >= 2, "в папке есть файлы (%d)" % total_before)
 
 	edit.text = "отчёт"
 	_main._on_search_changed(edit.text)
-	_ok(_main.grid.get_cards().size() < total_before,
-		"фильтр уменьшает список (%d → %d)" % [total_before, _main.grid.get_cards().size()])
-	_eq(_main.grid.get_cards().size(), 1, "по подстроке найден один файл")
+	_eq(_main._filtered_files().size(), 1, "по подстроке найден один файл")
+	_ok(_main.files_window.title_hint.contains("найдено 1"),
+		"заголовок показывает результат фильтра: %s" % _main.files_window.title_hint)
 
 	edit.text = ""
 	_main._on_search_changed(edit.text)
-	_eq(_main.grid.get_cards().size(), total_before, "пустой запрос возвращает все файлы")
+	_eq(_main._filtered_files().size(), total_before, "пустой запрос возвращает все файлы")
 
 	# Без апгрейда поле скрыто.
 	_game.upgrades["search_unlocked"] = 0
 	_main._refresh_prep()
 	_ok(not edit.visible, "без апгрейда поле поиска скрыто")
 	_game.upgrades["search_unlocked"] = 1
-	_test_service_filter()
+	await _test_service_filter()
 
 
 func _test_service_filter() -> void:
-	var check = _main.grid._check
-	_ok(check != null, "чекбокс фильтра создан")
-	if check == null:
+	_main.grid.refresh()
+	await process_frame
+	var folder_id := str(_main.grid.folder_id)
+	var hidden_before: int = _main.grid.hidden_count()
+	_ok(_main.grid.file_count() > 0, "в сетке есть файлы для фильтра")
+	var fid := ""
+	for file in _game.registry.get_folder_files(folder_id):
+		if str(file.location) != "failed" and str(file.location) != "malicious":
+			fid = str(file.id)
+			break
+	_ok(not fid.is_empty(), "найден файл для пометки опасным")
+	if fid.is_empty():
 		return
-	_eq(check.caption, "СКРЫТЬ ОПАСНЫЕ", "подпись фильтра — «СКРЫТЬ ОПАСНЫЕ»")
-	_ok(check.tooltip_text.contains("заблокированные"),
-		"tooltip объясняет, что скрывается")
-
-	var cards: Array = _main.grid.get_cards()
-	_ok(not cards.is_empty(), "в сетке есть карточки для фильтра")
-	if cards.is_empty():
-		return
-	var first: FileCard = cards[0]
-	var old_state := first.state
-	first.state = "locked"
+	_ok(_game.registry.mark_failed(fid), "файл помечен failed")
+	_main.grid.refresh()
+	await process_frame
 	var hidden: int = _main.grid.hidden_count()
-	_ok(hidden >= 1, "hidden_count считает опасные файлы")
+	_ok(hidden >= hidden_before + 1, "hidden_count считает опасные файлы (%d)" % hidden)
 	_main._on_service_filter(true)
+	_ok(bool(_main.grid.service_filter), "фильтр опасных включён")
 	var items: Array = _main.toast_layer._items
 	_ok(not items.is_empty(), "тост фильтра показан")
 	if not items.is_empty():
 		var text := str(items.back().txt)
 		_ok(text.contains(str(hidden)), "тост показывает реальное число (%s)" % text)
 		_ok(not text.contains("СЛУЖЕБНЫЕ"), "тост не про «служебные» (%s)" % text)
-	_main.grid._on_service_toggled(false)
-	first.state = old_state
-	_main.grid._apply_filter()
+	_main._on_service_filter(false)
+	_ok(not bool(_main.grid.service_filter), "фильтр опасных выключен")
+	_game.registry.remove_file(fid)
+	_main.grid.refresh()
 
 
 func _test_delete_folder() -> void:

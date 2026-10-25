@@ -1,48 +1,55 @@
 class_name Economy
 extends RefCounted
-## Чистая экономика и тайминги (D12). Все методы статические, без состояния
+## Чистая экономика и тайминги v2. Все методы статические, без состояния
 ## и без обращений к сценам — удобно тестировать headless.
+##
+## ВАЖНО: только float-арифметика в формулах выплаты (никаких int/int) и
+## только pow() для степеней (никакого ^).
 
-## Фон/слоты НЕ входят в load (уточнение п.11): канал грузят только
-## активные передачи. Константы оставлены нулевыми для совместимости.
+## Канал: load = Σ weight(активных передач). Фон и занятые слоты не грузят.
 const CHANNEL_BG_BASE := 0.0
 const CHANNEL_BG_PER_HOUR := 0.0
 const SLOT_LOAD := 0.0
-const CHANNEL_CAPACITY_BASE := 80.0
-const CHANNEL_CAPACITY_STEP := 25.0
+const CHANNEL_CAPACITY_BASE := 10.0
+const CHANNEL_CAPACITY_STEP := 6.0
 
 const PACKET_TIMER_BASE := 20.0
 const REQUEST_TIMER_BASE := 30.0
-const TIMER_PER_HOUR := 0.5
-const TIMER_UPGRADE_STEP := 4.0
-const PACKET_TIMER_MIN := 12.0
-const REQUEST_TIMER_MIN := 20.0
-const TIMER_MAX := 999.0
+const REQUEST_TIMER_STEP := 5.0
+const REQUEST_TIMER_MAX := 55.0
 
-## Grace-множитель первых часов (п.10): больше времени на старте.
-## h1 1.5, h2 1.35, h3 1.2, h4+ 1.0 — для таймера пакетов.
-const TIMER_GRACE := {1: 1.5, 2: 1.35, 3: 1.2}
+const BUFFER_BASE := 6
+const BUFFER_PER_LEVEL := 1
+const BUFFER_MAX := 12
 
-## Отдельный grace для таймера запросов: в начале игроку нужно больше времени,
-## чтобы собрать файлы. h1 2.0, h2 1.7, h3 1.4, h4+ 1.0.
-## h1: 30×2.0 = 60, h2: 29.5×1.7 = 50.15, h3: 29×1.4 = 40.6.
-const REQUEST_TIMER_GRACE := {1: 2.0, 2: 1.7, 3: 1.4}
+## Множитель времени передачи за уровень «Оптоволокна».
+const SPEED_STEP := 0.92
 
+## Коэффициенты мини-игр: text 1, sound 2, photo 4, video 8.
 const MINIGAME_COEFF := {
-	"text": 1.0,
-	"sound": 2.0,
-	"photo": 3.0,
-	"video": 4.0,
+	"text": 1,
+	"sound": 2,
+	"photo": 4,
+	"video": 8,
 }
+
+const SEND_ORDER := ["dots", "sound", "wires", "text", "video", "photo", "maze"]
+
+## Достижимые суммы коэффициентов максимум для 3 файлов (B4).
+## Суммы 15/19/21/22/23 недостижимы, поэтому используется плотный список:
+## все 7 игр и все 4 ступени становятся достижимыми.
+const ACHIEVABLE_SUMS := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 24]
 
 const PAYOUT_SPEED_BASE := 0.6
 const PAYOUT_SPEED_BONUS := 0.4
 const PAYOUT_QUALITY_BASE := 0.5
 const PAYOUT_QUALITY_BONUS := 0.5
-const PAYOUT_MULTI_STEP := 0.1
+const PAYOUT_MULTI_STEP := 0.15
 const PAYOUT_TCP_MULT := 1.15
+const PAYOUT_UDP_TIME_MULT := 0.8
 const PAYOUT_STREAK_STEP := 0.02
 const PAYOUT_STREAK_CAP := 10
+const PAYOUT_MONEY_STEP := 0.05
 
 
 # --- канал -----------------------------------------------------------------
@@ -58,7 +65,7 @@ static func channel_load(_hour: int, _used_slots: int, active_weights: Array, _u
 
 
 static func channel_capacity(upgrades: Dictionary = {}) -> float:
-	var level := _level(upgrades, ["channel", "channel_level", "channel_lvl", "shop_channel", "channel_capacity"])
+	var level := _level(upgrades, ["channel", "channel_level", "channel_lvl", "lot_channel", "channel_capacity"])
 	return CHANNEL_CAPACITY_BASE + CHANNEL_CAPACITY_STEP * float(level)
 
 
@@ -75,54 +82,82 @@ static func channel_factor(load: float, capacity_or_upgrades = null) -> float:
 	return maxf(1.0, maxf(0.0, load) / capacity)
 
 
-## Базовое время приёма/отправки умножается на фактор канала.
-static func recv_time(type_def: Dictionary, factor: float, _upgrades: Dictionary = {}) -> float:
-	return maxf(0.0, float(type_def.get("recv_time", 0.0))) * maxf(0.0, factor)
+static func buffer_limit(upgrades: Dictionary = {}) -> int:
+	var level := _level(upgrades, ["channel", "channel_level", "buffer", "buffer_level", "lot_channel"])
+	return clampi(BUFFER_BASE + BUFFER_PER_LEVEL * level, BUFFER_BASE, BUFFER_MAX)
 
 
-static func send_time(type_def: Dictionary, factor: float, _upgrades: Dictionary = {}) -> float:
-	return maxf(0.0, float(type_def.get("send_time", 0.0))) * maxf(0.0, factor)
+## pow(0.92, speed_level): 0 → 1.0, 6 → ≈0.606.
+static func speed_mult(speed_level: int) -> float:
+	return pow(SPEED_STEP, float(maxi(0, int(speed_level))))
+
+
+## Базовое время типа: v2-поле base_time_sec с fallback на legacy.
+static func type_base_time(type_def: Dictionary) -> float:
+	if type_def.has("base_time_sec"):
+		return maxf(0.0, float(type_def.get("base_time_sec", 0.0)))
+	if type_def.has("recv_time"):
+		return maxf(0.0, float(type_def.get("recv_time", 0.0)))
+	return 0.0
+
+
+## Время приёма: base_time_sec × pow(0.92, speed_level) × channel_factor.
+## У приёма нет протокольного множителя.
+static func recv_transfer_time(type_def: Dictionary, channel_factor_value: float = 1.0, speed_level: int = 0) -> float:
+	return type_base_time(type_def) * speed_mult(speed_level) * maxf(0.0, channel_factor_value)
+
+
+## Время отправки: то же + UDP ×0.8 (TCP ×1.0).
+static func send_transfer_time(type_def: Dictionary, channel_factor_value: float = 1.0, speed_level: int = 0, protocol = "tcp") -> float:
+	var mult := 1.0
+	if str(protocol).to_lower() == "udp":
+		mult = PAYOUT_UDP_TIME_MULT
+	return type_base_time(type_def) * speed_mult(speed_level) * maxf(0.0, channel_factor_value) * mult
+
+
+## Legacy-обёртки: factor — channel_factor, upgrades даёт speed_level.
+static func recv_time(type_def: Dictionary, factor: float, upgrades: Dictionary = {}) -> float:
+	var level := _level(upgrades, ["speed", "speed_level", "transfer_speed", "lot_speed"])
+	return recv_transfer_time(type_def, factor, level)
+
+
+static func send_time(type_def: Dictionary, factor: float, upgrades: Dictionary = {}) -> float:
+	var level := _level(upgrades, ["speed", "speed_level", "transfer_speed", "lot_speed"])
+	return send_transfer_time(type_def, factor, level, "tcp")
 
 
 # --- таймеры ---------------------------------------------------------------
 
-## Формула (п.10): (base − 0.5*(h−1)) * grace(h) + 4*level.
-## Grace умножает только базовую часть; апгрейд таймера даёт чистые +4 с.
-static func packet_timer(hour: int, upgrades: Dictionary = {}) -> float:
-	var h := maxi(1, hour)
-	var level := _level(upgrades, ["timer", "timer_level", "packet_timer", "packet_timer_level", "shop_timer"])
-	var base := PACKET_TIMER_BASE - TIMER_PER_HOUR * float(h - 1)
-	var value := base * timer_grace(h) + TIMER_UPGRADE_STEP * float(level)
-	return clampf(value, PACKET_TIMER_MIN, TIMER_MAX)
+## v2: таймер пакета фиксирован — 20 с, не покупается и не зависит от часа.
+static func packet_timer(_hour: int = 1, _upgrades: Dictionary = {}) -> float:
+	return PACKET_TIMER_BASE
 
 
-static func request_timer(hour: int, upgrades: Dictionary = {}) -> float:
-	var h := maxi(1, hour)
-	var level := _level(upgrades, ["timer", "timer_level", "request_timer", "request_timer_level", "shop_timer"])
-	var base := REQUEST_TIMER_BASE - TIMER_PER_HOUR * float(h - 1)
-	var value := base * request_timer_grace(h) + TIMER_UPGRADE_STEP * float(level)
-	return clampf(value, REQUEST_TIMER_MIN, TIMER_MAX)
+## v2: 30 + 5 × timer_level, не выше 55 с.
+static func request_timer(_hour: int = 1, upgrades: Dictionary = {}) -> float:
+	var level := _level(upgrades, ["timer", "timer_level", "request_timer", "request_timer_level", "lot_timer"])
+	var value := REQUEST_TIMER_BASE + REQUEST_TIMER_STEP * float(level)
+	return clampf(value, REQUEST_TIMER_BASE, REQUEST_TIMER_MAX)
 
 
-## Grace-множитель таймеров по часу: h1 1.5, h2 1.35, h3 1.2, h4+ 1.0.
-static func timer_grace(hour: int) -> float:
-	return float(TIMER_GRACE.get(maxi(1, hour), 1.0))
+## Legacy-хуки: в v2 grace не используется.
+static func timer_grace(_hour: int) -> float:
+	return 1.0
 
 
-## Grace-множитель таймера запросов: h1 2.0, h2 1.7, h3 1.4, h4+ 1.0.
-static func request_timer_grace(hour: int) -> float:
-	return float(REQUEST_TIMER_GRACE.get(maxi(1, hour), 1.0))
+static func request_timer_grace(_hour: int) -> float:
+	return 1.0
 
 
 # --- мини-игры -------------------------------------------------------------
 
-## Средний коэффициент сложности. Пустой/неизвестный тип трактуем как text.
+## Средний коэффициент сложности (legacy-эвристика).
 static func minigame_difficulty(types: Array) -> float:
 	if types.is_empty():
 		return 1.0
 	var total := 0.0
 	for type in types:
-		total += float(MINIGAME_COEFF.get(str(type), 1.0))
+		total += float(MINIGAME_COEFF.get(str(type), 1))
 	return total / float(types.size())
 
 
@@ -137,8 +172,44 @@ static func minigame_type(types: Array) -> String:
 	return "video"
 
 
+## Выбор мини-игры отправки по сумме коэффициентов (B4).
+##
+## rank — позиция суммы S в плотном списке достижимых сумм (для
+## недостижимой S — позиция ближайшей меньшей достижимой).
+## tier = clamp(1 + floor(rank * 4.0 / count), 1, 4) — все 4 ступени
+## достижимы. game = order[rank % 7] — все 7 игр достижимы.
+##
+## Примечание: из-за плотного списка S=24 даёт rank 18 → "video"/T4
+## (а не "wires", как в старой формуле idx = S-1).
+static func send_minigame_for(types: Array) -> Dictionary:
+	var total := 0
+	for type in types:
+		total += int(MINIGAME_COEFF.get(str(type), 1))
+	var count := ACHIEVABLE_SUMS.size()
+	var rank := 0
+	for i in range(count):
+		if int(ACHIEVABLE_SUMS[i]) <= total:
+			rank = i
+		else:
+			break
+	var tier := clampi(1 + int(floor(float(rank) * 4.0 / float(count))), 1, 4)
+	return {
+		"id": str(SEND_ORDER[rank % SEND_ORDER.size()]),
+		"tier": tier,
+		"index": rank,
+		"sum": total,
+	}
+
+
+## Ступень атаки: H2-3 → T1, H4-5 → T2, H6-7 → T3, H8-9 → T4.
+static func attack_tier(hour: int) -> int:
+	return clampi(1 + int(floor(float(maxi(1, int(hour)) - 2) / 2.0)), 1, 4)
+
+
 # --- выплата ---------------------------------------------------------------
 
+## payout = round(base_sum × speed × quality × multi × protocol × streak ×
+##              money_mult). money_level берётся из upgrades.
 static func payout(
 	base_sum: float,
 	n: int,
@@ -147,20 +218,27 @@ static func payout(
 	mini_quality: float,
 	protocol,
 	streak: int,
-	_upgrades: Dictionary = {}
+	upgrades: Dictionary = {}
 ) -> int:
 	if n <= 0:
 		return 0
 	var time_ratio := 1.0
 	if timer_total > 0.0:
-		time_ratio = clampf(time_left / timer_total, 0.0, 1.0)
+		time_ratio = clampf(float(time_left) / float(timer_total), 0.0, 1.0)
 	var speed := PAYOUT_SPEED_BASE + PAYOUT_SPEED_BONUS * time_ratio
-	var quality := PAYOUT_QUALITY_BASE + PAYOUT_QUALITY_BONUS * clampf(mini_quality, 0.0, 1.0)
+	var quality := PAYOUT_QUALITY_BASE + PAYOUT_QUALITY_BONUS * clampf(float(mini_quality), 0.0, 1.0)
 	var multi := 1.0 + PAYOUT_MULTI_STEP * float(n - 1)
 	var protocol_mult := PAYOUT_TCP_MULT if str(protocol).to_lower() == "tcp" else 1.0
 	var streak_mult := 1.0 + PAYOUT_STREAK_STEP * float(clampi(streak, 0, PAYOUT_STREAK_CAP))
-	var value := maxf(0.0, base_sum) * speed * quality * multi * protocol_mult * streak_mult
+	var money_level := _level(upgrades, ["money", "money_level", "money_mult", "lot_money"])
+	var money_mult := 1.0 + PAYOUT_MONEY_STEP * float(money_level)
+	var value := maxf(0.0, float(base_sum)) * speed * quality * multi * protocol_mult * streak_mult * money_mult
 	return int(round(value))
+
+
+static func money_mult(upgrades: Dictionary = {}) -> float:
+	var level := _level(upgrades, ["money", "money_level", "money_mult", "lot_money"])
+	return 1.0 + PAYOUT_MONEY_STEP * float(level)
 
 
 ## Итоговый счёт: часы × 1000 + заработанные деньги + SLA × 10.

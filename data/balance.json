@@ -1,123 +1,640 @@
 {
   "_meta": {
     "file": "balance.json",
-    "version": "1.1",
-    "rules": "docs/GDD.md (компактная сводка) + docs/DECISIONS.md (D01–D17)",
-    "note": "null = параметр не задан в постановке, уточнить до кода (см. _todo). Никаких выдуманных чисел.",
-    "_todo": [
-      "attacks.junk.spawn_probability — не задан в спецификации (явно null)",
-      "income_target_by_hour: часы 4,6,7,8 — интерполяция, уточнить",
-      "difficulty.h2 packet_timer/request_timer: формула даёт 26.325/50.15 (19.5×1.35 и 29.5×1.7 — у запросов отдельный grace)"
-    ]
+    "version": "2.0",
+    "rules": "PEAK_HOUR_V2_SHOP_FILES_MINIGAMES.md §2, §3, §6, §8 + Appendix A",
+    "note": "v2: 8 lot families, 3 offers, rerolls, dense send-minigame selection. Legacy sections (difficulty/spawn/progression/timers/connections/channel) kept for the not-yet-rewritten HourDirector. New code reads constants/hours/grid/shop_rules/shop/minigames/attacks/payout/sla."
   },
   "constants": {
     "hour_seconds": 300,
     "run_hours": 9,
-    "sla_start": 128,
-    "sla_max": 200,
-    "money_start": 150,
-    "buffer_base": 4,
-    "buffer_per_upgrade": 2,
-    "buffer_max": 8,
-    "slots_start": 2,
-    "slots_max": 4,
-    "max_sections": 6,
-    "files_per_folder": 16,
+    "money_start": 50,
+    "sla_start": 60,
+    "sla_base": 60,
+    "sla_per_level": 35,
+    "sla_hard_cap": 200,
+    "sla_regen_per_hour": 15,
+    "slots_start": 1,
+    "slots_max": 5,
+    "channel_capacity": 10,
+    "channel_per_level": 6,
+    "channel_capacity_max": 46,
+    "buffer_base": 6,
+    "buffer_per_level": 1,
+    "buffer_max": 12,
+    "request_timer": 30,
+    "request_timer_per_level": 5,
+    "request_timer_max": 55,
+    "packet_timer": 20,
+    "folder_cols": 5,
+    "folder_rows": 4,
+    "folders_start": 2,
+    "folders_max": 6,
+    "folder_new_cost": 100,
+    "max_sections": 1,
+    "section_start": "C",
     "folders_per_section": 12,
+    "files_per_folder": 48,
     "send_window_visible_cards": 4,
     "send_scroll_card_height_px": 56,
     "required_name_char_limit": 12,
-    "file_cooldown_after_send_sec": 20,
-    "required_per_request": { "min": 1, "max": 3 }
+    "file_cooldown_after_send_sec": 0,
+    "consume_files_on_send": true,
+    "required_per_request": { "min": 1, "max": 3 },
+    "spawn_window_ratio": 0.75,
+    "spawn_jitter": 0.2,
+    "buffer_per_upgrade": 1
+  },
+  "economy": {
+    "start_stats": {
+      "money": 50,
+      "sla": 60,
+      "sla_cap": 60,
+      "slots": 1,
+      "channel_capacity": 10,
+      "buffer": 6,
+      "request_timer": 30,
+      "packet_timer": 20,
+      "folder_grid": [5, 4],
+      "money_mult": 1.0,
+      "speed_mult": 1.0
+    },
+    "formulas": {
+      "max_sla": "clamp(60 + 35 * sla_level, 60, 200)",
+      "sla_regen": "sla = min(sla_cap, sla + 15) в начале каждого часа",
+      "slots": "1 + slot_level (max 5)",
+      "channel_capacity": "10 + 6 * channel_level",
+      "buffer": "min(12, 6 + channel_level)",
+      "request_timer": "min(55, 30 + 5 * timer_level)",
+      "packet_timer": "20 (не покупается)",
+      "speed": "pow(0.92, speed_level)",
+      "money_mult": "1 + 0.05 * money_level",
+      "folder_dims": "[[5,4],[6,4],[6,5],[7,5],[7,6],[8,6]][folder_level]",
+      "transfer_time": "base_time_sec * pow(0.92, speed_level) * max(1.0, load / capacity)",
+      "protocol_time": "UDP ×0.8, TCP ×1.0 (только отправка)"
+    }
   },
   "types": {
     "text": {
       "name_ru": "Текст",
-      "ext": ".txt",
-      "icon": "▤",
-      "recv_time": 1.0,
-      "send_time": 1.0,
-      "recv_fee": 2,
+      "ext": "txt",
+      "icon": "text",
+      "size_kb": 64,
+      "cells": 1,
+      "base_time_sec": 3,
       "base_pay": 20,
-      "weight": 6,
-      "minigame_coeff": 1.0,
-      "sla_loss": 2
+      "recv_fee": 1,
+      "weight": 1,
+      "minigame_coeff": 1,
+      "sla_loss": 2,
+      "shapes": ["O1"]
     },
     "sound": {
       "name_ru": "Звук",
-      "ext": ".wav",
-      "icon": "♪",
-      "recv_time": 1.5,
-      "send_time": 2.0,
-      "recv_fee": 3,
-      "base_pay": 35,
-      "weight": 10,
-      "minigame_coeff": 2.0,
-      "sla_loss": 4
+      "ext": "mp3",
+      "icon": "sound",
+      "size_kb": 3072,
+      "cells": 2,
+      "base_time_sec": 5,
+      "base_pay": 34,
+      "recv_fee": 2,
+      "weight": 2,
+      "minigame_coeff": 2,
+      "sla_loss": 4,
+      "shapes": ["I2H", "I2V"]
     },
     "photo": {
       "name_ru": "Фото",
-      "ext": ".jpg",
-      "icon": "▣",
-      "recv_time": 2.0,
-      "send_time": 3.0,
-      "recv_fee": 5,
-      "base_pay": 55,
-      "weight": 14,
-      "minigame_coeff": 3.0,
-      "sla_loss": 8
+      "ext": "jpg",
+      "icon": "photo",
+      "size_kb": 5120,
+      "cells": 3,
+      "base_time_sec": 8,
+      "base_pay": 52,
+      "recv_fee": 4,
+      "weight": 4,
+      "minigame_coeff": 4,
+      "sla_loss": 8,
+      "shapes": ["I3H", "I3V", "L3a", "L3b", "L3c", "L3d"]
     },
     "video": {
       "name_ru": "Видео",
-      "ext": ".mp4",
-      "icon": "▶",
-      "recv_time": 3.0,
-      "send_time": 5.0,
-      "recv_fee": 8,
-      "base_pay": 90,
-      "weight": 22,
-      "minigame_coeff": 4.0,
-      "sla_loss": 16
+      "ext": "mp4",
+      "icon": "video",
+      "size_kb": 20480,
+      "cells": 4,
+      "base_time_sec": 12,
+      "base_pay": 80,
+      "recv_fee": 6,
+      "weight": 8,
+      "minigame_coeff": 8,
+      "sla_loss": 16,
+      "shapes": ["I4H", "I4V", "O4", "T4a", "T4b", "T4c", "T4d", "L4a", "L4b", "L4c", "L4d", "J4a", "J4b", "J4c", "J4d", "S4", "Z4"]
+    }
+  },
+  "hours": [
+    {
+      "hour": 1,
+      "files": 4,
+      "request_cap": 2,
+      "active_requests": 1,
+      "attacks": 0,
+      "income_target": 65,
+      "recv_interval": 12,
+      "send_interval": 22,
+      "type_weights": { "text": 0.7, "sound": 0.3, "photo": 0.0, "video": 0.0 },
+      "request_mix": { "1": 0.7, "2": 0.3, "3": 0.0 }
+    },
+    {
+      "hour": 2,
+      "files": 8,
+      "request_cap": 5,
+      "active_requests": 2,
+      "attacks": 1,
+      "income_target": 220,
+      "recv_interval": 11,
+      "send_interval": 20,
+      "type_weights": { "text": 0.55, "sound": 0.3, "photo": 0.15, "video": 0.0 },
+      "request_mix": { "1": 0.6, "2": 0.35, "3": 0.05 }
+    },
+    {
+      "hour": 3,
+      "files": 12,
+      "request_cap": 5,
+      "active_requests": 2,
+      "attacks": 1,
+      "income_target": 380,
+      "recv_interval": 10,
+      "send_interval": 18,
+      "type_weights": { "text": 0.4, "sound": 0.3, "photo": 0.22, "video": 0.08 },
+      "request_mix": { "1": 0.5, "2": 0.4, "3": 0.1 }
+    },
+    {
+      "hour": 4,
+      "files": 16,
+      "request_cap": 6,
+      "active_requests": 3,
+      "attacks": 2,
+      "income_target": 560,
+      "recv_interval": 9,
+      "send_interval": 17,
+      "type_weights": { "text": 0.3, "sound": 0.25, "photo": 0.28, "video": 0.17 },
+      "request_mix": { "1": 0.5, "2": 0.4, "3": 0.1 }
+    },
+    {
+      "hour": 5,
+      "files": 20,
+      "request_cap": 6,
+      "active_requests": 3,
+      "attacks": 2,
+      "income_target": 760,
+      "recv_interval": 8,
+      "send_interval": 15,
+      "type_weights": { "text": 0.22, "sound": 0.2, "photo": 0.32, "video": 0.26 },
+      "request_mix": { "1": 0.4, "2": 0.45, "3": 0.15 }
+    },
+    {
+      "hour": 6,
+      "files": 20,
+      "request_cap": 7,
+      "active_requests": 3,
+      "attacks": 3,
+      "income_target": 980,
+      "recv_interval": 7.5,
+      "send_interval": 14,
+      "type_weights": { "text": 0.15, "sound": 0.15, "photo": 0.35, "video": 0.35 },
+      "request_mix": { "1": 0.4, "2": 0.45, "3": 0.15 }
+    },
+    {
+      "hour": 7,
+      "files": 20,
+      "request_cap": 7,
+      "active_requests": 4,
+      "attacks": 3,
+      "income_target": 1200,
+      "recv_interval": 7,
+      "send_interval": 13,
+      "type_weights": { "text": 0.1, "sound": 0.12, "photo": 0.35, "video": 0.43 },
+      "request_mix": { "1": 0.3, "2": 0.5, "3": 0.2 }
+    },
+    {
+      "hour": 8,
+      "files": 20,
+      "request_cap": 7,
+      "active_requests": 4,
+      "attacks": 4,
+      "income_target": 1450,
+      "recv_interval": 6.5,
+      "send_interval": 12,
+      "type_weights": { "text": 0.06, "sound": 0.08, "photo": 0.32, "video": 0.54 },
+      "request_mix": { "1": 0.3, "2": 0.5, "3": 0.2 }
+    },
+    {
+      "hour": 9,
+      "files": 20,
+      "request_cap": 8,
+      "active_requests": 4,
+      "attacks": 4,
+      "income_target": 1700,
+      "recv_interval": 6,
+      "send_interval": 12,
+      "type_weights": { "text": 0.04, "sound": 0.04, "photo": 0.3, "video": 0.62 },
+      "request_mix": { "1": 0.3, "2": 0.5, "3": 0.2 }
+    }
+  ],
+  "payout": {
+    "speed_base": 0.6,
+    "speed_bonus": 0.4,
+    "quality_base": 0.5,
+    "quality_bonus": 0.5,
+    "multi_step": 0.15,
+    "protocol_mult": { "TCP": 1.15, "UDP": 1.0 },
+    "udp_time_mult": 0.8,
+    "streak_step": 0.02,
+    "streak_cap": 10,
+    "money_mult_step": 0.05,
+    "formula": "payout = int(round(float(base_sum) * speed * quality * multi * protocol * streak * money_mult))",
+    "speed_formula": "speed = 0.6 + 0.4 * clamp(time_left / timer_total, 0, 1)",
+    "quality_formula": "quality = 0.5 + 0.5 * q",
+    "multi_formula": "multi = 1 + 0.15 * (n - 1)",
+    "streak_formula": "streak = 1 + 0.02 * min(10, streak)",
+    "money_mult_formula": "money_mult = 1 + 0.05 * money_level",
+    "note": "Только float-арифметика: никаких int/int и никакого ^ для степени."
+  },
+  "sla": {
+    "start": 60,
+    "regen_per_hour": 15,
+    "defeat_at_zero": true,
+    "timeout_fine_base": 10,
+    "timeout_fine_per_hour": 2,
+    "timeout_fine_formula": "-(10 + 2*hour) SLA",
+    "wrong_attach_fine": -2,
+    "lost_file_fine": -5,
+    "buffer_overflow_fine": -5,
+    "reject_money": -5,
+    "reject_sla": -5,
+    "folder_destroyed_fine": -5,
+    "sla_lose": "SLA <= 0 во время часа = поражение забега"
+  },
+  "grid": {
+    "gap": 6,
+    "cell_min": 56,
+    "cell_max": 104,
+    "view_w": 558,
+    "view_h": 470,
+    "folder_cols": 5,
+    "folder_rows": 4,
+    "folder_dims": [[5, 4], [6, 4], [6, 5], [7, 5], [7, 6], [8, 6]],
+    "table_cols": 4,
+    "table_rows": 6,
+    "cell_formula": "cell = clamp(floor(min((view_w - gap*(cols-1))/cols, (view_h - gap*(rows-1))/rows)), 56, 104)",
+    "shapes": {
+      "O1": { "cells": [[0, 0]], "w": 1, "h": 1 },
+      "I2H": { "cells": [[0, 0], [1, 0]], "w": 2, "h": 1 },
+      "I2V": { "cells": [[0, 0], [0, 1]], "w": 1, "h": 2 },
+      "I3H": { "cells": [[0, 0], [1, 0], [2, 0]], "w": 3, "h": 1 },
+      "I3V": { "cells": [[0, 0], [0, 1], [0, 2]], "w": 1, "h": 3 },
+      "L3a": { "cells": [[0, 0], [0, 1], [1, 1]], "w": 2, "h": 2 },
+      "L3b": { "cells": [[0, 0], [1, 0], [0, 1]], "w": 2, "h": 2 },
+      "L3c": { "cells": [[1, 0], [0, 1], [1, 1]], "w": 2, "h": 2 },
+      "L3d": { "cells": [[0, 0], [1, 0], [1, 1]], "w": 2, "h": 2 },
+      "I4H": { "cells": [[0, 0], [1, 0], [2, 0], [3, 0]], "w": 4, "h": 1 },
+      "I4V": { "cells": [[0, 0], [0, 1], [0, 2], [0, 3]], "w": 1, "h": 4 },
+      "O4": { "cells": [[0, 0], [1, 0], [0, 1], [1, 1]], "w": 2, "h": 2 },
+      "T4a": { "cells": [[0, 0], [1, 0], [2, 0], [1, 1]], "w": 3, "h": 2 },
+      "T4b": { "cells": [[0, 1], [1, 1], [2, 1], [1, 0]], "w": 3, "h": 2 },
+      "T4c": { "cells": [[0, 0], [0, 1], [1, 1], [0, 2]], "w": 2, "h": 3 },
+      "T4d": { "cells": [[1, 0], [1, 1], [0, 1], [1, 2]], "w": 2, "h": 3 },
+      "L4a": { "cells": [[0, 0], [0, 1], [0, 2], [1, 2]], "w": 2, "h": 3 },
+      "L4b": { "cells": [[0, 0], [1, 0], [2, 0], [0, 1]], "w": 3, "h": 2 },
+      "L4c": { "cells": [[0, 0], [1, 0], [1, 1], [1, 2]], "w": 2, "h": 3 },
+      "L4d": { "cells": [[2, 0], [0, 1], [1, 1], [2, 1]], "w": 3, "h": 2 },
+      "J4a": { "cells": [[1, 0], [1, 1], [1, 2], [0, 2]], "w": 2, "h": 3 },
+      "J4b": { "cells": [[0, 0], [1, 0], [2, 0], [2, 1]], "w": 3, "h": 2 },
+      "J4c": { "cells": [[0, 0], [0, 1], [1, 1], [2, 1]], "w": 3, "h": 2 },
+      "J4d": { "cells": [[0, 0], [0, 1], [0, 2], [1, 0]], "w": 2, "h": 3 },
+      "S4": { "cells": [[1, 0], [2, 0], [0, 1], [1, 1]], "w": 3, "h": 2 },
+      "Z4": { "cells": [[0, 0], [1, 0], [1, 1], [2, 1]], "w": 3, "h": 2 }
+    },
+    "type_shapes": {
+      "text": ["O1"],
+      "sound": ["I2H", "I2V"],
+      "photo": ["I3H", "I3V", "L3a", "L3b", "L3c", "L3d"],
+      "video": ["I4H", "I4V", "O4", "T4a", "T4b", "T4c", "T4d", "L4a", "L4b", "L4c", "L4d", "J4a", "J4b", "J4c", "J4d", "S4", "Z4"]
+    }
+  },
+  "shop_rules": {
+    "offers": 3,
+    "unlock_hour": 2,
+    "reroll_costs": [40, 80, 120],
+    "max_rerolls": 3,
+    "last_offer_weight": 0.5,
+    "pity_hours": 2,
+    "pity_weight": 1.5,
+    "note": "Веса берутся из shop[].weight_by_hour (9 значений, индекс = hour-1). Фазы H2-3/H4-6/H7-9 — таблица §3.1 — источник правды."
+  },
+  "shop": [
+    {
+      "id": "lot_slots",
+      "name_ru": "Порты коммутатора",
+      "desc_ru": "Ещё один порт: приём и отправка могут идти параллельно.",
+      "effect": "connection_slots",
+      "value": 1,
+      "max_level": 4,
+      "prices": [120, 300, 650, 1200],
+      "level_names": ["Второй порт", "Третий порт", "Четвёртый порт", "Магистральный порт"],
+      "weight_by_hour": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.8, 0.8, 0.8]
+    },
+    {
+      "id": "lot_speed",
+      "name_ru": "Оптоволокно",
+      "desc_ru": "Скорость приёма и отправки +8% за уровень (умножается).",
+      "effect": "transfer_speed",
+      "value": 0.08,
+      "max_level": 6,
+      "prices": [90, 130, 180, 250, 340, 450],
+      "level_names": ["Витая пара", "Экранированная пара", "Оптоволокно", "Гигабитная линия", "Магистраль", "Тёмное волокно"],
+      "weight_by_hour": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.8, 0.8, 0.8]
+    },
+    {
+      "id": "lot_sla",
+      "name_ru": "Резервный ИБП",
+      "desc_ru": "Держит узел живым: кап SLA +35 и мгновенное восстановление +35.",
+      "effect": "sla_cap",
+      "value": 35,
+      "max_level": 4,
+      "prices": [120, 260, 480, 800],
+      "level_names": ["Резервный ИБП", "Горячий резерв", "Двойное питание", "Автономный контур"],
+      "weight_by_hour": [0.8, 0.8, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+    },
+    {
+      "id": "lot_shield",
+      "name_ru": "Заземление",
+      "desc_ru": "Автоматически гасит атаку: 50% награды, без штрафа.",
+      "effect": "shield_charge",
+      "value": 1,
+      "max_level": 3,
+      "prices": [150, 400, 800],
+      "level_names": ["Заземление", "Громоотвод", "Защитный контур"],
+      "weight_by_hour": [0.3, 0.3, 0.3, 0.8, 0.8, 0.8, 1.0, 1.0, 1.0]
+    },
+    {
+      "id": "lot_money",
+      "name_ru": "Корпоративный контракт",
+      "desc_ru": "Оплата за контейнеры +5% за уровень.",
+      "effect": "money_mult",
+      "value": 0.05,
+      "max_level": 8,
+      "prices": [80, 110, 150, 200, 260, 340, 440, 560],
+      "level_names": ["Тарифный план", "Корпоративный контракт", "SLA-пакет", "Госзаказ", "Экспортный контракт", "Франшиза", "Монополия", "Золотая жила"],
+      "weight_by_hour": [0.6, 0.6, 0.6, 1.0, 1.0, 1.0, 1.2, 1.2, 1.2]
+    },
+    {
+      "id": "lot_folder",
+      "name_ru": "Складской стеллаж",
+      "desc_ru": "Больше места под фигуры: 20 → 24 клетки на первом уровне.",
+      "effect": "folder_cells",
+      "value": 1,
+      "max_level": 5,
+      "prices": [80, 180, 360, 650, 1000],
+      "level_names": ["Стеллаж", "Секция стеллажа", "Складская линия", "Автоматизированный склад", "Ангар"],
+      "weight_by_hour": [1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.8, 0.8, 0.8]
+    },
+    {
+      "id": "lot_channel",
+      "name_ru": "Пропускная способность",
+      "desc_ru": "Канал +6 и буфер приёма +1 за уровень.",
+      "effect": "channel_capacity",
+      "value": 6,
+      "buffer_value": 1,
+      "max_level": 6,
+      "prices": [70, 100, 140, 190, 250, 330],
+      "level_names": ["Канал 56k", "ISDN", "ADSL", "Выделенная линия", "Оптика", "Магистраль"],
+      "weight_by_hour": [1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.9, 0.9, 0.9]
+    },
+    {
+      "id": "lot_timer",
+      "name_ru": "Регламент обработки",
+      "desc_ru": "Больше времени на поиск файлов и прикрепление: 30 → 35 с.",
+      "effect": "request_timer",
+      "value": 5,
+      "max_level": 5,
+      "prices": [70, 110, 160, 230, 320],
+      "level_names": ["Регламент", "Продление сессии", "Гибкий график", "Приоритетная обработка", "Выделенный менеджер"],
+      "weight_by_hour": [1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.7, 0.7, 0.7]
+    }
+  ],
+  "minigames": {
+    "selection": {
+      "order": ["dots", "sound", "wires", "text", "video", "photo", "maze"],
+      "achievable_sums": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 24],
+      "max_index": 27,
+      "formula": "S=sum(coeff); rank=index of S in achievable_sums (or largest listed <= S); tier=clamp(1+floor(rank*4.0/count),1,4); id=order[rank%7]",
+      "note": "Ровно 3 файла максимум: суммы 15/19/21/22/23 недостижимы, поэтому используется плотный список достижимых сумм (B4). Все 7 игр и все 4 ступени достижимы."
+    },
+    "games": {
+      "dots": {
+        "name_ru": "Одна линия",
+        "kind": "send",
+        "tiers": [
+          { "grid": [3, 3], "obstacles": 0, "undo_penalty": 0.05 },
+          { "grid": [4, 3], "obstacles": 2, "undo_penalty": 0.04 },
+          { "grid": [4, 4], "obstacles": 4, "undo_penalty": 0.04 },
+          { "grid": [5, 4], "obstacles": 6, "undo_penalty": 0.03 }
+        ]
+      },
+      "sound": {
+        "name_ru": "Уровни",
+        "kind": "send",
+        "tiers": [
+          { "channels": 3, "tolerance": 0.16, "drift": 0.0, "drift_hz": 0.0 },
+          { "channels": 4, "tolerance": 0.11, "drift": 0.0, "drift_hz": 0.0 },
+          { "channels": 5, "tolerance": 0.08, "drift": 0.02, "drift_hz": 0.15 },
+          { "channels": 6, "tolerance": 0.06, "drift": 0.03, "drift_hz": 0.25 }
+        ]
+      },
+      "wires": {
+        "name_ru": "Провода",
+        "kind": "send",
+        "tiers": [
+          { "wires": 3, "sockets": 3, "box": 36, "pitch": 42, "empty_sockets": 0, "lookalike_pairs": 0 },
+          { "wires": 4, "sockets": 4, "box": 36, "pitch": 42, "empty_sockets": 0, "lookalike_pairs": 2 },
+          { "wires": 5, "sockets": 6, "box": 36, "pitch": 42, "empty_sockets": 1, "lookalike_pairs": 1 },
+          { "wires": 6, "sockets": 6, "box": 34, "pitch": 40, "empty_sockets": 0, "lookalike_pairs": 2 }
+        ]
+      },
+      "text": {
+        "name_ru": "Чужое слово",
+        "kind": "send",
+        "tiers": [
+          { "words": 11, "aliens": 1, "lines": 2, "alien_kind": "foreign_language" },
+          { "words": 15, "aliens": 2, "lines": 2, "alien_kind": "foreign_language+typos" },
+          { "words": 19, "aliens": 3, "lines": 3, "alien_kind": "foreign_language+typos+semantic" },
+          { "words": 24, "aliens": 4, "lines": 3, "alien_kind": "foreign_language+typos+semantic+archaic" }
+        ]
+      },
+      "video": {
+        "name_ru": "Раскадровка",
+        "kind": "send",
+        "tiers": [
+          { "frames": 3, "slots": 3, "decoys": 0, "mirror": false },
+          { "frames": 4, "slots": 4, "decoys": 0, "mirror": false },
+          { "frames": 5, "slots": 4, "decoys": 1, "mirror": false },
+          { "frames": 6, "slots": 5, "decoys": 2, "mirror": true }
+        ]
+      },
+      "photo": {
+        "name_ru": "Кадр",
+        "kind": "send",
+        "tiers": [
+          { "speed": 90, "frame_w": 220, "frame_h": 150, "shots": 3, "retarget_min": 0.8, "retarget_max": 1.2 },
+          { "speed": 140, "frame_w": 180, "frame_h": 120, "shots": 4, "retarget_min": 0.6, "retarget_max": 1.0 },
+          { "speed": 200, "frame_w": 150, "frame_h": 100, "shots": 5, "retarget_min": 0.5, "retarget_max": 0.8 },
+          { "speed": 260, "frame_w": 120, "frame_h": 80, "shots": 6, "retarget_min": 0.35, "retarget_max": 0.65 }
+        ]
+      },
+      "maze": {
+        "name_ru": "Лабиринт",
+        "kind": "send",
+        "tiers": [
+          { "cols": 9, "rows": 4, "width": 360, "height": 160, "speed": 420, "collision_penalty": 0.05, "dead_end_penalty": 0.02 },
+          { "cols": 11, "rows": 4, "width": 440, "height": 160, "speed": 470, "collision_penalty": 0.05, "dead_end_penalty": 0.02 },
+          { "cols": 13, "rows": 4, "width": 494, "height": 152, "speed": 520, "collision_penalty": 0.04, "dead_end_penalty": 0.02 },
+          { "cols": 15, "rows": 5, "width": 520, "height": 180, "speed": 560, "collision_penalty": 0.04, "dead_end_penalty": 0.02 }
+        ]
+      },
+      "junk": {
+        "name_ru": "Фильтр",
+        "kind": "attack",
+        "tiers": [
+          { "cards": 9, "junk": 2, "hints": 1, "threshold": 0.6 },
+          { "cards": 10, "junk": 3, "hints": 2, "threshold": 0.65 },
+          { "cards": 11, "junk": 4, "hints": 2, "threshold": 0.7 },
+          { "cards": 12, "junk": 5, "hints": 3, "threshold": 0.75 }
+        ]
+      },
+      "ddos": {
+        "name_ru": "Щит",
+        "kind": "attack",
+        "tiers": [
+          { "packets": 8, "speed": 110, "shield_width": 260, "interval": 0.55, "threshold": 0.6 },
+          { "packets": 10, "speed": 140, "shield_width": 220, "interval": 0.45, "threshold": 0.65 },
+          { "packets": 12, "speed": 170, "shield_width": 180, "interval": 0.35, "threshold": 0.7 },
+          { "packets": 14, "speed": 200, "shield_width": 150, "interval": 0.28, "threshold": 0.75 }
+        ]
+      },
+      "phishing": {
+        "name_ru": "Паспорт",
+        "kind": "attack",
+        "tiers": [
+          { "clients": 3, "checks": ["name"], "threshold": 0.75 },
+          { "clients": 4, "checks": ["name", "department"], "threshold": 0.75 },
+          { "clients": 5, "checks": ["name", "department", "id"], "threshold": 0.8 },
+          { "clients": 6, "checks": ["name", "department", "id", "photo", "expiry"], "threshold": 0.8 }
+        ]
+      },
+      "ransomware": {
+        "name_ru": "Карантин",
+        "kind": "attack",
+        "tiers": [
+          { "cards": 12, "exe": 1, "threshold": 0.5, "masking": "extension_visible" },
+          { "cards": 16, "exe": 2, "threshold": 0.55, "masking": "extension_small" },
+          { "cards": 20, "exe": 2, "threshold": 0.6, "masking": "document_icon" },
+          { "cards": 24, "exe": 3, "threshold": 0.65, "masking": "similar_names" }
+        ]
+      }
+    }
+  },
+  "attacks": {
+    "schedule": [0, 1, 1, 2, 2, 3, 3, 4, 4],
+    "tier_formula": "clamp(1 + floor((hour - 2) / 2.0), 1, 4)",
+    "spawn_window": { "start_sec": 60, "end_sec": 240 },
+    "shield_reward_scale": 0.5,
+    "money_scale": 1.0,
+    "kinds": {
+      "junk": {
+        "name_ru": "Мусорный пакет",
+        "minigame": "junk",
+        "weight_by_hour": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "tiers": [
+          { "reward_money": 5, "reward_sla": 1, "fail_money": -10, "fail_sla": -5, "threshold": 0.6 },
+          { "reward_money": 10, "reward_sla": 2, "fail_money": -15, "fail_sla": -7, "threshold": 0.65 },
+          { "reward_money": 15, "reward_sla": 3, "fail_money": -20, "fail_sla": -9, "threshold": 0.7 },
+          { "reward_money": 20, "reward_sla": 4, "fail_money": -25, "fail_sla": -12, "threshold": 0.75 }
+        ]
+      },
+      "ddos": {
+        "name_ru": "DDoS",
+        "minigame": "ddos",
+        "weight_by_hour": [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "tiers": [
+          { "reward_money": 30, "reward_sla": 2, "fail_money": -10, "fail_sla": -15, "channel_debuff": 0.4, "debuff_sec": 15, "threshold": 0.6 },
+          { "reward_money": 40, "reward_sla": 3, "fail_money": -15, "fail_sla": -20, "channel_debuff": 0.4, "debuff_sec": 15, "threshold": 0.65 },
+          { "reward_money": 50, "reward_sla": 4, "fail_money": -20, "fail_sla": -25, "channel_debuff": 0.4, "debuff_sec": 15, "threshold": 0.7 },
+          { "reward_money": 60, "reward_sla": 5, "fail_money": -25, "fail_sla": -30, "channel_debuff": 0.4, "debuff_sec": 15, "threshold": 0.75 }
+        ]
+      },
+      "phishing": {
+        "name_ru": "Фишинг",
+        "minigame": "phishing",
+        "weight_by_hour": [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "tiers": [
+          { "reward_money": 20, "reward_sla": 2, "fail_money": -40, "fail_sla": -10, "file_lock_sec": 60, "send_penalty_sec": 5, "threshold": 0.75 },
+          { "reward_money": 30, "reward_sla": 3, "fail_money": -50, "fail_sla": -12, "file_lock_sec": 60, "send_penalty_sec": 5, "threshold": 0.75 },
+          { "reward_money": 40, "reward_sla": 4, "fail_money": -60, "fail_sla": -15, "file_lock_sec": 60, "send_penalty_sec": 5, "threshold": 0.8 },
+          { "reward_money": 50, "reward_sla": 5, "fail_money": -70, "fail_sla": -18, "file_lock_sec": 60, "send_penalty_sec": 5, "threshold": 0.8 }
+        ]
+      },
+      "ransomware": {
+        "name_ru": "Шифровальщик",
+        "minigame": "ransomware",
+        "weight_by_hour": [0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0],
+        "tiers": [
+          { "reward_money": 25, "reward_sla": 2, "fail_money": -30, "fail_sla": -10, "folder_block_sec": 15, "threshold": 0.5 },
+          { "reward_money": 35, "reward_sla": 3, "fail_money": -40, "fail_sla": -12, "folder_block_sec": 15, "threshold": 0.55 },
+          { "reward_money": 45, "reward_sla": 4, "fail_money": -50, "fail_sla": -15, "folder_block_sec": 15, "threshold": 0.6 },
+          { "reward_money": 55, "reward_sla": 5, "fail_money": -60, "fail_sla": -18, "folder_block_sec": 15, "threshold": 0.65 }
+        ]
+      }
     }
   },
   "difficulty": [
-    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 30, "request_timer": 60, "attacks": 0 },
-    { "hour": 2, "recv_interval": 11, "send_interval": 20, "max_requests": 2, "buffer": 4, "packet_timer": 26.325, "request_timer": 50.15, "attacks": 1 },
-    { "hour": 3, "recv_interval": 10, "send_interval": 18, "max_requests": 3, "buffer": 5, "packet_timer": 22.8, "request_timer": 40.6, "attacks": 1 },
-    { "hour": 4, "recv_interval": 9, "send_interval": 17, "max_requests": 3, "buffer": 5, "packet_timer": 18.5, "request_timer": 28.5, "attacks": 2 },
-    { "hour": 5, "recv_interval": 8, "send_interval": 15, "max_requests": 4, "buffer": 6, "packet_timer": 18, "request_timer": 28, "attacks": 2 },
-    { "hour": 6, "recv_interval": 7.5, "send_interval": 14, "max_requests": 4, "buffer": 6, "packet_timer": 17.5, "request_timer": 27.5, "attacks": 3 },
-    { "hour": 7, "recv_interval": 7, "send_interval": 13, "max_requests": 4, "buffer": 6, "packet_timer": 17, "request_timer": 27, "attacks": 3 },
-    { "hour": 8, "recv_interval": 6.5, "send_interval": 12, "max_requests": 4, "buffer": 7, "packet_timer": 16.5, "request_timer": 26.5, "attacks": 4 },
-    { "hour": 9, "recv_interval": 6, "send_interval": 12, "max_requests": 4, "buffer": 7, "packet_timer": 16, "request_timer": 26, "attacks": 4 }
+    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 20, "request_timer": 30, "attacks": 0 },
+    { "hour": 2, "recv_interval": 11, "send_interval": 20, "max_requests": 5, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 1 },
+    { "hour": 3, "recv_interval": 10, "send_interval": 18, "max_requests": 7, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 1 },
+    { "hour": 4, "recv_interval": 9, "send_interval": 17, "max_requests": 9, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 2 },
+    { "hour": 5, "recv_interval": 8, "send_interval": 15, "max_requests": 10, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 2 },
+    { "hour": 6, "recv_interval": 7.5, "send_interval": 14, "max_requests": 11, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 3 },
+    { "hour": 7, "recv_interval": 7, "send_interval": 13, "max_requests": 11, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 3 },
+    { "hour": 8, "recv_interval": 6.5, "send_interval": 12, "max_requests": 12, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 4 },
+    { "hour": 9, "recv_interval": 6, "send_interval": 12, "max_requests": 12, "buffer": 6, "packet_timer": 20, "request_timer": 30, "attacks": 4 }
   ],
   "difficulty_rules": {
-    "table_end_hour": 8,
-    "after_end_hour": "значения часа 8; +5% к скорости спавна каждые 2 часа",
-    "spawn_speedup_after_end": 0.05,
+    "table_end_hour": 9,
+    "after_end_hour": "значения часа 9",
+    "spawn_speedup_after_end": 0.0,
     "spawn_speedup_period_hours": 2,
-    "type_availability": "час 1 — text; час 2 — text и sound; час 3 — +photo; час 4+ — все 4 (D23); атаки — с часа 2 (attack_junk)",
-    "timer_grace": "packet_timer: grace h1 1.5, h2 1.35, h3 1.2, h4+ 1.0 (Economy.TIMER_GRACE). request_timer: отдельный grace h1 2.0, h2 1.7, h3 1.4, h4+ 1.0 (Economy.REQUEST_TIMER_GRACE). Формула: (base − 0.5*(h−1))*grace + 4*level. h2: packet 19.5*1.35=26.325, request 29.5*1.7=50.15."
+    "type_availability": "веса типов — hours[].type_weights (единственный источник правды); H1 только text/sound, photo с H2, video с H3",
+    "timer_grace": "v2: таймеры не масштабируются по часу (packet 20, request 30+5*level)"
   },
   "progression": {
     "unlocks": {
-      "shop": {"run_hour": 2, "label": "Магазин"},
-      "search": {"meta": "survive_hour_3", "label": "Поиск"},
-      "shield": {"meta": "survive_hour_5", "label": "Щит"},
-      "minigame_text": {"run_hour": 1},
-      "minigame_sound": {"run_hour": 2},
-      "minigame_photo": {"run_hour": 3},
-      "minigame_video": {"run_hour": 4},
-      "minigame_advanced": {"meta": "complete_run", "label": "Продвинутые мини-игры"},
-      "attack_junk": {"run_hour": 2},
-      "attack_ddos": {"run_hour": 2},
-      "attack_phishing": {"run_hour": 3},
-      "attack_ransomware": {"run_hour": 4}
+      "shop": { "run_hour": 2, "label": "Магазин" },
+      "search": { "meta": "survive_hour_3", "label": "Поиск" },
+      "shield": { "meta": "survive_hour_5", "label": "Щит" },
+      "minigame_text": { "run_hour": 1 },
+      "minigame_sound": { "run_hour": 2 },
+      "minigame_photo": { "run_hour": 3 },
+      "minigame_video": { "run_hour": 4 },
+      "attack_junk": { "run_hour": 2 },
+      "attack_ddos": { "run_hour": 2 },
+      "attack_phishing": { "run_hour": 3 },
+      "attack_ransomware": { "run_hour": 4 }
     },
     "meta_rewards": {
-      "survive_hour_3": {"min_hours": 3, "unlocks": ["search"]},
-      "survive_hour_5": {"min_hours": 5, "unlocks": ["shield"]},
-      "complete_run": {"min_hours": 9, "unlocks": ["minigame_advanced"]}
+      "survive_hour_3": { "min_hours": 3, "unlocks": ["search"] },
+      "survive_hour_5": { "min_hours": 5, "unlocks": ["shield"] },
+      "complete_run": { "min_hours": 9, "unlocks": ["minigame_advanced"] }
     }
   },
   "timers": {
@@ -127,34 +644,20 @@
     "minigame_timeout": null,
     "delete_long_press_sec": 0.5
   },
-  "sla": {
-    "recv_bonus": 0.5,
-    "send_bonus": 1.0,
-    "reflect_bonus": 1.0,
-    "timeout_fine_base": 10,
-    "timeout_fine_per_hour": 2,
-    "timeout_fine_formula": "-(10 + 2*hour) — таймаут и подобные штрафы (D12)",
-    "wrong_attach_fine": -2,
-    "lost_file_fine": -5,
-    "buffer_overflow_fine": -5,
-    "sla_lose": "SLA <= 0"
-  },
-  "payout": {
-    "base_pay": "см. types.*.base_pay (значения в types)",
-    "recv_fee": "см. types.*.recv_fee (значения в types)",
-    "speed_formula": "speed = 0.6 + 0.4*(time_left / timer_total)",
-    "quality_formula": "quality = 0.5 + 0.5*mini_quality",
-    "multi_formula": "multi = 1 + 0.1*(n - 1)",
-    "protocol_mult": { "TCP": 1.15, "UDP": 1.0 },
-    "streak_formula": "streak = 1 + 0.02*min(10, streak)",
-    "income_target_by_hour": {
-      "hours": [1, 2, 3, 5, 9],
-      "approx": [500, 800, 1200, 1800, 2200],
-      "note": "ожидаемо ±10%; часы 4,6,7,8 — интерполяция, уточнить"
-    }
+  "spawn": {
+    "type_pool_by_hour": { "1": ["text", "sound"], "2": ["text", "sound", "photo"], "3+": ["text", "sound", "photo", "video"] },
+    "malicious_ratio": 0.0,
+    "required_count_by_hour": {
+      "1": { "1": 0.7, "2": 0.3, "3": 0.0 },
+      "2": { "1": 0.6, "2": 0.35, "3": 0.05 },
+      "3+": { "1": 0.5, "2": 0.4, "3": 0.1 }
+    },
+    "required_size_distribution": { "1": 0.5, "2": 0.4, "3": 0.1 },
+    "required_count_note": "legacy; v2 читает hours[].request_mix",
+    "attack_schedule": "attacks.schedule (0/1/1/2/2/3/3/4/4), окно 60–240 с часа"
   },
   "connections": {
-    "W_formula": "W = clamp(0.30 - 0.005*(hour-1) - 0.005*successes + 0.05*zone_upgrade_level, 0.18, 0.36)",
+    "W_formula": "legacy (полоска соединения удалена в v2)",
     "W_base": 0.3,
     "W_hour_coef": -0.005,
     "W_success_coef": -0.005,
@@ -169,103 +672,14 @@
     "CHANNEL_BG_PER_HOUR": 0,
     "SLOT_LOAD": 0,
     "BG_note": "фоновый шум и занятые слоты НЕ грузят канал; load = только активные передачи (loading/sending)",
-    "CHANNEL_CAPACITY": 80,
-    "capacity_per_upgrade": 25,
-    "capacity_upgrade_max_level": 4,
-    "formula": "load = sum(weight(active_transfers)); factor = max(1.0, load / CHANNEL_CAPACITY); actual_time = base_time * factor. idle load = 0"
-  },
-  "attacks": {
-    "junk": {
-      "name_ru": "Мусорный пакет",
-      "spawn_probability": null,
-      "duration_sec": 15,
-      "tell": "серая иконка ?, размер 0 Б, нет таймера",
-      "effect": "авто-занос через duration_sec, занимает место в приёме; уничтожить можно как malicious в любой фазе (D02)",
-      "reward_money": 5,
-      "reward_sla": 1,
-      "fail_money": -10,
-      "fail_sla": -5,
-      "filter_disabled_sec": 10
-    },
-    "ddos": {
-      "name_ru": "DDoS",
-      "cards_min": 8,
-      "cards_max": 12,
-      "spawn_window_sec": 2.0,
-      "shield_hold_sec": 1.5,
-      "tell": "8–12 идентичных карточек без типа и таймера",
-      "effect": "волна карточек; отбивается удержанием щита",
-      "reward_money": 30,
-      "reward_sla": 2,
-      "fail_sla": -15,
-      "channel_debuff": 0.4,
-      "channel_debuff_sec": 15,
-      "packets_lost": 2,
-      "recv_disabled_sec": 5
-    },
-    "phishing": {
-      "name_ru": "Фишинг",
-      "reward_money": 20,
-      "reward_sla": 2,
-      "fail_money": -40,
-      "fail_sla": -10,
-      "file_lock_sec": 60,
-      "send_disabled_sec": 5,
-      "timeout_money": -20,
-      "timeout_sla": -5,
-      "timeout_lock_sec": 30,
-      "tell": "client_id формата id_XXXX с неверным символом (например id_7F3К — кириллическая К), серый аватар",
-      "effect": "фальшивый запрос/пакет"
-    },
-    "ransomware": {
-      "name_ru": "Шифровальщик",
-      "reward_money": 25,
-      "reward_sla": 2,
-      "folder_block_delay_sec": 3,
-      "auto_unlock_sec": 30,
-      "auto_unlock_money": -30,
-      "auto_unlock_sla": -10,
-      "tell": "расширение .exe, красный квадрат 4×4",
-      "effect": "файл становится locked (lock_until), кликабелен для уничтожения (D08)"
-    }
-  },
-  "shop": [
-    { "id": "shop_slot3", "name_ru": "Третий слот", "effect": "connection_slots", "value": 1, "price": 250, "max_level": 1 },
-    { "id": "shop_slot4", "name_ru": "Четвёртый слот", "effect": "connection_slots", "value": 1, "price": 450, "max_level": 1 },
-    { "id": "shop_buffer", "name_ru": "Буфер +2", "effect": "buffer_slots", "value": 2, "price": 200, "max_level": 2 },
-    { "id": "shop_timer", "name_ru": "Таймер пакетов +4 с", "effect": "packet_timer", "value": 4, "unit": "сек (аддитивно)", "price": 350, "max_level": 3 },
-    { "id": "shop_zone", "name_ru": "Зона +5%", "effect": "zone_width", "value": 0.05, "unit": "доля W (аддитивно в формуле D04)", "price": 300, "max_level": 3 },
-    { "id": "shop_channel", "name_ru": "Канал +25", "effect": "channel_capacity", "value": 25, "price": 250, "max_level": 4 },
-    { "id": "shop_section", "name_ru": "Новая секция", "effect": "sections", "value": 1, "price": 300, "max_level": 5 },
-    { "id": "shop_search", "name_ru": "Поиск", "effect": "search_highlight", "value": 1, "price": 250, "max_level": 1 },
-    { "id": "shop_shield", "name_ru": "Щит", "effect": "shield", "value": 1, "price": 400, "max_level": 1 },
-    { "id": "shop_sla", "name_ru": "SLA +24", "effect": "sla_add", "value": 24, "price": 300, "max_level": 3 }
-  ],
-  "shop_reserve": {
-    "items": ["scanner", "autosort"],
-    "note": "резерв — в прототип НЕ входят (D13); позиций в shop НЕТ"
-  },
-  "spawn": {
-    "type_pool_by_hour": {
-      "1": ["text"],
-      "2": ["text", "sound"],
-      "3+": ["text", "sound", "photo", "video"]
-    },
-    "malicious_ratio": 0.0,
-    "required_count_by_hour": {
-      "1": { "1": 1.0 },
-      "2": { "1": 0.75, "2": 0.25 },
-      "3+": { "1": 0.6, "2": 0.3, "3": 0.1 }
-    },
-    "required_size_distribution": { "1": 0.6, "2": 0.3, "3": 0.1 },
-    "required_count_note": "required_count_by_hour — распределение по часу; required_size_distribution — fallback/час 3+",
-    "attack_schedule": "с часа 2, далее по difficulty.attacks, окно 60–240 с часа, не во время мини-игры"
+    "CHANNEL_CAPACITY": 10,
+    "capacity_per_upgrade": 6,
+    "capacity_upgrade_max_level": 6,
+    "formula": "load = sum(weight(active_transfers)); factor = max(1.0, load / capacity); actual_time = base_time_sec * pow(0.92, speed_level) * factor"
   },
   "minigame_selection": {
-    "coeff": { "text": 1.0, "sound": 2.0, "photo": 3.0, "video": 4.0 },
-    "difficulty_formula": "sum(coeff(required)) / n",
-    "thresholds": { "text": "< 1.5", "sound": "< 2.5", "photo": "< 3.5", "else": "video" },
-    "call": "MiniGame.start(type, difficulty)",
+    "coeff": { "text": 1, "sound": 2, "photo": 4, "video": 8 },
+    "formula": "см. minigames.selection.formula (плотный список достижимых сумм, B4)",
     "quality_stub": 1.0
   }
 }

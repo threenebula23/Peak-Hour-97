@@ -74,7 +74,15 @@ func _init() -> void:
 	if req == null:
 		_finish()
 		return
-	var fid := str(req.required[0])
+	var fid := ""
+	for file in _game.registry.get_available_files():
+		if str(file.location) == "folder":
+			fid = str(file.id)
+			break
+	_ok(not fid.is_empty(), "есть свободный файл для прикрепления")
+	if fid.is_empty():
+		_finish()
+		return
 	_ok(director.attach_file(rid, fid), "файл прикреплён к запросу")
 	_main._refresh_hour()
 	await process_frame
@@ -83,7 +91,7 @@ func _init() -> void:
 	var attached_before: Array = req.attached.duplicate()
 	_ok(attached_before.has(fid), "req.attached содержит файл")
 	_ok(_slot_attached(rid, fid), "слот запроса показывает attached=true")
-	_eq(_file_card_state(fid), "attached", "FileCard показывает attached")
+	_eq(_file_card_state(fid), "attached", "FileGrid показывает attached")
 	_eq(str(_game.registry.files[fid].attached_request), rid,
 		"file.attached_request указывает на запрос")
 
@@ -158,28 +166,29 @@ func _slot_attached(rid: String, fid: String) -> bool:
 	var req = _controller.hour_director.active_requests.get(rid)
 	if req == null:
 		return false
-	var slots: Array = _main._request_slots({"required": req.required,
-		"attached": req.attached})
-	var index: int = (req.required as Array).find(fid)
+	var hd = _controller.hour_director
+	var slots: Array = _main._request_slots({
+		"required_count": hd.request_required_count(rid),
+		"attached": req.attached,
+	})
+	var index: int = (req.attached as Array).find(fid)
 	if index < 0 or index >= slots.size() or slots[index] == null:
 		return false
 	return bool((slots[index] as Dictionary).get("attached", false))
 
 
 func _file_card_state(fid: String) -> String:
-	if _main.grid == null:
+	var registry = _game.registry if _game != null else null
+	if registry == null or not registry.files.has(fid):
 		return ""
-	for card in _main.grid.get_cards():
-		if str(card.id) == fid:
-			return str(card.state)
-	return ""
+	return FileGrid.file_state(registry.files[fid])
 
 
 func _request_card_attached(rid: String, fid: String) -> bool:
 	var req = _controller.hour_director.active_requests.get(rid)
 	if req == null:
 		return false
-	var index: int = (req.required as Array).find(fid)
+	var index: int = (req.attached as Array).find(fid)
 	for card in _main.requests:
 		if card == null or not is_instance_valid(card) or str(card.id) != rid:
 			continue

@@ -1,7 +1,11 @@
 extends SceneTree
-## Headless-тест часа: старт, спавн, буфер, таймауты, модалки, отправка,
-## выплата, атаки и полный час на ускоренном времени.
-## Запуск: godot --headless --path . --script tests/test_hour.gd
+## Headless-тест v2 HourDirector: бюджеты, веса типов, перенос файлов,
+## приём с резервациями, запросы/лимиты, attach/detach, явная отправка,
+## пауза таймера в мини-игре, очередь out-слота, расход файлов, конец часа
+## во время мини-игры и отчёт.
+##
+## Запуск:
+##   godot --headless --path . --script tests/test_hour.gd
 
 const HD := preload("res://scripts/core/hour_director.gd")
 const AD := preload("res://scripts/systems/attack_director.gd")
@@ -11,11 +15,15 @@ var _fails: int = 0
 var _case: String = ""
 var _game = null
 var _hd = null
-var _flip: Dictionary = {}
-var _hour_report: Dictionary = {}
-var _hour_events: int = 0
-var _frozen_events: int = 0
 var _name_seq: int = 0
+
+var _hour_events: int = 0
+var _hour_report: Dictionary = {}
+var _minigame_shows: int = 0
+var _minigame_cancels: int = 0
+var _minigame_closes: int = 0
+var _connection_shows: int = 0
+var _frozen_events: int = 0
 
 
 func _init() -> void:
@@ -25,508 +33,652 @@ func _init() -> void:
 		_fail("autoload Game недоступен")
 		_finish()
 		return
-	_game.start_new_run(1)
 	_hd = HD.new()
+	_hd.name = "HourDirectorTest"
+	root.add_child(_hd)
+	_hd.hour_finished.connect(_on_hour_finished)
+	_hd.show_minigame.connect(_on_show_minigame)
+	_hd.minigame_cancelled.connect(_on_minigame_cancelled)
+	_hd.minigame_closed.connect(_on_minigame_closed)
+	_hd.spawn_frozen.connect(_on_spawn_frozen)
+	_hd.show_connection.connect(_on_show_connection)
+
 	_test_start_hour()
-	_test_spawn_and_buffer()
+	_test_budgets_and_weights()
+	_test_spawn_window_budget()
+	_test_carry()
 	_test_receive()
-	_test_timeouts()
-	_test_failed_file_cancel()
-	_test_modal_freeze()
-	_test_send_payout()
-	_test_auto_send()
-	_test_required_counts()
-	_test_attacks()
-	_test_connection_failure()
-	_test_full_hour_timescale()
+	_test_receive_cancel_and_no_space()
+	_test_request_caps()
+	_test_attach_detach()
+	_test_protocol()
+	_test_send_minigame_pause()
+	_test_out_slot_queue()
+	_test_file_consumption()
+	_test_send_timer_freeze()
+	_test_timeout_preserves_files()
+	_test_hour_end_during_minigame()
+	_test_no_connection_game()
+	_test_report()
 	_finish()
 
 
+# --- старт -----------------------------------------------------------------
+
 func _test_start_hour() -> void:
 	_set_case("start_hour")
-	_game.start_new_run(1)
-	_hd.start_hour(1)
+	_fresh(1)
 	_eq(_hd.hour, 1, "hour = 1")
-	_eq(_hd.time_left, 300.0, "длительность часа 300 с")
+	_approx(_hd.time_left, 300.0, 0.0001, "длительность часа 300 с")
 	_ok(_hd.running, "час запущен")
+	_eq(_hd.files_budget, 4, "H1: бюджет 4 файла")
+	_eq(_hd.files_spawned, 0, "H1: файлы ещё не спавнились")
+	_eq(_hd.request_cap, 2, "H1: кап запросов 2")
+	_eq(_hd.active_request_limit, 1, "H1: 1 активный запрос")
+	_approx(_hd.spawn_window, 225.0, 0.0001, "окно спавна 75% часа = 225 с")
+	_eq(_hd.slots.max_slots(), 1, "H1: 1 слот")
+	_eq(_hd.buffer_limit(), 6, "H1: буфер 6")
+	_approx(_hd._recv_interval(), 12.0, 0.0001, "legacy recv_interval H1 = 12")
+	_approx(_hd._receive_interval(), 225.0 / 4.0, 0.0001, "спавн-интервал 225/4")
+	_approx(_hd._send_interval(), 22.0, 0.0001, "send_interval H1 = 22")
+	_eq(_hd._max_requests(), 1, "max concurrent requests H1 = 1")
+	_eq(_hd._type_pool(), ["text", "sound"], "H1: только text/sound")
 	_eq(_hd.active_packets.size(), 0, "активных пакетов нет")
 	_eq(_hd.active_requests.size(), 0, "активных запросов нет")
-	_eq(_hd._buffer_limit(), 4, "буфер 4 на старте")
-	_approx(_hd._recv_interval(), 12.0, 0.0001, "recv_interval часа 1")
-	_eq(_hd._send_interval(), 22.0, "send_interval часа 1")
-	_eq(_hd._max_requests(), 2, "max_requests часа 1")
-	_eq(_hd.slots.max_slots(), 2, "2 слота соединений")
 	_ok(_hd.attack_director != null, "AttackDirector создан")
-	_eq(_hd.attack_director.active_attacks.size(), 0, "атаки сброшены")
-	_approx(_hd.channel_load(), 0.0, 0.0001, "idle-канал не нагружен")
-	_eq(_hd._type_pool(), ["text"], "час 1: открыт только text (sound с часа 2)")
+	_eq(_hd.attack_director._schedule.size(), 0, "H1: атак нет")
+	_ok(_hd._minigame == null, "мини-игра не открыта")
 
 
-func _test_spawn_and_buffer() -> void:
-	_set_case("spawn/buffer")
-	_hd.start_hour(1)
-	var ids: Array[String] = []
-	for i in range(4):
-		var id := str(_hd.spawn_packet_now("text", "tcp"))
-		ids.append(id)
-		_ok(id != "", "пакет %d заспавнен" % i)
-	_eq(_hd.active_packets.size(), 4, "буфер заполнен до 4")
-	_eq(_hd._buffer_used(), 4, "buffer_used = 4")
-	_approx(_hd.channel_load(), 0.0, 0.0001, "waiting-пакеты не грузят канал")
-	_eq(_hd._active_weights().size(), 0, "active_weights пуст без loading/sending")
-	var packet = _hd.active_packets[ids[0]]
-	_approx(float(packet.timer_total), 30.0, 0.0001, "таймер пакета часа 1: 30 с (grace 1.5)")
-	_eq(str(packet.protocol), "tcp", "протокол tcp")
-	_eq(str(packet.state), "waiting", "состояние waiting")
+# --- бюджеты и веса --------------------------------------------------------
 
-	# Полный буфер останавливает обычный спавн по таймеру.
-	_frozen_events = 0
-	_hd.spawn_frozen.connect(_on_spawn_frozen)
-	_hd._recv_interval_current = 0.1
+func _test_budgets_and_weights() -> void:
+	_set_case("budgets_weights")
+	for pair in [[1, 4], [2, 8], [3, 12], [4, 16], [5, 20], [6, 20], [9, 20]]:
+		_fresh(int(pair[0]))
+		_eq(_hd.files_budget, int(pair[1]), "H%d: бюджет %d" % [int(pair[0]), int(pair[1])])
+
+	_fresh(1)
+	var seen_h1: Dictionary = {}
+	for i in range(400):
+		var picked: String = str(_hd._pick_type())
+		seen_h1[picked] = true
+		_ok(picked == "text" or picked == "sound", "H1: вес photo/video = 0 (выбран %s)" % picked)
+	_ok(seen_h1.has("text") and seen_h1.has("sound"), "H1: встречаются text и sound")
+
+	_fresh(9)
+	_eq(_hd._type_pool(), ["text", "sound", "photo", "video"], "H9: все типы открыты")
+	var seen_h9: Dictionary = {}
+	for i in range(400):
+		seen_h9[_hd._pick_type()] = true
+	_ok(seen_h9.has("photo"), "H9: photo спавнится")
+	_ok(seen_h9.has("video"), "H9: video спавнится")
+
+	_fresh(1)
+	var seen_1: Dictionary = {}
+	for i in range(300):
+		seen_1[_hd._roll_required_count()] = true
+	_ok(seen_1.size() >= 2, "H1: request_mix даёт 1 и 2 файла")
+	_ok(not seen_1.has(3), "H1: request_mix 3 = 0%")
+
+	_fresh(9)
+	var seen_9: Dictionary = {}
+	for i in range(400):
+		seen_9[_hd._roll_required_count()] = true
+	_ok(seen_9.has(1) and seen_9.has(2) and seen_9.has(3), "H9: request_mix даёт 1/2/3")
+
+
+# --- перенос файлов --------------------------------------------------------
+
+func _test_spawn_window_budget() -> void:
+	_set_case("spawn_window_budget")
+	_fresh(1)
+	_hd.files_spawned = 0
+	_hd.spawned_this_hour = 0
+	_hd.requests_spawned = _hd.request_cap
 	_hd.spawn_recv_accum = 0.0
-	_hd.tick(0.1)
-	_eq(_hd.active_packets.size(), 4, "при полном буфере таймер не спавнит")
-	_ok(_frozen_events > 0, "сигнал spawn_frozen(buffer_full)")
+	for i in range(3000):
+		_hd.tick(0.1)
+		if _hd.hour_elapsed >= _hd.spawn_window + 0.4:
+			break
+	_eq(_hd.files_spawned, 4, "H1: все 4 файла успевают в окно 225 с")
+	_eq(_hd.spawned_this_hour, 4, "H1: счётчик спавна = 4")
+	_ok(_hd.active_packets.size() <= 4, "в буфере не больше бюджета файлов")
+	_ok(_hd.hour_elapsed >= _hd.spawn_window and _hd.hour_elapsed <= _hd.spawn_window + 0.5,
+		"спавн остановился у границы окна")
+	_eq(_hd.carry_files, 0, "перенос ещё не рассчитан (час идёт)")
 
-	# Прямой спавн = переполнение: вытесняется самый старый, штраф по типу.
-	var sla_before: float = _game.sla
-	var oldest_id: String = ids[0]
-	var new_id := str(_hd.spawn_packet_now("sound", "udp"))
-	_eq(_hd.active_packets.size(), 4, "размер буфера не превышен")
-	_ok(new_id != "", "новый пакет добавлен")
-	_ok(not _hd.active_packets.has(oldest_id), "самый старый пакет вытеснен")
-	_approx(_game.sla, sla_before - 2.0, 0.001, "переполнение: вытеснен text → −2 SLA")
-	# Штраф зависит от типа вытесненного пакета (п.13).
+
+func _test_carry() -> void:
+	_set_case("carry")
+	_fresh(1)
+	_eq(_hd.carry_files, 0, "старт: переноса нет")
+	_hd.files_spawned = 1
+	_hd.carry_files = 0
+	_hd._finish_hour()
+	_eq(_hd.carry_files, 3, "недоспавненные 3 файла переносятся")
+	_eq(int(_hd.report().get("files_carry", -1)), 3, "отчёт: files_carry = 3")
+
+	_game.hour = 2
 	_hd.start_hour(2)
-	var sound_id := str(_hd.spawn_packet_now("sound", "tcp"))
-	for i in range(3):
-		_hd.spawn_packet_now("text", "tcp")
-	sla_before = _game.sla
-	_hd.spawn_packet_now("text", "tcp")
-	_ok(not _hd.active_packets.has(sound_id), "sound вытеснен из буфера")
-	_approx(_game.sla, sla_before - 4.0, 0.001, "вытеснение sound → −4 SLA")
+	_eq(_hd.files_budget, 11, "H2: 8 базовых + 3 переноса")
+	_eq(_hd.carry_files, 0, "перенос применён один раз")
 
-	_hd.start_hour(2)
-	var video_id := str(_hd.spawn_packet_now("video", "tcp"))
-	for i in range(3):
-		_hd.spawn_packet_now("text", "tcp")
-	sla_before = _game.sla
-	_hd.spawn_packet_now("text", "tcp")
-	_ok(not _hd.active_packets.has(video_id), "video вытеснен из буфера")
-	_approx(_game.sla, sla_before - 16.0, 0.001, "вытеснение video → −16 SLA")
-	# Прибираем пакеты, чтобы не мешали следующим кейсам.
-	for id in _hd.active_packets.keys():
-		_hd._remove_packet(str(id))
+	_hd.carry_files = 5
+	_game.hour = 5
+	_hd.start_hour(5)
+	_eq(_hd.files_budget, 20, "кап 20 файлов в час")
 
+	# Буфер полон: файл не теряется, бюджет не тратится.
+	_fresh(1)
+	_hd.files_budget = 8
+	_hd.files_spawned = 0
+	_hd.spawn_window = 999.0
+	_hd._next_spawn_at = _hd.hour_elapsed
+	_hd._spawn_frozen_notified = false
+	_hd.spawn_recv_accum = 0.0
+	var packet_ids: Array[String] = []
+	for i in range(6):
+		var pid := str(_hd.spawn_packet_now("text"))
+		packet_ids.append(pid)
+	_eq(_hd.active_packets.size(), 6, "буфер заполнен 6 пакетами")
+	_frozen_events = 0
+	_hd.tick(0.05)
+	_eq(_hd.files_spawned, 0, "при полном буфере спавн стоит")
+	_ok(_frozen_events > 0, "spawn_frozen(buffer_full) эмитится")
+	_eq(_hd.active_packets.size(), 6, "пакеты не вытесняются")
+	_hd._remove_packet(packet_ids[0])
+	_hd._next_spawn_at = _hd.hour_elapsed
+	_hd.spawn_recv_accum = 0.0
+	_hd.tick(0.02)
+	_eq(_hd.files_spawned, 1, "после освобождения места спавн продолжился")
+	_eq(_hd.active_packets.size(), 6, "новый пакет занял освободившееся место")
+
+
+# --- приём -----------------------------------------------------------------
 
 func _test_receive() -> void:
 	_set_case("receive")
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 9999.0
+	_fresh(1)
 	var folder_id := _folder_id()
 	_ok(not folder_id.is_empty(), "есть папка для приёма")
 	var files_before: int = _game.registry.files.size()
 	var money_before: int = _game.money
 	var sla_before: float = _game.sla
-	var packet_id := str(_hd.spawn_packet_now("text", "tcp"))
-	var expected_name := str(_hd.active_packets[packet_id].file_name)
+	var packet_id := str(_hd.spawn_packet_now("text"))
+	_ok(packet_id != "", "пакет заспавнен")
+	var packet = _hd.active_packets[packet_id]
+	_ok(not str(packet.shape_id).is_empty(), "у пакета есть фигура")
+	_eq((packet.shape_cells as Array).size(), 1, "text занимает 1 клетку")
+	_ok(int(packet.rotation) >= 0 and int(packet.rotation) <= 3, "rotation 0..3")
+
 	_ok(_hd.receive_packet(packet_id, folder_id), "пакет принят в загрузку")
-	var packet = _hd.active_packets.get(packet_id)
-	_ok(packet != null and str(packet.state) == "loading", "state loading")
-	_approx(_hd.channel_load(), 6.0, 0.0001, "loading text грузит канал на weight 6")
-	for i in range(60):
+	_eq(str(packet.state), "loading", "state = loading")
+	_eq(_hd.slots.used_count("in"), 1, "слот in занят")
+	_eq(_game.registry.reservation_count(folder_id), 1, "клетки папки зарезервированы")
+	_approx(_hd.channel_load(), 1.0, 0.0001, "loading text грузит канал на weight 1")
+
+	for i in range(100):
 		_hd.tick(0.1)
 		if not _hd.active_packets.has(packet_id):
 			break
-	_ok(not _hd.active_packets.has(packet_id), "пакет ушёл из буфера")
-	_eq(_game.registry.files.size(), files_before + 1, "файл создан в реестре")
-	_ok(_game.registry.find_by_name(expected_name) != null, "имя файла сохранено без лишнего суффикса")
-	# Прерванная загрузка возвращает резерв папки.
-	var packet2 := str(_hd.spawn_packet_now("text", "tcp"))
-	_ok(_hd.receive_packet(packet2, folder_id), "вторая загрузка начата")
-	var folder = _game.registry.folders.get(folder_id)
-	_ok(folder != null and int(folder.reserved) >= 1, "папка зарезервирована под загрузку")
+	_ok(not _hd.active_packets.has(packet_id), "после загрузки пакет ушёл из буфера")
+	_eq(_hd.slots.used_count("in"), 0, "слот in освобождён")
+	_eq(_game.registry.reservation_count(folder_id), 0, "резервация снята")
+	_eq(_game.registry.files.size(), files_before + 1, "файл создан")
+	_eq(_game.money, money_before + 1, "recv_fee text = +1 $")
+	_approx(_game.sla, sla_before, 0.0001, "приём не меняет SLA")
+	var file = _game.registry.find_by_name(str(packet.file_name))
+	_ok(file != null, "имя файла сохранено")
+	if file != null:
+		_eq(str(file.shape_id), str(packet.shape_id), "фигура файла = фигура пакета")
+
+
+func _test_receive_cancel_and_no_space() -> void:
+	_set_case("receive_cancel")
+	_fresh(1)
+	var folder_id := _folder_id()
+	var packet_id := str(_hd.spawn_packet_now("text"))
+	_ok(_hd.receive_packet(packet_id, folder_id), "загрузка начата")
+	_hd._remove_packet(packet_id)
+	_eq(_hd.slots.used_count("in"), 0, "отмена освободила слот")
+	_eq(_game.registry.reservation_count(folder_id), 0, "отмена сняла резервацию")
+
+	_set_case("receive_no_space")
+	_fresh(1)
+	folder_id = _folder_id()
+	_fill_folder(folder_id)
+	var packet2 := str(_hd.spawn_packet_now("text"))
+	_ok(not _hd.receive_packet(packet2, folder_id), "полная папка отклоняет приём")
+	_eq(_hd.slots.used_count("in"), 0, "отказ не занимает слот")
+	_eq(_game.registry.reservation_count(folder_id), 0, "отказ не оставляет резервацию")
 	_hd._remove_packet(packet2)
-	_ok(folder != null and int(folder.reserved) == 0, "прерванная загрузка сняла резерв")
-	_eq(_game.money, money_before + 2, "recv_fee text = +2 $")
-	_approx(_game.sla, sla_before + 0.5, 0.001, "+0.5 SLA за приём")
+
+	_set_case("receive_slot_busy")
+	_fresh(1)
+	folder_id = _folder_id()
+	_ok(_hd.slots.reserve("in", "blocker") >= 0, "слот занят вручную")
+	var packet3 := str(_hd.spawn_packet_now("text"))
+	_ok(not _hd.receive_packet(packet3, folder_id), "без слота приём отклонён")
+	_eq(_game.registry.reservation_count(folder_id), 0, "слот-отказ не резервирует клетки")
+	_hd.slots.release_by_entity("blocker")
+	_hd._remove_packet(packet3)
 
 
-func _test_timeouts() -> void:
-	_set_case("timeouts")
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 9999.0
-	var sla_before: float = _game.sla
-	var packet_id := str(_hd.spawn_packet_now("text", "tcp"))
-	_hd.active_packets[packet_id].time_left = 0.05
-	_hd.tick(0.1)
-	_ok(not _hd.active_packets.has(packet_id), "пакет удалён по таймауту")
-	_approx(_game.sla, sla_before - 2.0, 0.001, "таймаут text-пакета: −2 SLA")
-	# Фото/видео штрафуются строже (п.13).
-	_game.sla = 200.0
-	var photo_id := str(_hd.spawn_packet_now("photo", "tcp"))
-	_hd.active_packets[photo_id].time_left = 0.05
-	_hd.tick(0.1)
-	_approx(_game.sla, 192.0, 0.001, "таймаут photo: −8 SLA")
-	_game.sla = 200.0
-	var video_id := str(_hd.spawn_packet_now("video", "tcp"))
-	_hd.active_packets[video_id].time_left = 0.05
-	_hd.tick(0.1)
-	_approx(_game.sla, 184.0, 0.001, "таймаут video: −16 SLA")
+# --- запросы ---------------------------------------------------------------
 
-	_hd.start_hour(1)
-	_game.sla = 200.0
-	sla_before = _game.sla
-	var req_id := str(_hd._make_request([], "udp", false, "", ""))
+func _test_request_caps() -> void:
+	_set_case("request_no_files")
+	_fresh(1)
+	_hd.requests_spawned = 0
+	_hd._send_interval_current = 0.1
+	_hd.spawn_send_accum = 0.0
+	_hd.tick(30.0) # dt клампится до 0.1; 30 с малым шагом ниже
+	for i in range(300):
+		_hd.tick(0.1)
+	_eq(_hd.active_requests.size(), 0, "без файлов запрос не спавнится")
+	_eq(_hd.requests_spawned, 0, "бюджет запросов не тратится")
+
+	_set_case("request_active_limit")
+	_fresh(1)
+	for i in range(6):
+		_new_file("Запрос", "text", _folder_id())
+	_hd.requests_spawned = 0
+	_hd._send_interval_current = 0.1
+	_hd.spawn_send_accum = 0.0
+	_hd.tick(0.15)
+	_eq(_hd.active_requests.size(), 1, "H1: одновременно 1 запрос")
+	_eq(_hd.requests_spawned, 1, "H1: запрос №1 создан")
+	var req_id := str(_hd.active_requests.keys()[0])
 	var req = _hd.active_requests[req_id]
-	req.time_left = 0.05
-	var failed_before: int = _hd._failed
-	_hd.tick(0.1)
-	_ok(not _hd.active_requests.has(req_id), "запрос удалён по таймауту")
-	_approx(_game.sla, sla_before - 12.0, 0.001, "таймаут запроса: −(10+2×hour)")
-	_eq(_hd._failed, failed_before + 1, "провал учтён")
+	_ok(req.attached.is_empty(), "файлы не прикрепляются автоматически")
+	_ok(req.required_count() == _hd.request_required_count(req_id),
+		"required_count() = число слотов контейнера")
+	for placeholder in req.required:
+		_ok(not _game.registry.files.has(str(placeholder)), "в required нет заранее выбранных файлов")
+	_ok(_hd.request_required_count(req_id) >= 1 and _hd.request_required_count(req_id) <= 2,
+		"H1: нужно 1–2 файла")
+	_ok(not _hd.is_request_ready(req_id), "пустой запрос не готов")
+	_ok(not req.is_ready(), "legacy Request.is_ready тоже false")
+	_approx(req.time_left, req.timer_total, 0.0001, "таймер запроса стартовал сразу")
+
+	_hd._send_interval_current = 0.1
+	_hd.spawn_send_accum = 0.0
+	for i in range(20):
+		_hd.tick(0.1)
+	_eq(_hd.requests_spawned, 1, "при активном лимите новый запрос не появляется")
+
+	_hd._cleanup_request(req_id, true)
+	_hd._send_interval_current = 0.1
+	_hd.spawn_send_accum = 0.0
+	_hd.tick(0.15)
+	_eq(_hd.active_requests.size(), 1, "после освобождения слота создан второй запрос")
+	_eq(_hd.requests_spawned, 2, "H1: два запроса — кап")
+	var second_id := str(_hd.active_requests.keys()[0])
+	_hd._cleanup_request(second_id, true)
+
+	_hd._send_interval_current = 0.1
+	_hd.spawn_send_accum = 0.0
+	_hd.tick(0.15)
+	_eq(_hd.requests_spawned, 2, "H1: третий запрос не создаётся (кап 2)")
+	_eq(_hd.active_requests.size(), 0, "лишних запросов нет")
 
 
-func _test_failed_file_cancel() -> void:
-	_set_case("failed_file")
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 9999.0
-	_game.money = 1000
-	_game.sla = 100.0
-	var file = _new_file("Сбойный", "text", _folder_id())
-	_ok(file != null, "файл для сбоя создан")
-	if file == null:
+# --- attach/detach ---------------------------------------------------------
+
+func _test_attach_detach() -> void:
+	_set_case("attach_detach")
+	_fresh(1)
+	var folder_id := _folder_id()
+	var f1 = _new_file("Файл", "text", folder_id)
+	var f2 = _new_file("Файл", "text", folder_id)
+	var f3 = _new_file("Файл", "text", folder_id)
+	_ok(f1 != null and f2 != null and f3 != null, "три файла созданы")
+	if f1 == null or f2 == null or f3 == null:
 		return
-	var req_id := str(_hd._make_request([file], "udp", false, "", ""))
-	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
-	_game.registry.mark_failed(str(file.id))
-	var money_before: int = _game.money
-	var sla_before: float = _game.sla
-	_hd.tick(0.1)
-	_ok(not _hd.active_requests.has(req_id), "запрос отменён при failed-файле (D06)")
-	_eq(_game.money, money_before - 15, "failed-файл: −15 $")
-	_approx(_game.sla, sla_before - 10.0, 0.001, "failed-файл: −10 SLA")
-
-
-func _test_modal_freeze() -> void:
-	_set_case("modal")
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 0.1
-	_hd.spawn_recv_accum = 0.0
-	var packet_id := str(_hd.spawn_packet_now("text", "tcp"))
-	var req_id := str(_hd._make_request([], "udp", false, "", ""))
-	_hd.modal_open = true
-	var packet = _hd.active_packets[packet_id]
+	var req_id: String = str(_hd.spawn_request_now(2))
+	_ok(not req_id.is_empty(), "запрос на 2 файла создан")
+	_eq(_hd.request_required_count(req_id), 2, "required_count = 2")
 	var req = _hd.active_requests[req_id]
-	var packet_time: float = packet.time_left
-	var req_time: float = req.time_left
-	var packets_before: int = _hd.active_packets.size()
+
+	_ok(_hd.attach_file(req_id, str(f1.id)), "файл 1 прикреплён")
+	_eq(str(f1.location), "attached", "файл 1 остался в папке (location attached)")
+	_eq(req.attached.size(), 1, "attached = 1")
+	_ok(not req.sending, "attach не запускает отправку")
+	_ok(_hd.attach_file(req_id, str(f2.id)), "файл 2 прикреплён")
+	_eq(req.attached.size(), 2, "attached = 2")
+	_ok(not req.sending, "после заполнения автоотправки нет")
+	_ok(_hd.is_request_ready(req_id), "собранный запрос готов")
+	_ok(not _hd.attach_file(req_id, str(f3.id)), "третий файл сверх лимита отклонён")
+
+	_ok(_hd.detach_file(req_id, str(f1.id)), "файл 1 откреплён")
+	_eq(req.attached.size(), 1, "attached = 1 после detach")
+	_eq(str(f1.location), "folder", "detach вернул файл в папку")
+	_ok(not _hd.detach_file(req_id, str(f3.id)), "неприкреплённый файл не открепить")
+
+	var req2: String = str(_hd.spawn_request_now(1))
+	_ok(_hd.attach_file(req2, str(f3.id)), "файл 3 прикреплён к другому запросу")
+	_ok(not _hd.attach_file(req_id, str(f3.id)), "занятый файл нельзя прикрепить дважды")
+
+	var f4 = _new_file("Стол", "text", folder_id)
+	if f4 != null:
+		_ok(_game.registry.move_file_to_table(str(f4.id)), "файл убран на стол")
+		_ok(not _hd.attach_file(req_id, str(f4.id)), "файл со стола нельзя прикрепить")
+	_hd._cleanup_request(req_id, true)
+	_hd._cleanup_request(req2, true)
+
+
+# --- протокол --------------------------------------------------------------
+
+func _test_protocol() -> void:
+	_set_case("protocol")
+	_fresh(1)
+	var file = _new_file("Протокол", "text", _folder_id())
+	var req_id: String = str(_hd.spawn_request_now(1))
+	_eq(str(_hd.active_requests[req_id].protocol), "tcp", "по умолчанию tcp")
+	_ok(_hd.set_request_protocol(req_id, "udp"), "tcp → udp разрешён")
+	_eq(str(_hd.active_requests[req_id].protocol), "udp", "протокол udp")
+	_ok(not _hd.set_request_protocol(req_id, "smtp"), "неизвестный протокол отклонён")
+	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
+	_ok(_hd.start_send(req_id), "мини-игра отправки открыта")
+	_ok(not _hd.set_request_protocol(req_id, "tcp"), "после старта мини-игры протокол не меняется")
+	_hd.force_close_send_minigame()
+	_hd._cleanup_request(req_id, true)
+
+
+# --- мини-игра отправки ----------------------------------------------------
+
+func _test_send_minigame_pause() -> void:
+	_set_case("send_minigame_pause")
+	_fresh(1)
+	var file = _new_file("Мини", "text", _folder_id())
+	var req_id: String = str(_hd.spawn_request_now(1))
+	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
+	_minigame_shows = 0
+	_ok(_hd.start_send(req_id), "start_send → true")
+	_eq(_minigame_shows, 1, "show_minigame эмитится")
+	var req = _hd.active_requests[req_id]
+	_ok(req.minigame_active, "minigame_active = true")
+	_ok(_hd.is_minigame_active(), "директор видит открытую мини-игру")
+	_ok(not _hd.is_request_ready(req_id), "запрос не готов во время мини-игры")
+	var req_time: float = float(req.time_left)
+	var hour_time: float = float(_hd.time_left)
 	for i in range(10):
 		_hd.tick(0.1)
-	_approx(packet.time_left, packet_time, 0.0001, "таймер пакета заморожен модалкой")
-	_approx(req.time_left, req_time - 1.0, 0.001, "таймер запроса идёт при модалке")
-	_eq(_hd.active_packets.size(), packets_before, "спавн приёма остановлен")
-	_hd.modal_open = false
-	_hd._remove_packet(packet_id)
-	_hd._cleanup_request(req_id, false)
+	_approx(float(req.time_left), req_time, 0.0001, "таймер запроса заморожен мини-игрой")
+	_approx(float(_hd.time_left), hour_time - 1.0, 0.02, "время часа продолжает идти")
+	_hd.force_close_send_minigame()
+	_hd._cleanup_request(req_id, true)
 
 
-func _test_send_payout() -> void:
-	_set_case("send/payout")
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 9999.0
-	_game.sla = 150.0
-	var folder_id := _folder_id()
-	var file = _new_file("Отправка", "text", folder_id)
-	_ok(file != null, "файл для отправки создан")
-	if file == null:
-		return
-	var req_id := str(_hd._make_request([file], "tcp", false, "", ""))
-	var req = _hd.active_requests[req_id]
+# --- очередь out-слота -----------------------------------------------------
+
+func _test_out_slot_queue() -> void:
+	_set_case("out_slot_queue")
+	_fresh(1)
+	var file = _new_file("Очередь", "text", _folder_id())
+	var req_id: String = str(_hd.spawn_request_now(1))
 	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
-	_ok(not req.sending, "TCP без соединения ещё не отправляется")
-	req.connected = true
+	var blocker := int(_hd.slots.reserve("out", "blocker"))
+	_ok(blocker >= 0, "слот занят другим запросом")
+	_ok(_hd.start_send(req_id), "мини-игра открыта")
+	_hd._on_send_minigame_finished(1.0)
+	var req = _hd.active_requests[req_id]
+	_ok(_hd.is_request_queued(req_id), "нет слота → запрос в очереди")
+	_ok(not req.sending, "отправка ещё не идёт")
+	_ok(not req.minigame_active, "мини-игра закрыта")
+	var frozen: float = float(req.time_left)
+	for i in range(10):
+		_hd.tick(0.1)
+	_approx(float(req.time_left), frozen, 0.0001, "таймер в очереди заморожен")
+
+	_hd.slots.release(blocker)
+	_ok(not _hd.is_request_queued(req_id), "слот освободился — запрос снят с очереди")
+	_ok(req.sending, "отправка стартовала автоматически")
 	var money_before: int = _game.money
-	var sla_before: float = _game.sla
-	_ok(_hd.start_send(req_id), "отправка стартовала")
-	_ok(req.sending, "отправка началась сразу, без окна-заглушки")
-	_ok(not req.minigame_active, "флаг minigame_active не поднимается")
-	_ok(_hd._minigame == null, "MiniGame не создаётся")
-	_ok(not _hd.modal_open, "модалка не открывается")
-	_approx(req.quality, 1.0, 0.0001, "quality = 1.0 без мини-игры")
-	_approx(_hd.channel_load(), 6.0, 0.0001, "sending text грузит канал на weight 6")
-	_ok(float(req.send_duration) > 0.0, "send_duration > 0")
 	for i in range(200):
 		_hd.tick(0.1)
 		if not _hd.active_requests.has(req_id):
 			break
-	_ok(not _hd.active_requests.has(req_id), "запрос завершён")
+	_ok(not _hd.active_requests.has(req_id), "запрос завершён после очереди")
+	_ok(_game.money > money_before, "выплата за отправку начислена")
+
+
+# --- расход файлов ---------------------------------------------------------
+
+func _test_file_consumption() -> void:
+	_set_case("consume_on_send")
+	_fresh(1)
+	var file = _new_file("Расход", "text", _folder_id())
+	var file_id := str(file.id)
+	var req_id: String = str(_hd.spawn_request_now(1))
+	_ok(_hd.attach_file(req_id, file_id), "файл прикреплён")
+	_ok(_hd.start_send(req_id), "мини-игра открыта")
+	_hd._on_send_minigame_finished(1.0)
+	var req = _hd.active_requests[req_id]
+	_ok(req.sending, "отправка пошла после мини-игры")
+	var money_before: int = _game.money
+	var streak_before: int = int(_game.streak)
+	for i in range(200):
+		_hd.tick(0.1)
+		if not _hd.active_requests.has(req_id):
+			break
+	_ok(not _hd.active_requests.has(req_id), "запрос закрыт")
+	_ok(not _game.registry.files.has(file_id), "успешная отправка израсходовала файл")
 	_ok(_game.money > money_before, "выплата начислена")
-	_approx(_game.sla, sla_before + 1.0, 0.001, "+1 SLA за отправку")
+	_eq(int(_game.streak), streak_before + 1, "streak увеличен")
 	_eq(_hd._completed, 1, "completed = 1")
-	_ok(float(file.cooldown_until) > 0.0, "cooldown файла после отправки (D02)")
-	_ok(str(file.attached_request).is_empty(), "файл откреплён")
+	_ok(_hd.slots.used_count("out") == 0, "out-слот освобождён")
 
 
-func _test_attacks() -> void:
-	_set_case("attacks")
-	_eq(AD.attacks_for_hour(1), 0, "час 1: атак нет (junk с часа 2)")
-	_eq(AD.attacks_for_hour(2), 1, "час 2: 1 атака")
-	_eq(AD.attacks_for_hour(4), 2, "час 4: 2 атаки")
-	_eq(AD.attacks_for_hour(6), 3, "час 6: 3 атаки")
-	_eq(AD.attacks_for_hour(8), 4, "час 8: 4 атаки")
-	_eq(AD.attacks_for_hour(9), 4, "час 9: 4 атаки")
-
-	# Час 1: расписание пустое, junk ещё заперт — атак нет.
-	_game.hour = 1
-	_hd.start_hour(1)
-	var ad1 = _hd.attack_director
-	_eq(ad1._schedule.size(), 0, "час 1: расписание без атак")
-	_ok(str(ad1.spawn_attack("junk")).is_empty(), "час 1: junk закрыт")
-
-	# junk/ddos открыты с часа 2, phishing — с 3, ransomware — с 4 (п.16).
-	_game.hour = 2
-	_hd.start_hour(2)
-	var ad = _hd.attack_director
-	ad.reset(2)
-	_game.sla = 150.0
+## D2: после старта отправки time_left заморожен, даже если до нуля оставалось
+## 1 с, а передача длится 3 с — запрос обязан дойти, а не упасть по таймауту.
+func _test_send_timer_freeze() -> void:
+	_set_case("send_timer_freeze")
+	_fresh(1)
+	var file = _new_file("Заморозка", "text", _folder_id())
+	var file_id := str(file.id)
+	var req_id: String = str(_hd.spawn_request_now(1))
+	_ok(_hd.attach_file(req_id, file_id), "файл прикреплён")
+	_ok(_hd.start_send(req_id), "мини-игра открыта")
+	_hd._on_send_minigame_finished(1.0)
+	var req = _hd.active_requests.get(req_id)
+	_ok(req != null, "запрос жив после мини-игры")
+	if req == null:
+		return
+	_ok(req.sending, "отправка идёт")
+	req.time_left = 1.0
+	req.send_duration = 3.0
+	req.send_progress = 0.0
 	var money_before: int = _game.money
 	var sla_before: float = _game.sla
-	var junk_id := str(ad.spawn_attack("junk"))
-	_ok(junk_id != "", "мусор заспавнен")
-	_ok(ad.active_attacks.has(junk_id), "мусор в активных")
-	_ok(ad.destroy(junk_id), "мусор уничтожен")
-	_eq(_game.money, money_before + 5, "мусор: +5 $")
-	_approx(_game.sla, sla_before + 1.0, 0.001, "мусор: +1 SLA")
-
-	ad.reset(2)
-	var ddos_id := str(ad.spawn_attack("ddos"))
-	_ok(ddos_id != "", "DDoS заспавнен")
-	var cards := int(ad.active_attacks[ddos_id].get("cards", 0))
-	_ok(cards >= 8 and cards <= 12, "DDoS: 8–12 карточек")
-	money_before = _game.money
-	_ok(ad.hold_shield(0.8), "первое удержание щита")
-	_ok(ad.hold_shield(0.8), "второе удержание щита")
-	_ok(not ad.active_attacks.has(ddos_id), "1.5 с щита отражают DDoS")
-	_eq(_game.money, money_before + 30, "DDoS: +30 $")
-
-	_game.hour = 3
-	_hd.start_hour(3)
-	var file = _new_file("Фишинг", "text", _folder_id())
-	_ok(file != null, "файл для фишинга")
-	ad.reset(3)
-	var phish_id := str(ad.spawn_attack("phishing"))
-	_ok(phish_id != "", "фишинг заспавнен")
-	var phish_req := str(ad.active_attacks[phish_id].get("request_id", ""))
-	_ok(not phish_req.is_empty(), "фишинг создал фейковый запрос")
-	_ok(_hd.active_requests.has(phish_req), "фейковый запрос в часа")
-	money_before = _game.money
-	_ok(_hd.reject_request(phish_req), "фишинг отклонён")
-	_ok(not _hd.active_requests.has(phish_req), "фейковый запрос убран")
-	_ok(not ad.active_attacks.has(phish_id), "атака фишинга закрыта")
-	_ok(_game.money >= money_before + 20, "фишинг: награда без штрафа")
-
-	_game.hour = 4
-	_hd.start_hour(4)
-	ad.reset(4)
-	var rw_id := str(ad.spawn_attack("ransomware"))
-	_ok(rw_id != "", "шифровальщик заспавнен")
-	var packet_id := str(ad.active_attacks[rw_id].get("packet_id", ""))
-	_ok(_hd.active_packets.has(packet_id), "пакет .exe в приёме")
-	money_before = _game.money
-	_ok(_hd.destroy_attack_packet(packet_id), "пакет-шифровальщик уничтожен")
-	_eq(_game.money, money_before + 25, "шифровальщик: +25 $")
-	_ok(not _hd.active_packets.has(packet_id), "пакет удалён")
-
-
-func _test_auto_send() -> void:
-	_set_case("auto_send")
-	_game.hour = 1
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 9999.0
-	_game.sla = 150.0
-	var folder_id := _folder_id()
-	# UDP: последний прикреплённый файл сразу запускает отправку.
-	var udp_file = _new_file("Авто-UDP", "text", folder_id)
-	_ok(udp_file != null, "UDP: файл создан")
-	if udp_file != null:
-		var udp_id := str(_hd._make_request([udp_file], "udp", false, "", ""))
-		var udp_req = _hd.active_requests[udp_id]
-		_ok(_hd.attach_file(udp_id, str(udp_file.id)), "UDP: файл прикреплён")
-		_ok(udp_req.sending, "UDP: отправка началась без клика")
-		_ok(not udp_req.minigame_active, "UDP: minigame_active не поднимается")
-		_ok(_hd._minigame == null, "UDP: MiniGame не создаётся")
-		_ok(not _hd.modal_open, "UDP: модалка не осталась")
-		_ok(float(udp_req.send_duration) > 0.0, "UDP: send_duration задан")
-		var progress_before: float = float(udp_req.send_progress)
+	for i in range(31):
 		_hd.tick(0.1)
-		_ok(float(udp_req.send_progress) > progress_before, "UDP: прогресс отправки идёт")
-		for i in range(200):
-			_hd.tick(0.1)
-			if not _hd.active_requests.has(udp_id):
-				break
-		_ok(not _hd.active_requests.has(udp_id), "UDP: запрос отправлен и закрыт")
-
-	# TCP: отправка стартует сразу после успешного соединения.
-	var tcp_file = _new_file("Авто-TCP", "text", folder_id)
-	_ok(tcp_file != null, "TCP: файл создан")
-	if tcp_file != null:
-		var tcp_id := str(_hd._make_request([tcp_file], "tcp", false, "", ""))
-		var tcp_req = _hd.active_requests[tcp_id]
-		_ok(_hd.attach_file(tcp_id, str(tcp_file.id)), "TCP: файл прикреплён")
-		_ok(not tcp_req.sending, "TCP: до соединения отправки нет")
-		_ok(not _hd.start_send(tcp_id), "TCP: start_send до соединения → false")
-		_ok(_hd.connect_request(tcp_id), "TCP: соединение открыто")
-		var node = _hd._connection_games.get(tcp_id)
-		_hd._on_connection_finished(true, tcp_id)
-		_ok(tcp_req.connected, "TCP: соединение успешно")
-		_ok(tcp_req.sending, "TCP: отправка началась после соединения")
-		_ok(not _hd.modal_open, "TCP: модалка соединения закрыта")
-		if node != null and is_instance_valid(node):
-			node.free()
-		_hd._cleanup_request(tcp_id, true)
-
-	# UDP-потеря: guard разрешает один повтор и не зацикливает отправку.
-	var retry_file = _new_file("Авто-UDP-retry", "text", folder_id)
-	_ok(retry_file != null, "UDP-повтор: файл создан")
-	if retry_file != null:
-		var retry_id := str(_hd._make_request([retry_file], "udp", false, "", ""))
-		var retry_req = _hd.active_requests[retry_id]
-		var saved_rng = _hd.rng
-		_hd.rng = AlwaysZeroRng.new()
-		_ok(_hd.attach_file(retry_id, str(retry_file.id)), "UDP-повтор: файл прикреплён")
-		_hd.rng = saved_rng
-		_ok(retry_req.sending, "UDP-повтор: отправка началась после одного повтора")
-		_ok(_hd._minigame == null, "UDP-повтор: MiniGame не создаётся")
-		_hd._cleanup_request(retry_id, true)
-
-	# Открытая ConnectionGame (другого запроса) блокирует старт отправки.
-	var modal_id := str(_hd._make_request([], "udp", false, "", ""))
-	var modal_req = _hd.active_requests[modal_id]
-	_ok(modal_req != null and modal_req.is_ready(), "модальный кейс: запрос готов")
-	_hd._push_modal()
-	_ok(_hd.modal_open, "модалка открыта")
-	_ok(not _hd.start_send(modal_id), "modal_open=true → start_send false")
-	_ok(not modal_req.sending, "при открытой модалке отправка не началась")
-	_hd._pop_modal()
-	_ok(not _hd.modal_open, "модалка закрыта")
-	_ok(_hd.start_send(modal_id), "после закрытия модалки start_send true")
-	_ok(modal_req.sending, "отправка началась после закрытия модалки")
-	_hd._cleanup_request(modal_id, true)
+	_ok(not _hd.active_requests.has(req_id),
+		"запрос завершился успешно, а не по таймауту")
+	_ok(not _game.registry.files.has(file_id), "файл израсходован успешной отправкой")
+	_ok(int(_game.money) > money_before,
+		"выплата начислена (%d → %d)" % [money_before, int(_game.money)])
+	_approx(float(_game.sla), sla_before, 0.001,
+		"таймаут не списал SLA во время отправки")
+	_eq(_hd._failed, 0, "провалов нет")
 
 
-## RNG, который всегда «теряет» UDP-пакеты — проверка guard'а от зацикливания.
-class AlwaysZeroRng:
-	func randf() -> float:
-		return 0.0
+func _test_timeout_preserves_files() -> void:
+	_set_case("timeout_keeps_files")
+	_fresh(1)
+	var file = _new_file("Таймаут", "text", _folder_id())
+	var file_id := str(file.id)
+	var req_id: String = str(_hd.spawn_request_now(1))
+	_ok(_hd.attach_file(req_id, file_id), "файл прикреплён")
+	var req = _hd.active_requests.get(req_id)
+	_ok(req != null and not req.sending, "запрос ещё НЕ отправляется")
+	var money_before: int = _game.money
+	var sla_before: float = _game.sla
+	req.time_left = 0.05
+	_hd.tick(0.1)
+	_ok(not _hd.active_requests.has(req_id), "неотправленный запрос снят по таймауту")
+	_ok(_game.registry.files.has(file_id), "при таймауте файл НЕ расходуется")
+	var kept = _game.registry.files.get(file_id)
+	if kept != null:
+		_eq(str(kept.location), "folder", "файл вернулся в папку")
+	_eq(_game.money, money_before, "штраф только по SLA, без денег")
+	_approx(_game.sla, sla_before - 12.0, 0.001, "таймаут H1: −(10+2×1) SLA")
+	_eq(_hd._failed, 1, "провал учтён")
 
 
-func _test_required_counts() -> void:
-	_set_case("required_count")
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 9999.0
-	for i in range(30):
-		_eq(_hd._roll_required_count(), 1, "час 1: всегда 1 файл")
-	var folder_id := _folder_id()
-	for i in range(3):
-		_new_file("Счёт-1", "text", folder_id)
-	for i in range(12):
-		var rid := str(_hd.spawn_request_now())
-		_ok(rid != "", "час 1: запрос создан")
-		if rid.is_empty():
-			continue
-		_eq(_hd.active_requests[rid].required.size(), 1, "час 1: required.size() == 1")
-		_hd._cleanup_request(rid, true)
+# --- конец часа во время мини-игры (B5b) -----------------------------------
 
-	_hd.start_hour(2)
-	_hd._recv_interval_current = 9999.0
-	var saw_two := false
-	for i in range(60):
-		var count: int = int(_hd._roll_required_count())
-		_ok(count >= 1 and count <= 2, "час 2: required 1..2")
-		if count == 2:
-			saw_two = true
-	_ok(saw_two, "час 2: распределение даёт 2 файла")
-
-	_hd.start_hour(3)
-	_hd._recv_interval_current = 9999.0
-	var seen: Dictionary = {}
-	for i in range(120):
-		var count3: int = int(_hd._roll_required_count())
-		_ok(count3 >= 1 and count3 <= 3, "час 3+: required 1..3")
-		seen[count3] = true
-	_ok(seen.size() >= 2, "час 3+: встречаются разные размеры")
-
-
-
-func _test_connection_failure() -> void:
-	_set_case("connection_fail")
-	_hd.start_hour(1)
-	_hd._recv_interval_current = 9999.0
-	var packet_id := str(_hd.spawn_packet_now("text", "tcp"))
-	_ok(_hd.connect_packet(packet_id), "соединение открыто")
-	_eq(_hd.slots.used_count(), 1, "слот занят на время соединения")
-	var node = _hd._connection_games.get(packet_id)
-	_hd._on_connection_finished(false, packet_id)
-	_eq(_hd.slots.used_count(), 0, "провал соединения освобождает слот")
-	_ok(not _hd.modal_open, "провал закрывает модалку")
-	if _hd.active_packets.has(packet_id):
-		_eq(str(_hd.active_packets[packet_id].state), "waiting", "пакет остаётся waiting")
-	if node != null and is_instance_valid(node):
-		node.free()
-	# Повторное «Соединиться» создаёт новую панель.
-	_ok(_hd.connect_packet(packet_id), "после провала можно соединиться снова")
-	_hd._on_connection_finished(true, packet_id)
-	_eq(_hd.slots.used_count(), 1, "успех снова занимает слот")
-	_hd._remove_packet(packet_id)
-
-
-func _test_full_hour_timescale() -> void:
-	_set_case("full_hour")
-	_game.hour = 2
-	_hd.start_hour(2)
+func _test_hour_end_during_minigame() -> void:
+	_set_case("hour_end_minigame")
+	_fresh(1)
+	var file = _new_file("Конец", "text", _folder_id())
+	var file_id := str(file.id)
+	var req_id: String = str(_hd.spawn_request_now(1))
+	_ok(_hd.attach_file(req_id, file_id), "файл прикреплён")
+	_hd.time_left = 5.0
+	_ok(_hd.start_send(req_id), "мини-игра открыта на 295-й секунде")
+	_ok(_hd.is_minigame_active(), "мини-игра активна")
 	_hour_events = 0
-	_hour_report = {}
-	_hd.hour_finished.connect(_on_hour_finished)
-	_hd.set_time_scale(30.0)
-	for i in range(120):
+	_minigame_cancels = 0
+	var money_before: int = _game.money
+	for i in range(80):
 		_hd.tick(0.1)
 		if not _hd.running:
 			break
-	_ok(not _hd.running, "час завершился")
-	_approx(_hd.time_left, 0.0, 0.001, "time_left = 0")
+	_ok(not _hd.running, "час завершился при открытой мини-игре")
 	_eq(_hour_events, 1, "hour_finished эмитится один раз")
-	if _hour_events > 0:
-		_eq(int(_hour_report.get("hour", 0)), 2, "в отчёте час 2")
-		_ok(_hour_report.has("earned"), "в отчёте есть earned")
-		_ok(_hour_report.has("completed"), "в отчёте есть completed")
-		_ok(_hour_report.has("failed"), "в отчёте есть failed")
-		_ok(_hour_report.has("attacks"), "в отчёте есть attacks")
-		_ok(_hour_report.has("sla_delta"), "в отчёте есть sla_delta")
+	_eq(_minigame_cancels, 1, "minigame_cancelled эмитится")
+	_ok(_hd._minigame == null, "мини-игра принудительно закрыта")
+	_ok(not _hd.active_requests.has(req_id), "запрос не отправлен и снят")
+	_ok(_game.registry.files.has(file_id), "файл не израсходован")
+	_eq(_game.money, money_before, "выплаты нет")
+	_ok(_hour_report.has("files_carry"), "отчёт содержит files_carry")
+	_ok(_hour_report.has("packets_left"), "отчёт содержит packets_left")
+
+
+# --- соединение удалено ----------------------------------------------------
+
+func _test_no_connection_game() -> void:
+	_set_case("no_connection")
+	_fresh(1)
+	_connection_shows = 0
+	var packet_id := str(_hd.spawn_packet_now("text"))
+	_ok(not _hd.connect_packet(packet_id), "connect_packet — заглушка false")
+	_ok(not _hd.connect_request("req_x"), "connect_request — заглушка false")
+	_ok(_hd.receive_packet(packet_id, _folder_id()), "приём работает без соединения")
+	for i in range(100):
+		_hd.tick(0.1)
+		if not _hd.active_packets.has(packet_id):
+			break
+	_eq(_connection_shows, 0, "show_connection ни разу не эмитится")
+	_ok(_hd._minigame == null, "Connection/MiniGame не создаётся для приёма")
+
+
+# --- отчёт -----------------------------------------------------------------
+
+func _test_report() -> void:
+	_set_case("report")
+	_fresh(2)
+	_eq(_hd.request_cap, 5, "H2: кап запросов из данных = 5")
+	_eq(_hd.active_request_limit, 2, "H2: 2 активных запроса")
+	var file = _new_file("Отчёт", "sound", _folder_id())
+	var req_id: String = str(_hd.spawn_request_now(1))
+	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
+	_ok(_hd.start_send(req_id), "мини-игра открыта")
+	_minigame_shows = 0
+	_hd._on_send_minigame_finished(0.8)
+	for i in range(200):
+		_hd.tick(0.1)
+		if not _hd.active_requests.has(req_id):
+			break
+	_hour_events = 0
+	_hd._finish_hour()
+	_eq(_hour_events, 1, "hour_finished один раз")
+	for key in ["hour", "earned", "money_delta", "completed", "failed", "attacks",
+			"attacks_failed", "sla_delta", "time_left", "packets_left",
+			"requests_left", "files_carry"]:
+		_ok(_hour_report.has(key), "отчёт содержит %s" % key)
+	_eq(int(_hour_report.get("hour", 0)), 2, "отчёт: hour = 2")
+	_eq(int(_hour_report.get("completed", 0)), 1, "отчёт: completed = 1")
+	_ok(int(_hour_report.get("files_budget", 0)) == 8, "отчёт: files_budget H2 = 8")
 
 
 # --- служебное -------------------------------------------------------------
 
+func _fresh(hour: int) -> void:
+	_game.start_new_run(1000 + int(hour) * 17)
+	_game.hour = int(hour)
+	_game.phase = &"hour"
+	_game.money = 500
+	_game.sla = 100.0
+	_game.upgrades["sla_level"] = 4
+	_hd.reset_carry()
+	_hd.start_hour(int(hour))
+	_hd.set_time_scale(1.0)
+	if _hd.attack_director != null:
+		_hd.attack_director._schedule.clear()
+		_hd.attack_director._next_index = 0
+	_hour_events = 0
+	_hour_report = {}
+	_minigame_cancels = 0
+
+
+func _reset(hour: int) -> void:
+	_fresh(hour)
+	_hd.files_spawned = _hd.files_budget
+	_hd.requests_spawned = _hd.request_cap
+	_hd.spawn_recv_accum = 0.0
+	_hd.spawn_send_accum = 0.0
+
+
 func _folder_id() -> String:
 	var section = _game.registry.sections.get("C")
-	if section == null or section.folder_ids.is_empty():
+	if section == null:
+		return ""
+	if section.folder_ids.is_empty():
 		return ""
 	return str(section.folder_ids[0])
 
 
 func _new_file(base: String, type: String, folder_id: String):
 	_name_seq += 1
-	var file = _game.registry.create_file("%s %d" % [base, _name_seq], type, folder_id)
-	return file
+	return _game.registry.create_file("%s %d" % [base, _name_seq], type, folder_id)
+
+
+func _fill_folder(folder_id: String) -> void:
+	var guard := 0
+	while guard < 100:
+		guard += 1
+		_name_seq += 1
+		var f = _game.registry.create_file("Заполнение %d" % _name_seq, "text", folder_id)
+		if f == null:
+			return
+
+
+func _on_hour_finished(report: Dictionary) -> void:
+	_hour_events += 1
+	_hour_report = report
+
+
+func _on_show_minigame(_game_node) -> void:
+	_minigame_shows += 1
+
+
+func _on_minigame_cancelled(_req_id: String) -> void:
+	_minigame_cancels += 1
+
+
+func _on_minigame_closed(_req_id: String) -> void:
+	_minigame_closes += 1
 
 
 func _on_spawn_frozen(_reason: String) -> void:
 	_frozen_events += 1
 
 
-func _on_hour_finished(report: Dictionary) -> void:
-	_hour_events += 1
-	_hour_report = report
+func _on_show_connection(_game_node) -> void:
+	_connection_shows += 1
 
 
 # --- assert-хелперы --------------------------------------------------------
@@ -553,9 +705,9 @@ func _eq(actual, expected, message: String) -> bool:
 
 func _approx(actual: float, expected: float, eps: float, message: String) -> bool:
 	_checks += 1
-	if absf(actual - expected) <= eps:
+	if absf(float(actual) - float(expected)) <= eps:
 		return true
-	_fail("%s — получено %.6f, ожидалось %.6f" % [message, actual, expected])
+	_fail("%s — получено %.6f, ожидалось %.6f" % [message, float(actual), float(expected)])
 	return false
 
 
@@ -565,6 +717,8 @@ func _fail(message: String) -> void:
 
 
 func _finish() -> void:
+	if _hd != null and is_instance_valid(_hd):
+		_hd.free()
 	print("test_hour: проверок %d, провалов %d" % [_checks, _fails])
 	print("PASS test_hour" if _fails == 0 else "FAIL test_hour")
 	quit(0 if _fails == 0 else 1)
