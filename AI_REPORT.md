@@ -3,26 +3,29 @@
 ## 1. Инструменты и модели
 
 Работа велась в **OpenCode** с субагентами (backend, frontend, designer,
-test-writer, explorer, feis-regulator):
+test-writer, explorer, feis-regulator, oracle):
 
 | Модель | Роль |
 | --- | --- |
 | **DeepSeek V4.1 Flash** | оркестратор, основной код Godot/GDScript |
 | **GLM-5.3-Flash** | документация, RU-тексты, данные |
-| **MiniMax M3.1 Flash** | баланс и экономика |
+| **MiniMax M3.1 Flash** | баланс, экономика, прогрессия |
 | **MiMo-V2.6-Flash** | аудио: синтез SFX и фона |
 | дефолтные модели субагентов | поиск, тесты, ревью |
 
-Других моделей не использовали.
+MR-ревью выполняет агент **oracle** на
+`opencode-go/deepseek-v4.1-flash`: dry-run 74–90 с, комментарий в MR
+(Blockers/High/Medium/Test gaps/Verdict), без мержа.
 
 ## 2. Где применялся ИИ
 
 - **Код Godot/GDScript:** `GameController`, `HourDirector`, `AttackDirector`,
-  `FileRegistry`, `SlotManager`, `Shop`, `SaveManager`, мини-игры, UI.
-- **UI 90-х:** `theme90.gd` — палитра, фаски, гравировка, иконки; всё
-  рисуется кодом, без текстур.
-- **Тесты:** unit/fuzz/интеграция/полный забег/UI-смоук.
-- **Баланс:** таблицы сложности, цены, формулы канала и зоны.
+  `FileRegistry`, `SlotManager`, `Shop`, `SaveManager`, мини-игры.
+- **UI v2 «Kaleidos»:** тёплая бумага, 1 px контуры, тени, бирюзовый акцент,
+  меньше визуального шума; маскот **БАЙТ** и туториал.
+- **Баланс и мета:** SLA 128/200, штрафы по типам, 10 апгрейдов, grace
+  таймеров, канал, открытия `survive_hour_3/5` и `complete_run`.
+- **Тесты:** unit, fuzz, интеграция, полный забег, UI-смоук.
 - **Документация:** `docs/`, `README.md`, `ASSETS.md`, `strings_ru.json`.
 - **Звук:** `audio/generate_sfx.py` — 18 SFX и `hum.wav` на Python.
 
@@ -63,18 +66,20 @@ coeff = {text: 1.0, sound: 2.0, photo: 3.0, video: 4.0}
 
 Headless, Godot 4.7.2:
 
-- `run_tests.gd` — **460** (реестр, экономика, save, RNG); `test_fuzz` —
-  **3249**; `test_integration` — **232**; `test_attacks` — **166**;
-  `test_controller` — **139**.
-- `test_full_playthrough` — **294** проверки на сидах `1/42/777`: 9/9 часов,
-  победа; `ui_smoke` — **130**; наборы `test_main_*` — **168**.
-- `test_hour` — **106**, `test_shop` — **83**, `test_slots` — **34**,
-  `test_minigame` — **42**, `test_audio` — **37**.
-- Итого ≈**5 140** проверок, **0 провалов**.
+- `run_tests.gd` — **505** (реестр, экономика, save, RNG); `test_hour` —
+  **131**; `test_shop` — **116**; `test_minigame` — **51**;
+  `test_slots` — **34**; `test_audio` — **37**.
+- `test_fuzz` — **3249**; `test_integration` — **231**; `test_attacks` —
+  **173**; `test_controller` — **139**.
+- `test_full_playthrough` — **294** на сидах `1/42/777`: 9/9 часов,
+  SLA 200 после магазина; `test_main_*` — **247**; `ui_smoke` — **132**.
+- Итого **5 339** проверок, **0 провалов**; `run_all_tests.sh` — **19/19
+  PASS** (18 наборов + parse-check).
 - `godot --headless --path . --quit` — exit 0; Web-экспорт — exit 0;
-  браузерный смоук Chromium: меню → «Новый забег» → подготовка,
-  canvas 1280×720, JS-ошибок нет.
+  браузерный смоук Chromium: 1600×900, меню → «Новый забег» → подготовка,
+  JS-ошибок нет.
 
-Ограничения: пошаговый туториал — 3 тоста; web-save зависит от IndexedDB;
-ручной плейтест, масштабирование и громкость — за человеком. «Всё проверено
-вручную» не утверждаем.
+Ограничения: туториал — маскот и подсказки, без пошагового сценария;
+web-save зависит от IndexedDB; ручной плейтест, громкость и масштаб — за
+человеком; remote push ещё не выполнен. «Всё проверено вручную» не
+утверждаем.
