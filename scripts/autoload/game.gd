@@ -42,6 +42,8 @@ var stats: Dictionary = {}
 var upgrades: Dictionary = {}
 ## Мета-открытия между забегами: ключ meta_rewards → true (переживает reset_run).
 var meta_unlocks: Dictionary = {}
+## Награды, выданные в текущем забеге (для итогового экрана); чистится новым забегом.
+var run_meta_awards: Array[String] = []
 ## FileRegistry; без type hint, чтобы работать без прогретого class cache.
 var registry = null
 var rng_seed: int = 0
@@ -56,6 +58,7 @@ func _ready() -> void:
 func start_new_run(seed: int = 0) -> void:
 	# Мета-прогресс (unlocks за прошлые забеги) не стирается новым забегом.
 	_reset_fields(true)
+	run_meta_awards.clear()
 	rng_seed = seed
 	var rng = _rng_node()
 	if rng != null and rng.has_method("start_run"):
@@ -85,6 +88,11 @@ func end_hour() -> bool:
 	if phase == &"results":
 		return false
 	stats["hours_done"] = int(stats.get("hours_done", 0)) + 1
+	# Мета-награды выдаём сразу за отработанные часы, а не только в _finish_run:
+	# игрок может выйти в меню после 6 часов и всё равно получить survive_hour_5.
+	# Метод идемпотентен, поэтому повторный вызов из GameController._finish_run
+	# (в т.ч. на 9-м часе) ничего не дублирует.
+	award_meta_for_run(int(stats.get("hours_done", 0)))
 	if hour >= HOURS_PER_RUN:
 		_finish_run("victory")
 		return true
@@ -100,6 +108,7 @@ func end_hour() -> bool:
 func reset_run() -> void:
 	# reset_run — сброс забега, мета-открытия остаются.
 	_reset_fields(true)
+	run_meta_awards.clear()
 	phase = &"menu"
 	rng_seed = 0
 	_emit_all()
@@ -172,6 +181,8 @@ func award_meta_for_run(hours: int) -> Array[String]:
 		if played < min_hours or meta_unlocks.has(reward_key):
 			continue
 		meta_unlocks[reward_key] = true
+		if not run_meta_awards.has(reward_key):
+			run_meta_awards.append(reward_key)
 		awarded.append(reward_key)
 	if not awarded.is_empty():
 		save_game()
@@ -219,6 +230,7 @@ func save_game() -> bool:
 		"stats": stats.duplicate(true),
 		"upgrades": upgrades.duplicate(true),
 		"meta": meta_unlocks.duplicate(true),
+		"run_meta_awards": run_meta_awards.duplicate(),
 		"rng_seed": rng_seed,
 		"rng_state": rng_state,
 		"registry": registry.to_dict(),
@@ -247,6 +259,7 @@ func load_game() -> bool:
 	streak = maxi(0, int(data.get("streak", 0)))
 	upgrades = _dict_of(data.get("upgrades", {}))
 	meta_unlocks = _dict_of(data.get("meta", {}))
+	run_meta_awards = _string_array_of(data.get("run_meta_awards", []))
 	stats = _default_stats()
 	var raw_stats = data.get("stats", {})
 	if raw_stats is Dictionary:
@@ -372,3 +385,11 @@ func _dict_of(value) -> Dictionary:
 	if value is Dictionary:
 		return value.duplicate(true)
 	return {}
+
+
+func _string_array_of(value) -> Array[String]:
+	var out: Array[String] = []
+	if value is Array:
+		for item in value:
+			out.append(str(item))
+	return out

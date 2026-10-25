@@ -397,9 +397,15 @@ func _finish_run(reason: String) -> void:
 	game.phase = PHASE_RESULTS
 	# Мета-прогресс: награды за число отработанных часов (переживают новый забег).
 	var hours_done := int(game.stats.get("hours_done", 0)) if game.stats is Dictionary else 0
+	# Часть наград уже выдана в end_hour — собираем их вместе с добираемыми на финише,
+	# чтобы итоговый экран показал все открытия этого забега (без дублей, с сохранением порядка).
 	var unlocked: Array = []
+	if game.get("run_meta_awards") is Array:
+		unlocked = (game.run_meta_awards as Array).duplicate()
 	if game.has_method("award_meta_for_run"):
-		unlocked = game.award_meta_for_run(hours_done)
+		for key in game.award_meta_for_run(hours_done):
+			if not unlocked.has(key):
+				unlocked.append(key)
 	last_run_result = _make_run_result(str(reason))
 	last_run_result["unlocked"] = unlocked.duplicate()
 	last_run_result["meta_unlocks"] = (game.meta_unlocks as Dictionary).duplicate(true) \

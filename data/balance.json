@@ -81,7 +81,7 @@
     }
   },
   "difficulty": [
-    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 30, "request_timer": 45, "attacks": 1 },
+    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 30, "request_timer": 45, "attacks": 0 },
     { "hour": 2, "recv_interval": 11, "send_interval": 20, "max_requests": 2, "buffer": 4, "packet_timer": 26.325, "request_timer": 39.825, "attacks": 1 },
     { "hour": 3, "recv_interval": 10, "send_interval": 18, "max_requests": 3, "buffer": 5, "packet_timer": 22.8, "request_timer": 34.8, "attacks": 1 },
     { "hour": 4, "recv_interval": 9, "send_interval": 17, "max_requests": 3, "buffer": 5, "packet_timer": 18.5, "request_timer": 28.5, "attacks": 2 },
@@ -96,7 +96,7 @@
     "after_end_hour": "значения часа 8; +5% к скорости спавна каждые 2 часа",
     "spawn_speedup_after_end": 0.05,
     "spawn_speedup_period_hours": 2,
-    "type_availability": "все 4 типа к часу 2; в часе 1 — text и sound (D16); 1 атака (мусор) уже в часе 1 (D16)",
+    "type_availability": "час 1 — text; час 2 — text и sound; час 3 — +photo; час 4+ — все 4 (D23); атаки — с часа 2 (attack_junk)",
     "timer_grace": "packet_timer/request_timer в таблице — итоговые значения с grace-множителем Economy: h1 1.5, h2 1.35, h3 1.2, h4+ 1.0. Формула: (base − 0.5*(h−1))*grace + 4*level. h2: 19.5*1.35=26.325, 29.5*1.35=39.825."
   },
   "progression": {
@@ -247,13 +247,13 @@
   },
   "spawn": {
     "type_pool_by_hour": {
-      "1": ["text", "sound"],
-      "2": ["text", "sound", "photo", "video"],
+      "1": ["text"],
+      "2": ["text", "sound"],
       "3+": ["text", "sound", "photo", "video"]
     },
     "malicious_ratio": 0.0,
     "required_size_distribution": { "1": 0.6, "2": 0.3, "3": 0.1 },
-    "attack_schedule": "1 в час 1, далее по difficulty.attacks, окно 60–240 с часа, не во время мини-игры"
+    "attack_schedule": "с часа 2, далее по difficulty.attacks, окно 60–240 с часа, не во время мини-игры"
   },
   "minigame_selection": {
     "coeff": { "text": 1.0, "sound": 2.0, "photo": 3.0, "video": 4.0 },

@@ -95,6 +95,11 @@ var _recv_scroll := 0.0
 const RECV_CARD_H := 48.0
 const RECV_WHEEL_STEP := 24.0
 
+## --- Карточки ОТПРАВКИ: 3–4 запроса не влезают в 252 px при шаге 64 -------
+## Внутри RequestCard контент заканчивается на y=56, поэтому 60 px достаточно.
+const REQ_CARD_H := 64.0
+const REQ_CARD_H_COMPACT := 60.0
+
 ## --- Поиск по файлам (апгрейд shop_search) --------------------------------
 var _search_edit: LineEdit
 ## Полный список файлов текущей папки; в grid уходит отфильтрованный.
@@ -216,9 +221,9 @@ func _open_settings() -> void:
 		return
 	if mascot != null:
 		mascot.hide_message()
-	var calm := true
+	var calm := false
 	if _backdrop != null:
-		calm = not _backdrop.visible
+		calm = bool(_backdrop.calm)
 	settings_modal.open({
 		"sfx": int(round(Audio.sfx_volume * 100.0)),
 		"music": int(round(Audio.music_volume * 100.0)),
@@ -236,7 +241,10 @@ func _apply_settings(values: Dictionary, persist: bool = true) -> void:
 	Audio.set_sfx_volume(float(sfx) / 100.0)
 	Audio.set_music_volume(float(music) / 100.0)
 	if _backdrop != null:
-		_backdrop.visible = not calm
+		# Спокойный фон — та же подложка, но залитая бумагой вместо dither.
+		_backdrop.visible = true
+		_backdrop.calm = calm
+		_backdrop.queue_redraw()
 	_apply_fullscreen(full)
 	_settings_cache = {"sfx": sfx, "music": music, "calm_bg": calm, "fullscreen": full}
 	if Game.stats != null:
@@ -368,8 +376,12 @@ func _build_modals() -> void:
 	confirm_modal.answered.connect(func(yes: bool) -> void:
 		var action := _confirm_action
 		_confirm_action = ""
-		if yes and action == "menu":
-			_to_menu())
+		if not yes:
+			return
+		if action == "menu":
+			_to_menu()
+		elif action.begins_with("destroy:"):
+			_destroy_folder_contents(action.substr("destroy:".length())))
 	confirm_modal.visible = false
 
 	rename_modal = RENAME_MODAL.new()
@@ -472,7 +484,8 @@ func _refresh_prep() -> void:
 	var d: Dictionary = controller.prep_data()
 	var sections: Array = d.get("sections", [])
 	tree.set_data(sections)
-	tree_window.set_title("ДИСКИ", "%d ПАПОК" % _count_folders(sections))
+	tree_window.set_title("ДИСКИ",
+		_plural_ru(_count_folders(sections), "ПАПКА", "ПАПКИ", "ПАПОК"))
 
 	var folder_id := ""
 	var folder_name := ""
@@ -490,9 +503,10 @@ func _refresh_prep() -> void:
 		grid.set_folder("", "ПАПКА", "C: \\")
 		_current_files = []
 		grid.set_files([])
-		files_window.set_title("ФАЙЛЫ · ПУСТО", "0 ОБЪЕКТОВ")
+		files_window.set_title("ФАЙЛЫ · ПУСТО",
+			_plural_ru(0, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ"))
 		if workspace != null:
-			workspace.title_right = "0 ОБЪЕКТОВ"
+			workspace.title_right = _plural_ru(0, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
 	else:
 		tree.select_folder(folder_id)
 		_show_folder(folder_id, folder_name, section_id, d)
@@ -506,6 +520,17 @@ func _count_folders(sections: Array) -> int:
 	for sec in sections:
 		n += (sec.get("folders", []) as Array).size()
 	return n
+
+
+## Русская плюрализация счётчика: 1 папка / 2 папки / 5 папок.
+func _plural_ru(n: int, one: String, few: String, many: String) -> String:
+	var a := absi(n) % 100
+	if a >= 11 and a <= 14:
+		return "%d %s" % [n, many]
+	match a % 10:
+		1: return "%d %s" % [n, one]
+		2, 3, 4: return "%d %s" % [n, few]
+		_: return "%d %s" % [n, many]
 
 
 func _show_folder(folder_id: String, folder_name: String, section_id: String, d: Dictionary) -> void:
@@ -668,7 +693,8 @@ func _refresh_tree_counts(d: Dictionary) -> void:
 		if same:
 			tree.update_count(str(id), int(known[id]))
 	if tree_window != null:
-		tree_window.set_title("ДИСКИ", "%d ПАПОК" % _count_folders(sections))
+		tree_window.set_title("ДИСКИ",
+			_plural_ru(_count_folders(sections), "ПАПКА", "ПАПКИ", "ПАПОК"))
 
 
 # --------------------------------------------------------------------------
@@ -719,12 +745,13 @@ func _update_files_title() -> void:
 	var hint := "ПУСТО"
 	if total > 0:
 		if shown == total:
-			hint = "%d ОБЪЕКТОВ" % total
+			hint = _plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
 		else:
-			hint = "%d ИЗ %d ОБЪЕКТОВ" % [shown, total]
+			hint = "%d из %s" % [shown,
+				_plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")]
 	files_window.set_title("ФАЙЛЫ · %s" % grid.folder_name, hint)
 	if workspace != null:
-		workspace.title_right = "%d ОБЪЕКТОВ" % total
+		workspace.title_right = _plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
 
 
 ## Фильтр текущей папки по подстроке имени (регистронезависимо).
@@ -770,7 +797,10 @@ func _update_status(d: Dictionary) -> void:
 		clampf(float(sla) / float(max_sla), 0.0, 1.0))
 	status_bar.set_metric("hour", "ЧАС %d" % hour, float(hour - 1) / 9.0)
 	status_bar.set_metric("tcp", "0 / %d" % tcp_max, 0.0)
-	status_bar.set_metric("buffer", "0 / 4", 0.0)
+	var buffer_max := 4
+	if controller != null and controller.hour_director != null:
+		buffer_max = maxi(1, int(controller.hour_director.buffer_limit()))
+	status_bar.set_metric("buffer", "0 / %d" % buffer_max, 0.0)
 	status_bar.set_metric("channel", "0%", 0.0)
 
 
@@ -803,8 +833,10 @@ func _clear_hour_panels() -> void:
 	slot_cells.clear()
 	if slot_count_label != null:
 		slot_count_label.text = "0/%d" % _tcp_max(Game.upgrades)
-	receive_window.set_title(_padded_title("ПРИЁМ"), "0 ПАКЕТОВ")
-	send_window.set_title(_padded_title("ОТПРАВКА"), "0 ЗАПРОСОВ")
+	receive_window.set_title(_padded_title("ПРИЁМ"),
+		_plural_ru(0, "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ"))
+	send_window.set_title(_padded_title("ОТПРАВКА"),
+		_plural_ru(0, "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ"))
 	_update_shield_visuals({})
 
 
@@ -965,14 +997,16 @@ func _refresh_hour() -> void:
 	_refresh_attacks()
 	_refresh_packets(packet_data)
 	_refresh_requests(request_data)
-	_refresh_slots(slots_data)
+	_refresh_slots(slots_data, packet_data, request_data)
 	_refresh_hour_status(status)
 	_refresh_hour_titles(packet_data, request_data, status)
 
 
 func _refresh_hour_titles(packets_data: Array, requests_data: Array, _status: Dictionary) -> void:
-	receive_window.set_title(_padded_title("ПРИЁМ"), "%d ПАКЕТОВ" % packets_data.size())
-	send_window.set_title(_padded_title("ОТПРАВКА"), "%d ЗАПРОСОВ" % requests_data.size())
+	receive_window.set_title(_padded_title("ПРИЁМ"),
+		_plural_ru(packets_data.size(), "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ"))
+	send_window.set_title(_padded_title("ОТПРАВКА"),
+		_plural_ru(requests_data.size(), "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ"))
 
 
 # --------------------------------------------------------------------------
@@ -1205,7 +1239,9 @@ func _refresh_packets(data: Array) -> void:
 	var ids: Array = []
 	for p in data:
 		ids.append(str(p.get("id", "")))
+	var rebuilt := false
 	if not _same_ids(ids, _card_ids(packets)):
+		rebuilt = true
 		for c in packets:
 			receive_window.content.remove_child(c)
 			c.queue_free()
@@ -1236,6 +1272,11 @@ func _refresh_packets(data: Array) -> void:
 		card.set_time(left, total)
 
 	_sync_recv_scroll(data.size())
+	if rebuilt:
+		# Пришли новые пакеты — показываем последний, не заставляя скроллить.
+		_recv_scroll = maxf(0.0,
+			_recv_content_height(data.size()) - maxf(1.0, receive_window.content.size.y))
+		_sync_recv_scroll(data.size())
 
 
 func _refresh_requests(data: Array) -> void:
@@ -1253,13 +1294,15 @@ func _refresh_requests(data: Array) -> void:
 			card.name = "Request_%s" % str(visible[i].get("id", ""))
 			send_window.content.add_child(card)
 			card.custom_minimum_size = Vector2.ZERO
-			card.position = Vector2(6, i * 64)
-			card.size = Vector2(400, 64)
+			card.position = Vector2(6, i * REQ_CARD_H)
+			card.size = Vector2(400, REQ_CARD_H)
 			card.connect_pressed.connect(_on_request_connect)
 			card.reject_pressed.connect(_on_request_reject)
 			card.file_dropped.connect(_on_file_to_request)
 			card.detach_pressed.connect(_on_request_detach)
 			requests.append(card)
+	# Раскладка каждый кадр: при 3–4 запросах шаг меньше, чтобы все влезли в 252 px.
+	_layout_request_cards(visible.size())
 
 	for i in visible.size():
 		if i >= requests.size():
@@ -1277,6 +1320,26 @@ func _refresh_requests(data: Array) -> void:
 			bool(r.get("is_attack", false)), str(r.get("attack_kind", "")),
 			str(r.get("attack_id", "")), is_phish)
 		requests[i].queue_redraw()
+
+
+## Высота карточки запроса: 3–4 штуки должны целиком влезать в 252 px.
+func _request_card_height(count: int) -> float:
+	return REQ_CARD_H_COMPACT if count >= 3 else REQ_CARD_H
+
+
+## Разложить карточки запросов по вертикали без пересоздания.
+func _layout_request_cards(count: int) -> void:
+	if send_window == null or send_window.content == null:
+		return
+	var h := _request_card_height(count)
+	var w := maxf(120.0, send_window.content.size.x - 12.0)
+	for i in requests.size():
+		var card := requests[i]
+		if card == null or not is_instance_valid(card):
+			continue
+		card.position = Vector2(6, i * h)
+		card.size = Vector2(w, h)
+		card.queue_redraw()
 
 
 ## Слоты запроса: required-файлы из реестра; отсутствующий файл — null.
@@ -1305,7 +1368,8 @@ func _request_slots(request: Dictionary) -> Array:
 	return out
 
 
-func _refresh_slots(data: Array) -> void:
+func _refresh_slots(data: Array, packets_data: Array = [],
+		requests_data: Array = []) -> void:
 	if slot_cells.size() != 4:
 		for c in slot_cells:
 			if is_instance_valid(c):
@@ -1332,10 +1396,42 @@ func _refresh_slots(data: Array) -> void:
 		var s: Dictionary = data[i]
 		var occupied := bool(s.get("occupied", false))
 		var dir := "down" if str(s.get("direction", "")) == "in" else "up"
+		var progress := 0.0
+		if occupied:
+			progress = _slot_entity_progress(str(s.get("entity_id", "")), dir,
+				packets_data, requests_data)
 		cell.setup(str(s.get("entity_id", "")), str(s.get("entity_name", "")), dir,
-			float(s.get("progress", 0.0)) if occupied else 0.0,
+			progress,
 			"active" if occupied else "empty",
 			"" if occupied else "СВОБОДЕН", str(int(s.get("index", i)) + 1))
+
+
+## Прогресс занятого слота: загрузка пакета или отправка запроса.
+func _slot_entity_progress(entity_id: String, dir: String, packets_data: Array,
+		requests_data: Array) -> float:
+	if entity_id.is_empty():
+		return 0.0
+	if dir == "down":
+		for p in packets_data:
+			if str(p.get("id", "")) != entity_id:
+				continue
+			if str(p.get("state", "")) != "loading":
+				return 0.0
+			var total := float(p.get("timer_total", 0.0))
+			if total <= 0.0:
+				return 0.0
+			return clampf(1.0 - float(p.get("time_left", 0.0)) / total, 0.0, 1.0)
+		return 0.0
+	for r in requests_data:
+		if str(r.get("id", "")) != entity_id:
+			continue
+		if not bool(r.get("sending", false)):
+			return 0.0
+		var duration := float(r.get("send_duration", 0.0))
+		if duration <= 0.0:
+			return 0.0
+		return clampf(float(r.get("send_progress", 0.0)) / duration, 0.0, 1.0)
+	return 0.0
 
 
 func _refresh_hour_status(status: Dictionary) -> void:
@@ -1575,14 +1671,14 @@ func _build() -> void:
 	workspace.name = "Workspace"
 	workspace.kind = Panel90.Kind.GROUP
 	workspace.title = "ДИСК C:"
-	workspace.title_right = "0 ОБЪЕКТОВ"
+	workspace.title_right = _plural_ru(0, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
 	_place(self, workspace, Rect2(8, 48, 840, 548))
 
 	# окно дерева (16,72,240,516)
 	tree_window = WindowFrame.new()
 	tree_window.name = "TreeWindow"
 	tree_window.title = "ДИСКИ"
-	tree_window.title_hint = "6 ПАПОК"
+	tree_window.title_hint = _plural_ru(6, "ПАПКА", "ПАПКИ", "ПАПОК")
 	tree_window.icon_kind = "tree"
 	_place(workspace, tree_window, Rect2(8, 24, 240, 516))
 
@@ -1595,7 +1691,7 @@ func _build() -> void:
 	files_window = WindowFrame.new()
 	files_window.name = "FilesWindow"
 	files_window.title = "ФАЙЛЫ · ПРИЁМ"
-	files_window.title_hint = "12 ОБЪЕКТОВ"
+	files_window.title_hint = _plural_ru(12, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
 	files_window.icon_kind = "files"
 	_place(workspace, files_window, Rect2(256, 24, 576, 516))
 
@@ -1608,7 +1704,7 @@ func _build() -> void:
 	receive_window = WindowFrame.new()
 	receive_window.name = "ReceiveWindow"
 	receive_window.title = _padded_title("ПРИЁМ")
-	receive_window.title_hint = "5 ПАКЕТОВ"
+	receive_window.title_hint = _plural_ru(5, "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ")
 	receive_window.icon_kind = "inbox"
 	_place(self, receive_window, Rect2(856, 48, 416, 264))
 	_build_receive_scroll()
@@ -1617,7 +1713,7 @@ func _build() -> void:
 	send_window = WindowFrame.new()
 	send_window.name = "SendWindow"
 	send_window.title = _padded_title("ОТПРАВКА")
-	send_window.title_hint = "4 ЗАПРОСА"
+	send_window.title_hint = _plural_ru(4, "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ")
 	send_window.icon_kind = "outbox"
 	_place(self, send_window, Rect2(856, 320, 416, 276))
 	_build_shields()
@@ -1805,7 +1901,8 @@ func _apply_mock() -> void:
 
 	grid.set_folder("inbox", "ПРИЁМ", "C: \\ ПРИЁМ")
 	grid.set_files(_files_for("inbox"))
-	files_window.set_title("ФАЙЛЫ · ПРИЁМ", "12 ОБЪЕКТОВ")
+	files_window.set_title("ФАЙЛЫ · ПРИЁМ",
+		_plural_ru(12, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ"))
 
 	var pk := _mock_packets()
 	var y := 1.0
@@ -2173,25 +2270,16 @@ func _on_slot_press(id: String) -> void:
 			_toast("СЛОТ ДОСТУПЕН В МАГАЗИНЕ", "info")
 
 
-func _on_packet_to_slot(cell_id: String, payload: Dictionary) -> void:
-	for c in slot_cells:
-		if c.id == cell_id and c.state == "empty":
-			var nm := str(payload.get("name", "пакет"))
-			var proto := str(payload.get("protocol", "TCP"))
-			c.setup(c.id, "%s.%s" % [nm, str(payload.get("ext", ""))], "down", 0.06, "active",
-				"ПРИЁМ")
-			_toast("СЛОТ ЗАНЯТ · %s (%s)" % [nm, proto], "success")
-			_refresh_slot_count()
-			return
-
-
-func _refresh_slot_count() -> void:
-	var used := 0
-	for c in slot_cells:
-		if c.state == "active":
-			used += 1
-	if slot_count_label != null:
-		slot_count_label.text = "%d/%d" % [used, slot_cells.size()]
+func _on_packet_to_slot(_cell_id: String, payload: Dictionary) -> void:
+	# Слот занимает только настоящее соединение; drop — это попытка подключить.
+	if bool(payload.get("is_attack", false)) \
+			or not str(payload.get("attack_kind", "")).is_empty():
+		_toast("УГРОЗУ — В ЩИТ", "warn")
+		return
+	var packet_id := str(payload.get("id", ""))
+	if packet_id.is_empty():
+		return
+	_on_packet_connect(packet_id)
 
 
 func _on_drop_to_folder(folder_id: String, payload: Dictionary) -> void:
@@ -2246,9 +2334,69 @@ func _on_tree_menu(action: String, folder_id: String) -> void:
 			_open_rename(folder_id)
 		"delete":
 			_delete_folder(folder_id)
+		"destroy":
+			_confirm_destroy_folder(folder_id)
 		_:
-			_toast("СОДЕРЖИМОЕ УНИЧТОЖЕНО · SLA −5", "error")
-			status_bar.flash("sla", "−5", Theme90.ERROR)
+			_toast("НЕИЗВЕСТНОЕ ДЕЙСТВИЕ", "warn")
+
+
+## «Уничтожить содержимое»: спрашиваем подтверждение, если папка не пуста.
+func _confirm_destroy_folder(folder_id: String) -> void:
+	if Game.registry == null or not Game.registry.folders.has(folder_id):
+		_toast("ПАПКА НЕ НАЙДЕНА", "warn")
+		return
+	var file_ids := _folder_file_ids(folder_id)
+	if file_ids.is_empty():
+		_toast("ПАПКА ПУСТА", "warn")
+		return
+	if confirm_modal == null:
+		return
+	var folder_name := str(Game.registry.folders[folder_id].name)
+	_confirm_action = "destroy:" + folder_id
+	confirm_modal.ask("Уничтожить содержимое?",
+		"Файлы папки «%s» будут удалены. Штраф −5 SLA." % folder_name,
+		"Уничтожить", "Отмена", true)
+
+
+func _folder_file_ids(folder_id: String) -> Array:
+	var out: Array = []
+	if Game.registry == null:
+		return out
+	for file_id in Game.registry.files.keys():
+		var file = Game.registry.files[file_id]
+		if file != null and str(file.folder_id) == folder_id:
+			out.append(str(file_id))
+	return out
+
+
+## Реальное уничтожение: удаляем файлы папки и списываем 5 SLA.
+func _destroy_folder_contents(folder_id: String) -> void:
+	if Game.registry == null or not Game.registry.folders.has(folder_id):
+		_toast("ПАПКА НЕ НАЙДЕНА", "warn")
+		return
+	var file_ids := _folder_file_ids(folder_id)
+	if file_ids.is_empty():
+		_toast("ПАПКА ПУСТА", "warn")
+		return
+	var registry = Game.registry
+	for file_id in file_ids:
+		# remove_file штатно удаляет только malicious/failed; для осознанного
+		# уничтожения помечаем файл и сразу удаляем.
+		if not registry.remove_file(file_id):
+			registry.mark_malicious(file_id, "destroy")
+			registry.remove_file(file_id)
+		if _selected_file == file_id:
+			_selected_file = ""
+	Game.add_sla(-5.0, "destroy")
+	if controller != null:
+		controller.save()
+	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		_refresh_prep()
+	else:
+		_refresh_hour()
+	_toast("СОДЕРЖИМОЕ УНИЧТОЖЕНО · SLA −5", "error")
+	if status_bar != null:
+		status_bar.flash("sla", "−5", Theme90.ERROR)
 
 
 ## Открыть диалог переименования папки (только для реальных папок, не секций).
@@ -2463,9 +2611,26 @@ func _on_shop_buy(id: String) -> void:
 	if controller == null:
 		return
 	if controller.buy(id):
-		_toast("КУПЛЕНО: %s" % id, "success")
+		_toast("КУПЛЕНО: %s" % _shop_item_name(id), "success")
 	shop_modal.refresh(Game.money, Game.upgrades)
 	_refresh_prep()
+
+
+## Название позиции магазина для тоста (id — только фолбэк).
+func _shop_item_name(id: String) -> String:
+	var data := get_node_or_null("/root/Data")
+	if data != null and data.has_method("shop_item"):
+		var item: Dictionary = data.call("shop_item", id)
+		var item_name := str(item.get("name_ru", item.get("name", "")))
+		if not item_name.is_empty():
+			return item_name
+	if controller != null and controller.shop != null \
+			and controller.shop.has_method("get_item"):
+		var item2: Dictionary = controller.shop.get_item(id)
+		var item_name2 := str(item2.get("name_ru", item2.get("name", "")))
+		if not item_name2.is_empty():
+			return item_name2
+	return id
 
 
 func _on_start_hour() -> void:
@@ -2493,12 +2658,18 @@ func _toast(text: String, kind: String = "info") -> void:
 class Backdrop:
 	extends Control
 
+	## Спокойный фон: без dither, ровная бумажная заливка.
+	var calm := false
+
 	func _ready() -> void:
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 	func _draw() -> void:
-		draw_texture_rect(Theme90.dither_texture(), Rect2(Vector2.ZERO, size), true)
+		if calm:
+			draw_rect(Rect2(Vector2.ZERO, size), Theme90.PAPER)
+		else:
+			draw_texture_rect(Theme90.dither_texture(), Rect2(Vector2.ZERO, size), true)
 		draw_rect(Rect2(0, 0, size.x, 1), Theme90.SHADE)
 		draw_rect(Rect2(0, 0, 1, size.y), Theme90.SHADE)
 		draw_rect(Rect2(size.x - 1, 0, 1, size.y), Theme90.FACE_HI)

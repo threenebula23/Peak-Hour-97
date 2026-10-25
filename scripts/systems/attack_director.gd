@@ -4,8 +4,8 @@ extends Node
 ##
 ## Тик идёт из HourDirector (единый Clock). Атаки не занимают буфер (D07),
 ## спавнятся в окне 60–240 с часа и не открываются во время мини-игры.
-## Расписание: min(4, 1 + floor((hour−2)/2)), но в часе 1 уже 1 атака
-## (мусор, D16).
+## Расписание: min(4, 1 + floor((hour−2)/2)); час 1 — без атак
+## (junk открывается с часа 2, D23).
 
 signal attack_added(id: String)
 signal attack_changed(id: String)
@@ -91,11 +91,11 @@ func set_allow_spawn(value: bool) -> void:
 	_allow_spawn = value
 
 
-## Сколько атак запланировано на час (D16 + формула постановки).
+## Сколько атак запланировано на час (D23: атаки с часа 2, час 1 — 0).
 static func attacks_for_hour(p_hour: int) -> int:
 	var h := maxi(1, int(p_hour))
 	if h == 1:
-		return 1
+		return 0
 	return clampi(1 + int(floor(float(h - 2) / 2.0)), 1, 4)
 
 
