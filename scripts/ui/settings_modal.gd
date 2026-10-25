@@ -6,7 +6,8 @@ extends Control
 ## Окно работает с черновиком: ползунки и галочки меняют только внутреннее
 ## состояние. Наружу настройки уходят одним сигналом settings_changed(dict)
 ## по кнопке «Подтвердить»; «Отмена», Esc и X закрывают окно без применения.
-## Ключи: sfx (0..100), music (0..100), calm_bg (bool), fullscreen (bool).
+## Ключи: sfx (0..100), music (0..100), calm_bg (bool), fullscreen (bool),
+## vhs (bool).
 
 signal settings_changed(values: Dictionary)
 signal closed
@@ -16,7 +17,8 @@ const H := 320.0
 const TITLE_H := 20.0
 const DIM := Color(0.0, 0.0, 0.0, 0.35)
 
-const DEFAULT_STATE := {"sfx": 70, "music": 55, "calm_bg": true, "fullscreen": false}
+const DEFAULT_STATE := {"sfx": 70, "music": 55, "calm_bg": true, "fullscreen": false,
+	"vhs": true}
 
 
 ## Ползунок 90-х: утопленный жёлоб с насечками и объёмный бегунок 9×14.
@@ -102,6 +104,7 @@ var _sfx: Slider90
 var _music: Slider90
 var _calm: Check90
 var _full: Check90
+var _vhs: Check90
 var _btn_cancel: Button90
 var _btn_apply: Button90
 var _btn_reset: Button90
@@ -157,12 +160,14 @@ func _apply_state(state: Dictionary) -> void:
 	_state["music"] = clampi(int(src.get("music", 55)), 0, 100)
 	_state["calm_bg"] = bool(src.get("calm_bg", true))
 	_state["fullscreen"] = bool(src.get("fullscreen", false))
+	_state["vhs"] = bool(src.get("vhs", true))
 	if _sfx != null:
 		_sfx.set_value(int(_state["sfx"]), false)
 	if _music != null:
 		_music.set_value(int(_state["music"]), false)
 	_set_check(_calm, bool(_state["calm_bg"]))
 	_set_check(_full, bool(_state["fullscreen"]))
+	_set_check(_vhs, bool(_state["vhs"]))
 	queue_redraw()
 
 
@@ -213,6 +218,14 @@ func _build() -> void:
 	add_child(_full)
 	_full.toggled.connect(_on_full)
 
+	_vhs = Check90.new()
+	_vhs.caption = _tr("ui.vhs_effect", "VHS-эффект")
+	_vhs.caption_size = Theme90.FS_BODY
+	add_child(_vhs)
+	_vhs.button_pressed = true
+	_vhs.checked = true
+	_vhs.toggled.connect(_on_vhs)
+
 	_btn_reset = Button90.new()
 	_btn_reset.caption = "Сброс"
 	add_child(_btn_reset)
@@ -252,11 +265,14 @@ func _layout() -> void:
 		_music.position = r.position + Vector2(120, 89)
 		_music.size = Vector2(330, 14)
 	if _calm != null:
-		_calm.position = r.position + Vector2(28, 174)
+		_calm.position = r.position + Vector2(28, 172)
 		_calm.size = Vector2(400, 16)
 	if _full != null:
-		_full.position = r.position + Vector2(28, 202)
+		_full.position = r.position + Vector2(28, 198)
 		_full.size = Vector2(400, 16)
+	if _vhs != null:
+		_vhs.position = r.position + Vector2(28, 224)
+		_vhs.size = Vector2(400, 16)
 	if _btn_reset != null:
 		_btn_reset.position = r.position + Vector2(264, 278)
 		_btn_reset.size = Vector2(70, 24)
@@ -289,6 +305,11 @@ func _on_full(on: bool) -> void:
 	_state["fullscreen"] = on
 	queue_redraw()
 
+
+func _on_vhs(on: bool) -> void:
+	_state["vhs"] = on
+	queue_redraw()
+
 func _on_reset() -> void:
 	_apply_state(DEFAULT_STATE)
 
@@ -319,7 +340,7 @@ func _draw() -> void:
 	var r := _window_rect()
 	_draw_frame(r)
 	_draw_group(Rect2(r.position + Vector2(14, 28), Vector2(r.size.x - 28, 108)), "ЗВУК")
-	_draw_group(Rect2(r.position + Vector2(14, 144), Vector2(r.size.x - 28, 96)), "ЭКРАН")
+	_draw_group(Rect2(r.position + Vector2(14, 144), Vector2(r.size.x - 28, 104)), "ЭКРАН")
 	_draw_labels(r)
 
 

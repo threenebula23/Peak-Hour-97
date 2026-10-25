@@ -78,6 +78,7 @@ func _init() -> void:
 	_test_rename_folder(main, game)
 	_test_folder_name_generation(main, game)
 	_test_top_menu(main)
+	_test_vhs(main)
 
 	print("")
 	print("Проверок: %d, провалов: %d" % [_checks, _fails])
@@ -245,6 +246,46 @@ func _test_top_menu(main) -> void:
 	main.confirm_modal._answer(true)
 	_ok(main.main_menu.visible, "подтверждение возвращает в главное меню из подготовки")
 	_ok(not bool(main.controller.paused), "в подготовке пауза не включается")
+
+
+## VHS-слой: только главное меню, не мешает вводу и не строится в headless.
+func _test_vhs(main) -> void:
+	var overlay = main.main_menu.vhs
+	_ok(overlay != null, "VHS-слой создан")
+	if overlay == null:
+		return
+	_ok(overlay.get_parent() == main.main_menu, "VHS-слой — ребёнок главного меню")
+	_ok(main.main_menu.get_child(main.main_menu.get_child_count() - 1) == overlay,
+		"VHS-слой поверх карточки и кнопок меню")
+	_eq(overlay.mouse_filter, Control.MOUSE_FILTER_IGNORE, "VHS не ловит мышь")
+	_eq(overlay.process_mode, Node.PROCESS_MODE_ALWAYS, "VHS работает при паузе")
+	_ok(not overlay.is_available(), "в headless VHS-материал не создаётся")
+	_ok(not overlay.visible, "в headless VHS-слой не рендерится")
+	_ok(main.main_menu.is_vhs_enabled(), "VHS включён по умолчанию")
+
+	main.main_menu.set_vhs_enabled(true)
+	_ok(overlay.enabled, "set_vhs_enabled(true) включает эффект")
+	main.main_menu.set_vhs_enabled(false)
+	_ok(not main.main_menu.vhs.enabled, "set_vhs_enabled(false) отключает эффект")
+	main.main_menu.set_vhs_enabled(true)
+
+	# Модалка настроек показывает состояние, но применяет только по «Подтвердить».
+	main.main_menu.set_vhs_enabled(false)
+	main._open_settings()
+	_ok(main.settings_modal._vhs != null and not main.settings_modal._vhs.checked,
+		"настройки показывают VHS выключенным")
+	_ok(not bool(main.settings_modal.get_state().get("vhs", true)),
+		"get_state().vhs — false")
+	main.settings_modal.close()
+	main.main_menu.set_vhs_enabled(true)
+
+	# Применение настроек меняет только меню; игровые панели не затрагиваются.
+	main._apply_settings({"sfx": 70, "music": 55, "calm_bg": true,
+		"fullscreen": false, "vhs": false}, false)
+	_ok(not main.main_menu.is_vhs_enabled(), "настройки применяют VHS к меню")
+	main._apply_settings({"sfx": 70, "music": 55, "calm_bg": true,
+		"fullscreen": false, "vhs": true}, false)
+	_ok(main.main_menu.is_vhs_enabled(), "настройки возвращают VHS")
 
 
 func _finish() -> void:

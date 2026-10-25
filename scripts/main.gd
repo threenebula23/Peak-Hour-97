@@ -276,6 +276,8 @@ func _open_settings() -> void:
 		"music": int(round(Audio.music_volume * 100.0)),
 		"calm_bg": calm,
 		"fullscreen": full,
+		"vhs": main_menu.is_vhs_enabled() if main_menu != null \
+			else bool(_settings_cache.get("vhs", true)),
 	})
 	_sync_modal_pause()
 
@@ -286,6 +288,7 @@ func _apply_settings(values: Dictionary, persist: bool = true) -> void:
 	var music := clampi(int(values.get("music", int(round(Audio.music_volume * 100.0)))), 0, 100)
 	var calm := bool(values.get("calm_bg", true))
 	var full := bool(values.get("fullscreen", false))
+	var vhs := bool(values.get("vhs", true))
 	Audio.set_sfx_volume(float(sfx) / 100.0)
 	Audio.set_music_volume(float(music) / 100.0)
 	if _backdrop != null:
@@ -293,8 +296,12 @@ func _apply_settings(values: Dictionary, persist: bool = true) -> void:
 		_backdrop.visible = true
 		_backdrop.calm = calm
 		_backdrop.queue_redraw()
+	if main_menu != null:
+		# VHS живёт только на главном меню; игровые панели и модалки не трогаем.
+		main_menu.set_vhs_enabled(vhs)
 	_apply_fullscreen(full)
-	_settings_cache = {"sfx": sfx, "music": music, "calm_bg": calm, "fullscreen": full}
+	_settings_cache = {"sfx": sfx, "music": music, "calm_bg": calm,
+		"fullscreen": full, "vhs": vhs}
 	if Game.stats != null:
 		Game.stats["settings"] = _settings_cache.duplicate(true)
 	# В главном меню забега ещё нет: настройки живут в Game.stats, но не должны
