@@ -36,6 +36,7 @@ func _init() -> void:
 	_test_full_hour()
 	_test_nine_hours()
 	_test_three_tcp_slots()
+	_test_auto_send()
 	_test_receive_to_folder()
 	_finish()
 
@@ -152,6 +153,39 @@ func _test_three_tcp_slots() -> void:
 	_eq(_hd.slots.used_count(), 1, "после завершения первого пакета слот свободен")
 	_ok(_hd.connect_packet(p3), "третий пакет соединяется после освобождения слота")
 	_finish_connection(p3)
+
+
+# --- автоотправка ----------------------------------------------------------
+
+func _test_auto_send() -> void:
+	_set_case("auto_send")
+	_game.start_new_run(778)
+	_hd.start_hour(1)
+	_hd.set_time_scale(1.0)
+	_hd._recv_interval_current = 9999.0
+	_hd.spawn_recv_accum = 0.0
+	var folder_id := _first_folder()
+	var file = _game.registry.create_file("auto_send.txt", "text", folder_id)
+	_ok(file != null, "файл для автоотправки создан")
+	if file == null:
+		return
+	var req_id := str(_hd._make_request([file], "udp", false, "", ""))
+	var req = _hd.active_requests.get(req_id)
+	_ok(req != null, "запрос создан")
+	if req == null:
+		return
+	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
+	_ok(bool(req.sending), "UDP: отправка стартовала автоматически")
+	_ok(not bool(req.minigame_active) and _hd._minigame == null, "MiniGame не создаётся")
+	_ok(not bool(_hd.modal_open), "модалки нет")
+	var progress_before := float(req.send_progress)
+	_hd.tick(0.1)
+	_ok(float(req.send_progress) > progress_before, "send_progress идёт")
+	for i in range(200):
+		_hd.tick(0.1)
+		if not _hd.active_requests.has(req_id):
+			break
+	_ok(not _hd.active_requests.has(req_id), "запрос завершён отправкой")
 
 
 # --- приём -----------------------------------------------------------------

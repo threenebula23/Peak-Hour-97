@@ -7,7 +7,7 @@
     "_todo": [
       "attacks.junk.spawn_probability — не задан в спецификации (явно null)",
       "income_target_by_hour: часы 4,6,7,8 — интерполяция, уточнить",
-      "difficulty.h2 packet_timer/request_timer: формула даёт 26.325/39.825 (19.5×1.35 и 29.5×1.35); в постановке было 26.25/39.75 — оставлена формула"
+      "difficulty.h2 packet_timer/request_timer: формула даёт 26.325/50.15 (19.5×1.35 и 29.5×1.7 — у запросов отдельный grace)"
     ]
   },
   "constants": {
@@ -81,9 +81,9 @@
     }
   },
   "difficulty": [
-    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 30, "request_timer": 45, "attacks": 0 },
-    { "hour": 2, "recv_interval": 11, "send_interval": 20, "max_requests": 2, "buffer": 4, "packet_timer": 26.325, "request_timer": 39.825, "attacks": 1 },
-    { "hour": 3, "recv_interval": 10, "send_interval": 18, "max_requests": 3, "buffer": 5, "packet_timer": 22.8, "request_timer": 34.8, "attacks": 1 },
+    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 30, "request_timer": 60, "attacks": 0 },
+    { "hour": 2, "recv_interval": 11, "send_interval": 20, "max_requests": 2, "buffer": 4, "packet_timer": 26.325, "request_timer": 50.15, "attacks": 1 },
+    { "hour": 3, "recv_interval": 10, "send_interval": 18, "max_requests": 3, "buffer": 5, "packet_timer": 22.8, "request_timer": 40.6, "attacks": 1 },
     { "hour": 4, "recv_interval": 9, "send_interval": 17, "max_requests": 3, "buffer": 5, "packet_timer": 18.5, "request_timer": 28.5, "attacks": 2 },
     { "hour": 5, "recv_interval": 8, "send_interval": 15, "max_requests": 4, "buffer": 6, "packet_timer": 18, "request_timer": 28, "attacks": 2 },
     { "hour": 6, "recv_interval": 7.5, "send_interval": 14, "max_requests": 4, "buffer": 6, "packet_timer": 17.5, "request_timer": 27.5, "attacks": 3 },
@@ -97,7 +97,7 @@
     "spawn_speedup_after_end": 0.05,
     "spawn_speedup_period_hours": 2,
     "type_availability": "час 1 — text; час 2 — text и sound; час 3 — +photo; час 4+ — все 4 (D23); атаки — с часа 2 (attack_junk)",
-    "timer_grace": "packet_timer/request_timer в таблице — итоговые значения с grace-множителем Economy: h1 1.5, h2 1.35, h3 1.2, h4+ 1.0. Формула: (base − 0.5*(h−1))*grace + 4*level. h2: 19.5*1.35=26.325, 29.5*1.35=39.825."
+    "timer_grace": "packet_timer: grace h1 1.5, h2 1.35, h3 1.2, h4+ 1.0 (Economy.TIMER_GRACE). request_timer: отдельный grace h1 2.0, h2 1.7, h3 1.4, h4+ 1.0 (Economy.REQUEST_TIMER_GRACE). Формула: (base − 0.5*(h−1))*grace + 4*level. h2: packet 19.5*1.35=26.325, request 29.5*1.7=50.15."
   },
   "progression": {
     "unlocks": {
@@ -252,7 +252,13 @@
       "3+": ["text", "sound", "photo", "video"]
     },
     "malicious_ratio": 0.0,
+    "required_count_by_hour": {
+      "1": { "1": 1.0 },
+      "2": { "1": 0.75, "2": 0.25 },
+      "3+": { "1": 0.6, "2": 0.3, "3": 0.1 }
+    },
     "required_size_distribution": { "1": 0.6, "2": 0.3, "3": 0.1 },
+    "required_count_note": "required_count_by_hour — распределение по часу; required_size_distribution — fallback/час 3+",
     "attack_schedule": "с часа 2, далее по difficulty.attacks, окно 60–240 с часа, не во время мини-игры"
   },
   "minigame_selection": {

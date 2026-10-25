@@ -3,8 +3,10 @@ extends Control
 ## Модальное окно «НАСТРОЙКИ»: громкость звуков и музыки, спокойный фон,
 ## полный экран. Ползунки и галочки — собственные, в стиле 90-х.
 ##
-## Только UI: изменения отдаются наружу сигналом settings_changed(dict)
-## с ключами sfx (0..100), music (0..100), calm_bg (bool), fullscreen (bool).
+## Окно работает с черновиком: ползунки и галочки меняют только внутреннее
+## состояние. Наружу настройки уходят одним сигналом settings_changed(dict)
+## по кнопке «Подтвердить»; «Отмена», Esc и X закрывают окно без применения.
+## Ключи: sfx (0..100), music (0..100), calm_bg (bool), fullscreen (bool).
 
 signal settings_changed(values: Dictionary)
 signal closed
@@ -95,13 +97,13 @@ class Slider90:
 
 
 var _state: Dictionary = DEFAULT_STATE.duplicate(true)
-var _silent := false
 
 var _sfx: Slider90
 var _music: Slider90
 var _calm: Check90
 var _full: Check90
-var _btn_back: Button90
+var _btn_cancel: Button90
+var _btn_apply: Button90
 var _btn_reset: Button90
 var _btn_x: Button90
 
@@ -136,8 +138,18 @@ func get_state() -> Dictionary:
 	return _state.duplicate(true)
 
 
+## Обновить черновик извне (например, если браузер отклонил fullscreen).
+func set_state(state: Dictionary) -> void:
+	_apply_state(state)
+
+
+func set_fullscreen(on: bool) -> void:
+	_state["fullscreen"] = bool(on)
+	_set_check(_full, bool(on))
+	queue_redraw()
+
+
 func _apply_state(state: Dictionary) -> void:
-	_silent = true
 	var src := DEFAULT_STATE.duplicate(true)
 	for key in state.keys():
 		src[key] = state[key]
@@ -151,7 +163,6 @@ func _apply_state(state: Dictionary) -> void:
 		_music.set_value(int(_state["music"]), false)
 	_set_check(_calm, bool(_state["calm_bg"]))
 	_set_check(_full, bool(_state["fullscreen"]))
-	_silent = false
 	queue_redraw()
 
 
@@ -207,14 +218,20 @@ func _build() -> void:
 	add_child(_btn_reset)
 	_btn_reset.pressed.connect(_on_reset)
 
-	_btn_back = Button90.new()
-	_btn_back.caption = "Назад"
-	add_child(_btn_back)
-	_btn_back.pressed.connect(close)
+	_btn_cancel = Button90.new()
+	_btn_cancel.caption = "Отмена"
+	add_child(_btn_cancel)
+	_btn_cancel.pressed.connect(close)
+
+	_btn_apply = Button90.new()
+	_btn_apply.caption = "Подтвердить"
+	_btn_apply.accent = true
+	add_child(_btn_apply)
+	_btn_apply.pressed.connect(_confirm)
 
 	_btn_x = Button90.new()
 	_btn_x.icon = Button90.Icon.X
-	_btn_x.tooltip_text = "Закрыть"
+	_btn_x.tooltip_text = "Отмена"
 	_btn_x.pressed.connect(close)
 	add_child(_btn_x)
 
@@ -241,13 +258,16 @@ func _layout() -> void:
 		_full.position = r.position + Vector2(28, 202)
 		_full.size = Vector2(400, 16)
 	if _btn_reset != null:
-		_btn_reset.position = r.position + Vector2(270, 278)
-		_btn_reset.size = Vector2(116, 24)
-	if _btn_back != null:
-		_btn_back.position = r.position + Vector2(396, 278)
-		_btn_back.size = Vector2(130, 24)
+		_btn_reset.position = r.position + Vector2(264, 278)
+		_btn_reset.size = Vector2(70, 24)
+	if _btn_cancel != null:
+		_btn_cancel.position = r.position + Vector2(342, 278)
+		_btn_cancel.size = Vector2(80, 24)
+	if _btn_apply != null:
+		_btn_apply.position = r.position + Vector2(430, 278)
+		_btn_apply.size = Vector2(96, 24)
 	if _btn_x != null:
-		_btn_x.position = r.position + Vector2(W - 22, 4)
+		_btn_x.position = r.position + Vector2(W - 26, 4)
 		_btn_x.size = Vector2(16, 16)
 
 
@@ -255,31 +275,30 @@ func _layout() -> void:
 
 func _on_sfx(v: int) -> void:
 	_state["sfx"] = v
-	_emit()
+	queue_redraw()
 
 func _on_music(v: int) -> void:
 	_state["music"] = v
-	_emit()
+	queue_redraw()
 
 func _on_calm(on: bool) -> void:
 	_state["calm_bg"] = on
-	_emit()
+	queue_redraw()
 
 func _on_full(on: bool) -> void:
 	_state["fullscreen"] = on
-	_emit()
+	queue_redraw()
 
 func _on_reset() -> void:
 	_apply_state(DEFAULT_STATE)
-	if not _silent:
-		settings_changed.emit(get_state())
 
 
-func _emit() -> void:
-	if _silent:
+## «Подтвердить» — единственная точка применения draft-настроек.
+func _confirm() -> void:
+	if not visible:
 		return
 	settings_changed.emit(get_state())
-	queue_redraw()
+	close()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -342,7 +361,7 @@ func _draw_labels(r: Rect2) -> void:
 
 	# подсказки
 	Theme90.text(self, f, Vector2(r.position.x + 16, r.position.y + 254),
-		"ESC — ЗАКРЫТЬ · ЗВУК И ЭКРАН", Theme90.FS_MICRO, Theme90.DARK)
+		"ESC — ОТМЕНА · ПРИМЕНЯЕТСЯ ПО «ПОДТВЕРДИТЬ»", Theme90.FS_MICRO, Theme90.DARK)
 
 
 func _draw_speaker(r: Rect2) -> void:

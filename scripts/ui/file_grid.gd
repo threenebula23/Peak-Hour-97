@@ -45,7 +45,8 @@ func _ready() -> void:
 	_bar.value_changed.connect(_on_scroll)
 	_check = Check90.new()
 	_check.name = "ServiceCheck"
-	_check.caption = "СКРЫТЬ СЛУЖЕБНЫЕ"
+	_check.caption = "СКРЫТЬ ОПАСНЫЕ"
+	_check.tooltip_text = "Скрывает заблокированные, опасные и ошибочные файлы"
 	add_child(_check)
 	_check.toggled.connect(_on_service_toggled)
 
@@ -73,6 +74,15 @@ func _visible_count() -> int:
 	var n := 0
 	for c in _cards:
 		if c.visible:
+			n += 1
+	return n
+
+
+## Сколько файлов скрывает фильтр «СКРЫТЬ ОПАСНЫЕ» (для динамического тоста).
+func hidden_count() -> int:
+	var n := 0
+	for c in _cards:
+		if c.state == "locked" or c.state == "malicious" or c.state == "failed":
 			n += 1
 	return n
 

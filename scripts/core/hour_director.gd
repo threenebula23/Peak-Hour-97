@@ -476,6 +476,10 @@ func attach_file(req_id: String, file_id: String) -> bool:
 		return false
 	req.attached.append(file_id)
 	request_changed.emit(req_id)
+	# Отправка автоматическая: последний прикреплённый файл запускает её без
+	# отдельного клика. TCP ждёт успешного соединения (is_ready), UDP — сразу.
+	if req.is_ready() and not req.sending:
+		_begin_send(req_id)
 	return true
 
 
@@ -534,19 +538,32 @@ func connect_request(req_id: String) -> bool:
 	return true
 
 
+## Отправка запускается сразу, без окна-заглушки MiniGame. Окно мини-игры
+## остаётся на будущее (_on_minigame_finished), но в текущем цикле не
+## создаётся: качество считается полным (1.0).
 func start_send(req_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
 	if req.minigame_active or req.sending:
 		return false
-	if _minigame != null or modal_open:
+	if _minigame != null:
+		return false
+	# Пока открыта ConnectionGame (своя или другого запроса), отправку не
+	# стартуем: иначе TCP-запрос уйдёт без полоски соединения. Успешное
+	# соединение вызывает _begin_send уже после _pop_modal.
+	if modal_open:
 		return false
 	if hour_elapsed < send_disabled_until:
 		_emit_toast("Отправка временно недоступна")
 		return false
 	if not req.is_ready():
 		_emit_toast("Запрос не готов к отправке")
+		return false
+	# TCP отправляется только после успешного соединения (иначе запрос ушёл бы
+	# без полоски соединения). UDP можно отправлять сразу.
+	if req.protocol == "tcp" and not req.connected:
+		_emit_toast("Сначала подключитесь к клиенту")
 		return false
 	for file_id in req.required:
 		if registry != null and registry.files.has(str(file_id)):
@@ -556,23 +573,9 @@ func start_send(req_id: String) -> bool:
 				return false
 	if req.required_types.is_empty():
 		req.required_types = _request_types(req)
-	var mini_type := ECONOMY.minigame_type(req.required_types)
-	# Тип мини-игры может быть ещё не открыт по прогрессии (п.16): играем
-	# ближайшим открытым типом (text — самый ранний).
-	if not _feature_unlocked("minigame_" + mini_type):
-		mini_type = _fallback_minigame_type()
-	var difficulty := ECONOMY.minigame_difficulty(req.required_types)
-	var mg = MINIGAME_SCRIPT.new()
-	_minigame = mg
-	_minigame_request_id = req_id
-	req.minigame_active = true
-	mg.finished.connect(_on_minigame_finished)
-	_push_modal()
-	mg.start(mini_type, difficulty)
-	show_minigame.emit(mg)
-	if mg.get_parent() == null:
-		add_child(mg)
-	request_changed.emit(req_id)
+	req.quality = 1.0
+	req.minigame_active = false
+	_begin_send(req_id)
 	return true
 
 
@@ -1104,11 +1107,15 @@ func _on_connection_finished(success: bool, entity_id: String) -> void:
 			req.slot_reserved = true
 			successes_this_hour += 1
 			_play_sfx(&"modem")
-		else:
-			req.connected = false
-			req.slot_reserved = false
-			if slots != null:
-				slots.release_by_entity(entity_id)
+			request_changed.emit(entity_id)
+			# TCP отправляется сразу после соединения, если файлы уже собраны.
+			if req.is_ready() and not req.sending:
+				_begin_send(entity_id)
+			return
+		req.connected = false
+		req.slot_reserved = false
+		if slots != null:
+			slots.release_by_entity(entity_id)
 		request_changed.emit(entity_id)
 
 
@@ -1126,16 +1133,24 @@ func _on_minigame_finished(quality: float) -> void:
 	_begin_send(req_id)
 
 
-func _begin_send(req_id: String) -> void:
+func _begin_send(req_id: String, allow_retry: bool = true) -> void:
 	var req = active_requests.get(req_id)
-	if req == null:
+	if req == null or req.sending:
 		return
-	if req.protocol == "udp" and _randf() < 0.25:
-		# UDP-потеря при отправке: quality сбрасывается, мини-игра заново.
-		req.quality = 0.0
+	# Пока открыта чужая модалка (ConnectionGame), авто-путь не стартует.
+	# Своё соединение к этому моменту уже закрыло модалку (_pop_modal).
+	if modal_open:
+		return
+	# Защита авто-пути: TCP не стартует без установленного соединения.
+	if req.protocol == "tcp" and not req.connected:
+		return
+	if req.protocol == "udp" and allow_retry and _randf() < 0.25:
+		# UDP-потеря при отправке: один повтор без мини-игры, чтобы
+		# автоотправка не могла зациклиться на серии потерь.
+		req.quality = 1.0
 		req.minigame_active = false
-		_emit_toast("UDP-потеря: отправьте заново")
-		start_send(req_id)
+		_emit_toast("UDP-потеря: отправляем заново")
+		_begin_send(req_id, false)
 		return
 	var types := _request_types(req)
 	if types.is_empty():
@@ -1439,13 +1454,47 @@ func _pick_org() -> String:
 	return "Клиент"
 
 
+## Сколько файлов требует запрос. На старте меньше: час 1 — всегда 1 файл,
+## час 2 — 1 (0.75) или 2 (0.25), час 3+ — 1/2/3 (0.6/0.3/0.1).
+## Данные — balance.spawn.required_count_by_hour, fallback — size_distribution.
 func _roll_required_count() -> int:
-	var roll := _randf()
-	if roll < 0.6:
+	var dist := _required_count_distribution()
+	if dist.is_empty():
+		dist = {"1": 0.6, "2": 0.3, "3": 0.1}
+	var total := 0.0
+	var keys: Array = dist.keys()
+	keys.sort()
+	var weights: Array = []
+	for key in keys:
+		var weight := maxf(0.0, float(dist[key]))
+		weights.append(weight)
+		total += weight
+	if total <= 0.0:
 		return 1
-	if roll < 0.9:
-		return 2
-	return 3
+	var roll := _randf() * total
+	var acc := 0.0
+	for i in range(keys.size()):
+		acc += float(weights[i])
+		if roll < acc:
+			return clampi(int(str(keys[i])), 1, 3)
+	return clampi(int(str(keys[keys.size() - 1])), 1, 3)
+
+
+func _required_count_distribution() -> Dictionary:
+	var data = _data()
+	if data != null and data.get("balance") is Dictionary:
+		var spawn = data.balance.get("spawn", null)
+		if spawn is Dictionary:
+			var by_hour = spawn.get("required_count_by_hour", null)
+			if by_hour is Dictionary:
+				var key := "1" if hour <= 1 else ("2" if hour == 2 else "3+")
+				var dist = by_hour.get(key, null)
+				if dist is Dictionary and not (dist as Dictionary).is_empty():
+					return dist
+			var fallback = spawn.get("required_size_distribution", null)
+			if fallback is Dictionary:
+				return fallback
+	return {}
 
 
 # --- канал -----------------------------------------------------------------

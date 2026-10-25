@@ -41,6 +41,8 @@ func _init() -> void:
 			sections += 1
 	_ok(sections >= 1, "дерево получило секции (>=1), получено %d" % sections)
 	_ok(main.grid.folder_id != "", "выбрана первая папка для сетки")
+	_ok(main.files_window.title.contains(main.grid.folder_name),
+		"заголовок ФАЙЛЫ использует реальное имя папки (%s)" % main.files_window.title)
 	_eq(str(main.status_bar.get_metric("money").get("value", "")), "$ 150", "статус-бар: деньги")
 	_eq(str(main.status_bar.get_metric("channel").get("value", "")), "0%", "статус-бар: канал 0%")
 	var sla_metric: Dictionary = main.status_bar.get_metric("sla")
@@ -209,12 +211,26 @@ func _test_rename_folder(main, game) -> void:
 	_eq(str(game.registry.folders[fid].name), "ОБРЕЗАНО", "имя длиннее 16 отклонено")
 
 
-## Верхнее меню: «Параметры узла» → настройки, «О программе» → окно.
+## Верхнее меню: одна рабочая кнопка МЕНЮ без демо-пунктов.
 func _test_top_menu(main) -> void:
+	_ok(main._menu_btn != null, "кнопка МЕНЮ создана")
+	if main._menu_btn != null:
+		_eq(main._menu_btn.caption, "МЕНЮ", "подпись кнопки — МЕНЮ")
+		_eq(main._menu_btn.size, Vector2(72, 18), "кнопка МЕНЮ 72×18")
+	for old in ["ФАЙЛ", "ВИД", "СПРАВКА"]:
+		_ok(not main._menus.has(old), "меню без демо-пункта %s" % old)
+	var items: Array = main._main_menu_items()
+	_ok(items.has("Настройки"), "меню содержит «Настройки»")
+	_ok(items.has("О программе"), "меню содержит «О программе»")
+	_ok(items.has("В главное меню"), "меню содержит выход в главное меню")
+	for item in items:
+		_ok(not str(item).contains("ДЕМО"), "меню без пометки ДЕМО: %s" % str(item))
+
 	main._on_menu_pick("Параметры узла")
 	_ok(main.settings_modal.visible, "«Параметры узла» открывают настройки")
 	main.settings_modal.close()
 	_ok(not main.settings_modal.visible, "настройки закрываются")
+	_ok(not bool(main.controller.paused), "закрытие настроек не оставляет паузу")
 
 	main._on_menu_pick("О программе")
 	_ok(main.confirm_modal.visible, "«О программе» открывает окно")
@@ -223,10 +239,12 @@ func _test_top_menu(main) -> void:
 	_ok(main.main_menu.visible == false,
 		"OK в «О программе» не выкидывает в главное меню")
 
-	# Штатное подтверждение выхода по-прежнему работает.
-	main._confirm_to_menu()
+	# Выход из подготовки через верхнее меню.
+	main._on_menu_pick("В главное меню")
+	_ok(main.confirm_modal.visible, "«В главное меню» просит подтверждение")
 	main.confirm_modal._answer(true)
-	_ok(main.main_menu.visible, "подтверждение выхода открывает главное меню")
+	_ok(main.main_menu.visible, "подтверждение возвращает в главное меню из подготовки")
+	_ok(not bool(main.controller.paused), "в подготовке пауза не включается")
 
 
 func _finish() -> void:

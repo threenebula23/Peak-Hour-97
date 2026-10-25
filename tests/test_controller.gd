@@ -46,6 +46,7 @@ func _init() -> void:
 	_test_empty_continue()
 	_test_new_run()
 	_test_hour_start_and_modal()
+	_test_auto_send()
 	_test_fast_hour()
 	_test_after_hour()
 	_test_buy()
@@ -148,6 +149,31 @@ func _test_hour_start_and_modal() -> void:
 	_ok(not hd.modal_open, "модалка закрыта")
 	hd.reject_request(req_id)
 	_ok(not hd.active_requests.has(req_id), "запрос убран после reject")
+
+
+func _test_auto_send() -> void:
+	_set_case("auto_send")
+	var hd = _c.hour_director
+	_ok(hd != null and bool(hd.running), "час идёт")
+	if hd == null:
+		return
+	var file = _game.registry.create_file("Авто контроллер", "text", _first_folder_id())
+	_ok(file != null, "файл для автоотправки создан")
+	if file == null:
+		return
+	var req_id := str(hd._make_request([file], "udp", false, "", ""))
+	var req = hd.active_requests.get(req_id)
+	_ok(req != null, "запрос создан")
+	if req == null:
+		return
+	_ok(hd.attach_file(req_id, str(file.id)), "файл прикреплён")
+	_ok(bool(req.sending), "UDP: отправка началась сразу после attach_file")
+	_ok(not bool(req.minigame_active), "minigame_active не поднимается")
+	_ok(not bool(hd.modal_open), "модалки нет")
+	var progress_before := float(req.send_progress)
+	_c.tick(0.1)
+	_ok(float(req.send_progress) > progress_before, "send_progress идёт")
+	hd._cleanup_request(req_id, true)
 
 
 func _test_fast_hour() -> void:

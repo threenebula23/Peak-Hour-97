@@ -1,8 +1,9 @@
 class_name RequestCard
 extends Control
-## Карточка запроса клиента 400×64. Светлая карточка, компактные кнопки,
-## три слота файлов. attached-файл помечается зелёной галочкой,
-## пустой слот — пунктиром и мигающим «ожидается».
+## Карточка запроса клиента 400×64. Светлая карточка, три слота файлов.
+## TCP-запрос в ожидании соединяется кликом по самой карточке; X отклоняет,
+## двойной клик по файлу отсоединяет его. attached-файл помечается зелёной
+## галочкой, пустой слот — пунктиром и мигающим «ожидается».
 
 signal connect_pressed(id: String)
 signal reject_pressed(id: String)
@@ -36,7 +37,6 @@ var hovered := false:
 		hovered = v
 		queue_redraw()
 
-var _btn: Button90
 var _reject: Button90
 var _blink := 0.0
 var _blink_on := true
@@ -54,14 +54,6 @@ func _ready() -> void:
 	mouse_exited.connect(func() -> void:
 		hovered = false
 		_hover_slot = -1)
-	_btn = Button90.new()
-	_btn.name = "ConnectButton"
-	_btn.caption = "СОЕДИНИТЬСЯ"
-	_btn.caption_size = Theme90.FS_MICRO
-	_btn.position = Vector2(300, 36)
-	_btn.size = Vector2(84, 20)
-	add_child(_btn)
-	_btn.pressed.connect(func() -> void: connect_pressed.emit(id))
 
 	_reject = Button90.new()
 	_reject.name = "RejectButton"
@@ -91,14 +83,23 @@ func setup(p_id: String, p_client: String, p_client_id: String, p_proto: String,
 	attack_kind = p_attack_kind
 	attack_id = p_attack_id
 	avatar_muted = p_avatar_muted
-	_btn.disabled = protocol != "TCP"
-	_btn.tooltip_text = "" if protocol == "TCP" else "Только для TCP-запросов"
+	_update_interaction()
 	if is_attack and attack_kind == "phishing":
 		tooltip_text = "ПОДОЗРИТЕЛЬНЫЙ ЗАПРОС · %s" % client_id
 	else:
 		tooltip_text = "%s · %s" % [client_name, client_id]
 	custom_minimum_size = Vector2(CARD.x, 0)
 	queue_redraw()
+
+
+## Клик по карточке (не по слоту и не по X) соединяет TCP-запрос.
+func _clickable() -> bool:
+	return not is_attack and protocol == "TCP" and not connected
+
+
+func _update_interaction() -> void:
+	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if _clickable() \
+		else Control.CURSOR_ARROW
 
 
 func ratio() -> float:
@@ -168,6 +169,25 @@ func _draw() -> void:
 	var fill := progress if progress > 0.0 else ratio()
 	var bcol := Theme90.ACCENT if progress > 0.0 else _time_color()
 	Theme90.draw_meter(self, bar, fill, bcol)
+
+	# маленькая подсказка-статус в правом нижнем углу (не кнопка)
+	var hint := ""
+	var hint_color := Theme90.ACCENT
+	if is_attack:
+		hint = ""
+	elif progress > 0.0:
+		hint = "ОТПРАВКА…"
+	elif protocol != "TCP":
+		hint = "UDP · АВТО"
+		hint_color = Theme90.WARN
+	elif connected:
+		hint = "ПОДКЛЮЧЁН"
+		hint_color = Theme90.SUCCESS
+	else:
+		hint = "КЛИК — СОЕДИНИТЬСЯ"
+	if not hint.is_empty():
+		Theme90.text_vcenter(self, f, Rect2(288, 42, 88, 16), hint, 8,
+			hint_color, -1, HORIZONTAL_ALIGNMENT_RIGHT)
 
 	if hovered and _drop_slot < 0:
 		draw_style_box(Theme90.box(Color(0, 0, 0, 0), Theme90.ACCENT_LIGHT, 4, 1),
@@ -256,11 +276,15 @@ func _gui_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
 			var i := _slot_at(event.position)
-			if event.double_click and i >= 0 and i < slots.size() and slots[i] != null:
-				detach_pressed.emit(id, i)
-				accept_event()
+			if i >= 0:
+				# Слоты (и X отсоединения) не должны запускать соединение.
+				if event.double_click and i < slots.size() and slots[i] != null:
+					detach_pressed.emit(id, i)
+					accept_event()
 				return
 			accept_event()
+			if _clickable():
+				connect_pressed.emit(id)
 
 
 func _slot_at(pos: Vector2) -> int:

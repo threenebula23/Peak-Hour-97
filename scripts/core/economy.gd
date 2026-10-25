@@ -20,8 +20,13 @@ const REQUEST_TIMER_MIN := 20.0
 const TIMER_MAX := 999.0
 
 ## Grace-множитель первых часов (п.10): больше времени на старте.
-## h1 1.5, h2 1.35, h3 1.2, h4+ 1.0.
+## h1 1.5, h2 1.35, h3 1.2, h4+ 1.0 — для таймера пакетов.
 const TIMER_GRACE := {1: 1.5, 2: 1.35, 3: 1.2}
+
+## Отдельный grace для таймера запросов: в начале игроку нужно больше времени,
+## чтобы собрать файлы. h1 2.0, h2 1.7, h3 1.4, h4+ 1.0.
+## h1: 30×2.0 = 60, h2: 29.5×1.7 = 50.15, h3: 29×1.4 = 40.6.
+const REQUEST_TIMER_GRACE := {1: 2.0, 2: 1.7, 3: 1.4}
 
 const MINIGAME_COEFF := {
 	"text": 1.0,
@@ -95,13 +100,18 @@ static func request_timer(hour: int, upgrades: Dictionary = {}) -> float:
 	var h := maxi(1, hour)
 	var level := _level(upgrades, ["timer", "timer_level", "request_timer", "request_timer_level", "shop_timer"])
 	var base := REQUEST_TIMER_BASE - TIMER_PER_HOUR * float(h - 1)
-	var value := base * timer_grace(h) + TIMER_UPGRADE_STEP * float(level)
+	var value := base * request_timer_grace(h) + TIMER_UPGRADE_STEP * float(level)
 	return clampf(value, REQUEST_TIMER_MIN, TIMER_MAX)
 
 
 ## Grace-множитель таймеров по часу: h1 1.5, h2 1.35, h3 1.2, h4+ 1.0.
 static func timer_grace(hour: int) -> float:
 	return float(TIMER_GRACE.get(maxi(1, hour), 1.0))
+
+
+## Grace-множитель таймера запросов: h1 2.0, h2 1.7, h3 1.4, h4+ 1.0.
+static func request_timer_grace(hour: int) -> float:
+	return float(REQUEST_TIMER_GRACE.get(maxi(1, hour), 1.0))
 
 
 # --- мини-игры -------------------------------------------------------------

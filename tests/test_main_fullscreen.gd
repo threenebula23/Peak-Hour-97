@@ -128,10 +128,21 @@ func _init() -> void:
 	_eq(_controller.phase, &"hour", "фаза осталась hour")
 	_ok(_request_card_attached(rid, fid), "RequestCard после resume показывает attached")
 
+	# Браузер отказал в fullscreen — ложная галочка не остаётся.
+	_main._on_fullscreen_denied()
+	_ok(not bool(_settings_cache().get("fullscreen", true)),
+		"отказ браузера сбрасывает fullscreen в кэше")
+	_ok(not sm._full.checked, "чекбокс снимается после отказа браузера")
+
 	# Возвращаем оконный режим, чтобы не тащить состояние в другие тесты.
 	_main._apply_settings({
 		"sfx": 40, "music": 45, "calm_bg": true, "fullscreen": false,
 	}, false)
+	_main._open_settings()
+	_ok(not sm._full.checked, "после fullscreen→windowed галочка снята")
+	_ok(not bool(sm.get_state().get("fullscreen", true)),
+		"checkbox соответствует оконному режиму")
+	sm.close()
 
 	print("")
 	print("Проверок: %d, провалов: %d" % [_checks, _fails])

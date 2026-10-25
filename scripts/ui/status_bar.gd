@@ -3,9 +3,13 @@ extends Control
 ## Строка состояния: одна светлая полоса, тонкие разделители и цветные шкалы.
 ## Без утопленных коробок и лишних подписей. Ключи сегментов прежние:
 ## tcp / channel / sla / buffer / money / hour.
+##
+## Над сегментом приёма лежит прозрачная зона подсказки: наведение показывает,
+## что такое буфер и сколько места занято сейчас.
 
 var segments: Array[Dictionary] = []
 var _floats: Array[Control] = []
+var _buffer_hint: Control = null
 
 const PAD := 14.0
 
@@ -16,10 +20,60 @@ func _ready() -> void:
 		{"key": "tcp", "label": "TCP", "value": "2 / 3", "w": 132.0, "fill": 0.667},
 		{"key": "channel", "label": "КАНАЛ", "value": "45%", "w": 222.0, "fill": 0.45},
 		{"key": "sla", "label": "SLA", "value": "128 / 200", "w": 188.0, "fill": 0.64},
-		{"key": "buffer", "label": "БУФЕР", "value": "3 / 4", "w": 158.0, "fill": 0.75},
+		{"key": "buffer", "label": "МЕСТО В ПРИЁМЕ", "value": "3 / 4", "w": 158.0, "fill": 0.75},
 		{"key": "money", "label": "СЧЁТ", "value": "$ 1 240", "w": 176.0},
 		{"key": "hour", "label": "СМЕНА", "value": "ЧАС 3 03:42", "w": 356.0, "fill": 0.463},
 	]
+	_buffer_hint = Control.new()
+	_buffer_hint.name = "BufferHint"
+	_buffer_hint.mouse_filter = Control.MOUSE_FILTER_PASS
+	_buffer_hint.mouse_default_cursor_shape = Control.CURSOR_HELP
+	_buffer_hint.focus_mode = Control.FOCUS_NONE
+	add_child(_buffer_hint)
+	resized.connect(_layout_hint)
+	call_deferred("_layout_hint")
+
+
+## Подсказка «что такое буфер» с текущим значением сегмента.
+func _buffer_tooltip() -> String:
+	var raw := ""
+	for s in segments:
+		if str(s["key"]) == "buffer":
+			raw = str(s["value"])
+			break
+	var parts := raw.split("/")
+	var used := 0
+	var cap := 0
+	if parts.size() == 2:
+		used = parts[0].strip_edges().to_int()
+		cap = parts[1].strip_edges().to_int()
+	var out := "Буфер (место в приёме) — сколько пакетов можно держать одновременно\n"
+	out += "Сейчас: %d / %d" % [used, cap]
+	if cap > 0:
+		out += " · свободно %d" % maxi(0, cap - used)
+		if used >= cap:
+			out += "\nБуфер заполнен: новые пакеты не примутся, пока место не освободится."
+	return out
+
+
+## Прозрачная зона над сегментом буфера: только подсказка, без отрисовки.
+func _layout_hint() -> void:
+	if _buffer_hint == null:
+		return
+	var idx := -1
+	for i in segments.size():
+		if str(segments[i]["key"]) == "buffer":
+			idx = i
+			break
+	if idx < 0:
+		return
+	var rects := _segment_rects()
+	if idx >= rects.size():
+		return
+	var r: Rect2 = rects[idx]
+	_buffer_hint.position = Vector2(r.position.x, 0.0)
+	_buffer_hint.size = Vector2(r.size.x, size.y)
+	_buffer_hint.tooltip_text = _buffer_tooltip()
 
 
 func _segment_rects() -> Array[Rect2]:
@@ -51,6 +105,8 @@ func _draw() -> void:
 			draw_rect(Rect2(r.position.x, 9, 1, size.y - 20), Theme90.HAIRLINE)
 		Theme90.text(self, f, Vector2(r.position.x + PAD, 9), str(s["label"]),
 			Theme90.FS_MICRO, Theme90.SHADE)
+		if str(s["key"]) == "buffer":
+			_draw_help_badge(f, r, str(s["label"]))
 		var col := _value_color(s)
 		var val := str(s["value"])
 		var vf := f
@@ -63,6 +119,14 @@ func _draw() -> void:
 			var ratio := float(s.get("fill", 0.0))
 			var bar := Rect2(r.position.x + PAD, size.y - 16.0, maxf(4.0, r.size.x - PAD * 2.0), 4.0)
 			Theme90.draw_meter(self, bar, ratio, _gauge_color(s), Theme90.PAPER_LO)
+
+
+func _draw_help_badge(f: Font, r: Rect2, label: String) -> void:
+	var lw := f.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, Theme90.FS_MICRO).x
+	var b := Rect2(r.position.x + PAD + lw + 6.0, 10.0, 9.0, 9.0)
+	draw_style_box(Theme90.fill_box(Color(Theme90.SHADE.r, Theme90.SHADE.g,
+		Theme90.SHADE.b, 0.13), 4), b)
+	Theme90.text_vcenter(self, f, b, "?", 9, Theme90.SHADE, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _is_numeric(s: String) -> bool:
@@ -127,6 +191,8 @@ func set_metric(key: String, value: String, fill: float = -1.0) -> void:
 			s["value"] = value
 			if fill >= 0.0:
 				s["fill"] = fill
+			if key == "buffer" and _buffer_hint != null:
+				_buffer_hint.tooltip_text = _buffer_tooltip()
 			queue_redraw()
 			return
 

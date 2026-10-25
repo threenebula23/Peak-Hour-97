@@ -330,47 +330,241 @@ static func draw_meter(ci: CanvasItem, rect: Rect2, ratio: float, color: Color,
 
 # --- Пиксельные иконки ----------------------------------------------------
 
-## Документ с цветным глифом типа: text / sound / photo / video.
-static func draw_doc_icon(ci: CanvasItem, rect: Rect2, kind: String, color: Color) -> void:
+## Категория расширения файла: doc / pdf / image / audio / video / archive /
+## program / table. Пустая строка — расширение неизвестно.
+static func ext_category(ext: String) -> String:
+	var e := ext.strip_edges().to_lower()
+	while e.begins_with("."):
+		e = e.substr(1)
+	match e:
+		"txt", "md", "doc", "docx", "rtf", "odt":
+			return "doc"
+		"pdf":
+			return "pdf"
+		"jpg", "jpeg", "png", "gif", "bmp", "webp", "tif", "tiff":
+			return "image"
+		"mp3", "wav", "ogg", "flac", "m4a", "aac":
+			return "audio"
+		"mp4", "avi", "mov", "mkv", "webm":
+			return "video"
+		"zip", "rar", "7z", "gz", "tar":
+			return "archive"
+		"exe", "msi", "bat", "sh", "com":
+			return "program"
+		"csv", "xls", "xlsx", "ods":
+			return "table"
+	return ""
+
+
+## Цвет категории — только из палитры Theme90, совпадает со type_color().
+static func ext_color(cat: String) -> Color:
+	match cat:
+		"doc", "pdf":
+			return ACCENT
+		"image", "table":
+			return SUCCESS
+		"audio", "archive":
+			return WARN
+		"video":
+			return ERROR
+		"program":
+			return NAVY
+	return ACCENT
+
+
+## Документ с цветным глифом. ext (необязательный) выбирает значок по
+## расширению: строки, горы, волна, play, молния, терминал, сетка.
+## Пустое/неизвестное расширение — прежний глиф типа (text/sound/photo/video).
+static func draw_doc_icon(ci: CanvasItem, rect: Rect2, kind: String, color: Color,
+		ext: String = "") -> void:
 	var s := minf(rect.size.x, rect.size.y)
 	var tile := Rect2(rect.position.round() + Vector2(roundf((rect.size.x - s) * 0.5),
 		roundf((rect.size.y - s) * 0.5)), Vector2(s, s))
 	var rad := int(clampf(s * 0.24, 4.0, 7.0))
 	ci.draw_style_box(fill_box(Color(color.r, color.g, color.b, 0.13), rad), tile)
-	var w := clampf(roundf(s * 0.44), 9.0, 15.0)
-	var h := clampf(roundf(s * 0.60), 12.0, 20.0)
+	var w := clampf(roundf(s * 0.48), 10.0, 16.0)
+	var h := clampf(roundf(s * 0.64), 13.0, 21.0)
 	var x := roundf(tile.get_center().x - w * 0.5)
 	var y := roundf(tile.get_center().y - h * 0.5)
 	var page := Rect2(x, y, w, h)
 	ci.draw_style_box(box(WHITE, Color(color.r, color.g, color.b, 0.45), 1, 1), page)
 	# загнутый уголок
+	var fold := clampf(roundf(s * 0.17), 3.0, 5.0)
 	ci.draw_colored_polygon(PackedVector2Array([
-		Vector2(x + w - 4, y + 1), Vector2(x + w - 1, y + 4), Vector2(x + w - 4, y + 4)]),
+		Vector2(x + w - fold, y + 1), Vector2(x + w - 1, y + fold),
+		Vector2(x + w - fold, y + fold)]),
 		Color(color.r, color.g, color.b, 0.22))
-	var gx := x + 3.0
-	var gy := y + h * 0.42
+	match ext_category(ext):
+		"doc":
+			_glyph_doc(ci, page, color)
+		"pdf":
+			_glyph_pdf(ci, page, color)
+		"image":
+			_glyph_image(ci, page, color)
+		"audio":
+			_glyph_audio(ci, page, color)
+		"video":
+			_glyph_video(ci, page, color)
+		"archive":
+			_glyph_archive(ci, page, color)
+		"program":
+			_glyph_program(ci, page, color)
+		"table":
+			_glyph_table(ci, page, color)
+		_:
+			_glyph_kind(ci, page, kind, color)
+
+
+## Масштаб глифа: 1.0 при иконке 24×24, меньше на мелких (20×20).
+static func _glyph_unit(page: Rect2) -> float:
+	return clampf(minf(page.size.x / 12.0, page.size.y / 15.0), 0.7, 1.4)
+
+
+## Документ: строки текста.
+static func _glyph_doc(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var gx := page.position.x + roundf(2.0 * u)
+	var gy := page.position.y + roundf(5.0 * u)
+	var gw := roundf(8.0 * u)
+	for i in 3:
+		var lw := gw - (2.0 * u if i == 1 else 0.0)
+		ci.draw_rect(Rect2(gx, gy + roundf(i * 3.0 * u), lw, 1.0), color)
+
+
+## PDF: короткие строки + красная метка в правом нижнем углу страницы.
+static func _glyph_pdf(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var gx := page.position.x + roundf(2.0 * u)
+	var gy := page.position.y + roundf(3.0 * u)
+	ci.draw_rect(Rect2(gx, gy, roundf(6.0 * u), 1.0), color)
+	ci.draw_rect(Rect2(gx, gy + roundf(3.0 * u), roundf(4.0 * u), 1.0), color)
+	var tag := Rect2(page.position.x + page.size.x - roundf(7.0 * u),
+		page.position.y + page.size.y - roundf(6.0 * u),
+		roundf(6.0 * u), roundf(5.0 * u))
+	var tag_col := Color(ERROR.r, ERROR.g, ERROR.b, 0.92)
+	if color.s < 0.2:
+		tag_col = Color(color.r, color.g, color.b, 0.5)
+	ci.draw_style_box(fill_box(tag_col, 1), tag)
+	ci.draw_rect(Rect2(tag.position.x + roundf(1.5 * u), tag.position.y + roundf(2.0 * u),
+		roundf(3.0 * u), 1.0), WHITE)
+
+
+## Изображение: горы и солнце.
+static func _glyph_image(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var p := page.position
+	ci.draw_rect(Rect2(roundf(p.x + 2.8 * u), roundf(p.y + 2.8 * u),
+		maxf(1.0, roundf(1.8 * u)), maxf(1.0, roundf(1.8 * u))), color)
+	var yb := p.y + page.size.y - roundf(2.8 * u)
+	ci.draw_colored_polygon(PackedVector2Array([
+		Vector2(p.x + 1.6 * u, yb),
+		Vector2(p.x + 4.0 * u, yb - 5.0 * u),
+		Vector2(p.x + 5.9 * u, yb - 2.2 * u),
+		Vector2(p.x + 7.5 * u, yb - 4.0 * u),
+		Vector2(p.x + 10.4 * u, yb)]), color)
+
+
+## Аудио: волна из четырёх полос.
+static func _glyph_audio(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var p := page.position
+	var baseline := p.y + page.size.y - roundf(3.5 * u)
+	var bw := maxf(1.0, roundf(1.2 * u))
+	var hs := [3.0, 6.0, 4.5, 2.5]
+	for i in 4:
+		var bx := p.x + roundf(2.3 * u + i * 1.9 * u)
+		var hh := maxf(1.0, roundf(hs[i] * u))
+		ci.draw_rect(Rect2(bx, baseline - hh, bw, hh), color)
+
+
+## Видео: перфорация плёнки и play.
+static func _glyph_video(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var p := page.position
+	for i in 3:
+		ci.draw_rect(Rect2(p.x + roundf((3.0 + i * 2.6) * u), p.y + roundf(3.4 * u),
+			maxf(1.0, roundf(1.3 * u)), maxf(1.0, roundf(1.2 * u))), color)
+	ci.draw_colored_polygon(PackedVector2Array([
+		Vector2(p.x + 2.8 * u, p.y + 5.8 * u),
+		Vector2(p.x + 2.8 * u, p.y + 12.6 * u),
+		Vector2(p.x + 9.2 * u, p.y + 9.2 * u)]), color)
+
+
+## Архив: молния.
+static func _glyph_archive(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var p := page.position
+	ci.draw_colored_polygon(PackedVector2Array([
+		Vector2(p.x + 7.6 * u, p.y + 2.6 * u),
+		Vector2(p.x + 3.2 * u, p.y + 8.4 * u),
+		Vector2(p.x + 5.9 * u, p.y + 8.4 * u),
+		Vector2(p.x + 4.4 * u, p.y + 12.4 * u),
+		Vector2(p.x + 8.8 * u, p.y + 6.4 * u),
+		Vector2(p.x + 6.1 * u, p.y + 6.4 * u)]), color)
+
+
+## Программа: окно терминала с приглашением «>_».
+static func _glyph_program(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var p := page.position
+	var frame := Rect2(p.x + roundf(1.8 * u), p.y + roundf(4.2 * u),
+		roundf(8.4 * u), roundf(7.6 * u))
+	ci.draw_rect(frame, color, false, 1.0)
+	ci.draw_rect(Rect2(frame.position.x + 1.0, frame.position.y + roundf(2.2 * u),
+		frame.size.x - 2.0, 1.0), color)
+	var px := frame.position.x
+	var py := frame.position.y + roundf(3.6 * u)
+	ci.draw_line(Vector2(px + roundf(2.2 * u), py),
+		Vector2(px + roundf(3.4 * u), py + roundf(1.3 * u)), color, 1.0)
+	ci.draw_line(Vector2(px + roundf(3.4 * u), py + roundf(1.3 * u)),
+		Vector2(px + roundf(2.2 * u), py + roundf(2.6 * u)), color, 1.0)
+	ci.draw_rect(Rect2(px + roundf(4.6 * u), py + roundf(1.9 * u),
+		roundf(2.2 * u), 1.0), color)
+
+
+## Таблица: сетка 3×3.
+static func _glyph_table(ci: CanvasItem, page: Rect2, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var p := page.position
+	var frame := Rect2(p.x + roundf(1.8 * u), p.y + roundf(4.2 * u),
+		roundf(8.4 * u), roundf(7.6 * u))
+	ci.draw_rect(frame, color, false, 1.0)
+	for i in 2:
+		ci.draw_rect(Rect2(frame.position.x + roundf((2.8 + i * 2.8) * u),
+			frame.position.y + 1.0, 1.0, frame.size.y - 2.0), color)
+		ci.draw_rect(Rect2(frame.position.x + 1.0,
+			frame.position.y + roundf((2.5 + i * 2.5) * u),
+			frame.size.x - 2.0, 1.0), color)
+
+
+## Прежний глиф по типу: text / sound / photo / video.
+static func _glyph_kind(ci: CanvasItem, page: Rect2, kind: String, color: Color) -> void:
+	var u := _glyph_unit(page)
+	var gx := page.position.x + roundf(2.4 * u)
+	var gy := page.position.y + roundf(6.2 * u)
+	var gw := page.size.x - roundf(5.0 * u)
 	match kind:
 		"text":
 			for i in 3:
-				var lw := (w - 6.0) - (i if i == 2 else 0)
-				ci.draw_rect(Rect2(gx, gy + i * 2.6, lw, 1.0), color)
+				var lw := gw - (i if i == 2 else 0)
+				ci.draw_rect(Rect2(gx, gy + roundf(i * 2.6 * u), lw, 1.0), color)
 		"sound":
-			ci.draw_rect(Rect2(gx, gy + 2.0, 2.4, 2.4), color)
-			ci.draw_rect(Rect2(gx + 2.0, gy - 1.0, 1.0, 5.4), color)
-			ci.draw_rect(Rect2(gx + 3.0, gy - 1.0, 2.0, 1.0), color)
+			ci.draw_rect(Rect2(gx, gy + 2.0 * u, 2.4 * u, 2.4 * u), color)
+			ci.draw_rect(Rect2(gx + 2.0 * u, gy - 1.0 * u, 1.0, 5.4 * u), color)
+			ci.draw_rect(Rect2(gx + 3.0 * u, gy - 1.0 * u, 2.0 * u, 1.0), color)
 		"photo":
-			ci.draw_rect(Rect2(gx - 1.0, gy - 1.0, w - 4.0, 4.6), color, false, 1.0)
+			ci.draw_rect(Rect2(gx - 1.0 * u, gy - 1.0 * u, gw, 4.6 * u), color, false, 1.0)
 			ci.draw_colored_polygon(PackedVector2Array([
-				Vector2(gx - 0.5, gy + 3.2), Vector2(gx + 2.0, gy + 0.6),
-				Vector2(gx + 4.5, gy + 3.2)]), color)
-			ci.draw_circle(Vector2(gx + w - 4.5, gy - 0.2), 0.9, color)
+				Vector2(gx - 0.5 * u, gy + 3.2 * u), Vector2(gx + 2.0 * u, gy + 0.6 * u),
+				Vector2(gx + 4.5 * u, gy + 3.2 * u)]), color)
+			ci.draw_circle(Vector2(gx + gw - 1.5 * u, gy - 0.2 * u), 0.9 * u, color)
 		"video":
 			ci.draw_colored_polygon(PackedVector2Array([
-				Vector2(gx - 0.5, gy - 1.5), Vector2(gx + 4.5, gy + 1.0),
-				Vector2(gx - 0.5, gy + 3.5)]), color)
+				Vector2(gx - 0.8 * u, gy - 1.8 * u), Vector2(gx + 5.2 * u, gy + 1.0 * u),
+				Vector2(gx - 0.8 * u, gy + 3.8 * u)]), color)
 		_:
 			for i in 3:
-				ci.draw_rect(Rect2(gx, gy + i * 2.6, w - 6.0, 1.0), color)
+				ci.draw_rect(Rect2(gx, gy + roundf(i * 2.6 * u), gw, 1.0), color)
 
 
 ## Папка 14×11: мягкая цветная форма, без «дырки» и фаски.
@@ -756,13 +950,15 @@ class DragGhost:
 	var sub_text := ""
 	var kind := "file"
 	var tint := Color(1, 1, 1, 1)
+	var ext := ""
 
 	func _init(p_label: String, p_sub: String = "", p_kind: String = "file",
-			p_tint: Color = Color(1, 1, 1, 1), p_icon := "text") -> void:
+			p_tint: Color = Color(1, 1, 1, 1), p_icon := "text", p_ext := "") -> void:
 		label_text = p_label
 		sub_text = p_sub
 		kind = p_kind
 		tint = p_tint
+		ext = p_ext
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		modulate.a = 0.78
 		var w := 172.0
@@ -779,7 +975,7 @@ class DragGhost:
 		if kind == "packet":
 			Theme90.draw_packet_icon(self, Vector2(8, 11), Theme90.ACCENT)
 		else:
-			Theme90.draw_doc_icon(self, Rect2(5, 4, 24, 24), "text", tint)
+			Theme90.draw_doc_icon(self, Rect2(5, 4, 24, 24), "text", tint, ext)
 		var f := Theme90.ui()
 		Theme90.text(self, f, Vector2(36, 4), Theme90.fit(f, label_text, 12, size.x - 42), 12, Theme90.INK)
 		if not sub_text.is_empty():

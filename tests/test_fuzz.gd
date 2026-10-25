@@ -462,11 +462,7 @@ func _send_cooldown_case() -> void:
 	_ok(hd.attach_file(req_id, str(file.id)), "send_cooldown: файл прикреплён")
 	var req = hd.active_requests.get(req_id)
 	req.connected = true
-	_ok(hd.start_send(req_id), "send_cooldown: мини-игра открыта")
-	var mg = hd._minigame
-	_ok(mg != null, "send_cooldown: MiniGame создан")
-	if mg != null:
-		mg._send()
+	_ok(hd.start_send(req_id), "send_cooldown: отправка началась")
 	_ok(req.sending, "send_cooldown: отправка началась")
 	for i in range(300):
 		hd.tick(0.1)

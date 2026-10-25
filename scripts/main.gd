@@ -7,6 +7,8 @@ extends Control
 
 const W := 1280.0
 const H := 720.0
+## Размер окна в оконном режиме (project.godot: window_width/height_override).
+const DESKTOP_WINDOW_SIZE := Vector2i(1920, 1080)
 
 ## Preload вместо глобального имени: работает и без прогретого class cache.
 const GAME_CONTROLLER := preload("res://scripts/game_controller.gd")
@@ -31,6 +33,8 @@ var mascot: TutorialMascot = null
 var _shop_btn: Button90 = null
 ## Кнопка «НАЧАТЬ ЧАС»: акцентная и только в подготовке.
 var _start_btn: Button90 = null
+## Кнопка «МЕНЮ» в верхней строке (единственная, без демо-пунктов).
+var _menu_btn: Button90 = null
 
 var packets: Array[PacketCard] = []
 var requests: Array[RequestCard] = []
@@ -89,6 +93,11 @@ var _shield_send = null
 var _shield_holding := false
 var _shield_hold_acc := 0.0
 
+## Автопауза часа, пока открыты служебные модалки (настройки/подтверждение/имя).
+var _auto_paused := false
+## Проверка web-fullscreen после асинхронного запроса браузера.
+var _fs_verify_token := 0
+
 ## --- Скролл списка ПРИЁМ (5–8 пакетов не влезают в 416×264) ---------------
 var _recv_bar: ScrollBar90
 var _recv_scroll := 0.0
@@ -128,6 +137,7 @@ func _process(delta: float) -> void:
 	if controller == null:
 		return
 	if controller.phase == GAME_CONTROLLER.PHASE_HOUR:
+		_sync_modal_pause()
 		_tick_shield_hold(delta)
 		controller.tick(delta)
 		# tick мог завершить час — тогда экран уже переключился на отчёт.
@@ -212,8 +222,37 @@ func _pause_game() -> void:
 func _resume_game() -> void:
 	if controller != null:
 		controller.set_paused(false)
+	_auto_paused = false
 	if pause_modal != null:
 		pause_modal.visible = false
+
+
+## Служебные окна часа (настройки, подтверждение, переименование) держат
+## таймеры на паузе. Игровые окна ConnectionGame/MiniGame сюда не входят.
+func _sync_modal_pause() -> void:
+	if controller == null or controller.phase != GAME_CONTROLLER.PHASE_HOUR:
+		_auto_paused = false
+		return
+	if _modal_game != null:
+		return
+	var blocking := false
+	if settings_modal != null and settings_modal.visible:
+		blocking = true
+	elif confirm_modal != null and confirm_modal.visible:
+		blocking = true
+	elif rename_modal != null and rename_modal.visible:
+		blocking = true
+	if blocking:
+		if not controller.paused:
+			controller.set_paused(true)
+			_auto_paused = true
+	elif _auto_paused and (pause_modal == null or not pause_modal.visible):
+		controller.set_paused(false)
+		_auto_paused = false
+
+
+func _on_settings_closed() -> void:
+	_sync_modal_pause()
 
 
 func _open_settings() -> void:
@@ -224,13 +263,13 @@ func _open_settings() -> void:
 	var calm := false
 	if _backdrop != null:
 		calm = bool(_backdrop.calm)
-	# Полный экран — фактический режим окна ИЛИ уже применённая настройка.
-	# DisplayServer не всегда успевает/может сообщить FULLSCREEN (web-iframe,
-	# асинхронный WM, headless), и тогда галочка сбрасывалась при открытии.
+	# Галочка полного экрана — применённая настройка. DisplayServer.window_get_mode()
+	# на Wayland/niri может ложно сообщать FULLSCREEN для окна 1920×1080, поэтому
+	# фактический режим окна используем только если настройка ещё не известна.
 	var full := bool(_settings_cache.get("fullscreen", false))
-	if DisplayServer.get_name() != "headless":
+	if not _settings_cache.has("fullscreen") and DisplayServer.get_name() != "headless":
 		var mode := DisplayServer.window_get_mode()
-		full = full or mode == DisplayServer.WINDOW_MODE_FULLSCREEN \
+		full = mode == DisplayServer.WINDOW_MODE_FULLSCREEN \
 			or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
 	settings_modal.open({
 		"sfx": int(round(Audio.sfx_volume * 100.0)),
@@ -238,6 +277,7 @@ func _open_settings() -> void:
 		"calm_bg": calm,
 		"fullscreen": full,
 	})
+	_sync_modal_pause()
 
 
 ## Применить настройки из SettingsModal и (по умолчанию) сохранить их.
@@ -257,8 +297,21 @@ func _apply_settings(values: Dictionary, persist: bool = true) -> void:
 	_settings_cache = {"sfx": sfx, "music": music, "calm_bg": calm, "fullscreen": full}
 	if Game.stats != null:
 		Game.stats["settings"] = _settings_cache.duplicate(true)
-	if persist and controller != null:
+	# В главном меню забега ещё нет: настройки живут в Game.stats, но не должны
+	# создавать/перезаписывать save.json пустым состоянием холодного старта.
+	if persist and _settings_persist_allowed():
 		Game.save_game()
+
+
+## Можно ли писать настройки в игровой save.
+## Явный whitelist активного забега: только подготовка и час. В MENU,
+## HOUR_RESULT и RUN_RESULT настройки применяются в памяти, но save.json
+## не трогаем — иначе настройки из меню перезапишут отчёт/итоги забега.
+func _settings_persist_allowed() -> bool:
+	if controller == null:
+		return false
+	return controller.phase == GAME_CONTROLLER.PHASE_PREP \
+		or controller.phase == GAME_CONTROLLER.PHASE_HOUR
 
 
 ## Загрузить сохранённые настройки (если забег их принёс из сейва).
@@ -273,22 +326,95 @@ func _apply_saved_settings() -> void:
 func _apply_fullscreen(on: bool) -> void:
 	if DisplayServer.get_name() == "headless":
 		return
-	var mode := DisplayServer.WINDOW_MODE_FULLSCREEN if on else DisplayServer.WINDOW_MODE_WINDOWED
-	if DisplayServer.window_get_mode() == mode:
+	# В web DisplayServer-режим может игнорироваться внутри iframe: просим
+	# Fullscreen API у браузера и проверяем результат асинхронно.
+	if OS.has_feature("web"):
+		_apply_fullscreen_web(on)
 		return
-	DisplayServer.window_set_mode(mode)
+	if not on:
+		# Wayland/niri после выхода из fullscreen тайлит окно (~936×979):
+		# сразу просим оконный размер, а затем подтверждаем его следующим
+		# кадром — tiling-WM применяет свой тайл уже после смены режима и
+		# игнорирует размер, запрошенный в том же кадре.
+		if DisplayServer.window_get_mode() != DisplayServer.WINDOW_MODE_WINDOWED:
+			DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+		DisplayServer.window_set_size(DESKTOP_WINDOW_SIZE)
+		_confirm_desktop_size()
+		return
+	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN:
+		return
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN)
+
+
+## Повторно просит оконный размер после того, как WM применил WINDOWED.
+func _confirm_desktop_size() -> void:
+	await get_tree().process_frame
+	if DisplayServer.get_name() == "headless" or OS.has_feature("web"):
+		return
+	if DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_WINDOWED \
+			and DisplayServer.window_get_size() != DESKTOP_WINDOW_SIZE:
+		DisplayServer.window_set_size(DESKTOP_WINDOW_SIZE)
+
+
+func _apply_fullscreen_web(on: bool) -> void:
+	var script := ""
+	if on:
+		script = "(function(){try{var d=document.documentElement;"
+		script += "var p=d.requestFullscreen?d.requestFullscreen():Promise.reject();"
+		script += "if(p&&p.catch){p.catch(function(){});}return true;}catch(e){return false;}})()"
+	else:
+		script = "(function(){try{if(document.fullscreenElement){"
+		script += "var p=document.exitFullscreen();if(p&&p.catch){p.catch(function(){});}"
+		script += "}return true;}catch(e){return false;}})()"
+	var js_ok := false
+	if JavaScriptBridge.get_interface("document") != null:
+		js_ok = bool(JavaScriptBridge.eval(script, true))
+	if not js_ok:
+		# Fallback: платформенный режим окна (работает, если браузер разрешает).
+		var mode := DisplayServer.WINDOW_MODE_FULLSCREEN if on \
+			else DisplayServer.WINDOW_MODE_WINDOWED
+		DisplayServer.window_set_mode(mode)
+		return
+	# requestFullscreen асинхронен: подтвердим через кадр-другой.
+	_fs_verify_token += 1
+	_verify_web_fullscreen.call_deferred(on, _fs_verify_token)
+
+
+func _verify_web_fullscreen(on: bool, token: int) -> void:
+	await get_tree().create_timer(0.25).timeout
+	if token != _fs_verify_token or not is_inside_tree():
+		return
+	var actual := false
+	if JavaScriptBridge.get_interface("document") != null:
+		actual = bool(JavaScriptBridge.eval("!!document.fullscreenElement", true))
+	if on and not actual:
+		_on_fullscreen_denied()
+
+
+## Браузер/iframe не дал полный экран — снимаем ложную галочку и сообщаем.
+func _on_fullscreen_denied() -> void:
+	_settings_cache["fullscreen"] = false
+	if Game.stats != null:
+		Game.stats["settings"] = _settings_cache.duplicate(true)
+	if settings_modal != null:
+		settings_modal.set_fullscreen(false)
+	_toast("БРАУЗЕР НЕ РАЗРЕШИЛ ПОЛНЫЙ ЭКРАН", "warn")
 
 
 func _confirm_to_menu() -> void:
 	if confirm_modal == null:
 		return
 	_confirm_action = "menu"
-	confirm_modal.ask("Выйти в главное меню?",
-		"Текущий час будет прерван, прогресс подготовки сохранён.",
-		"Выйти", "Отмена", true)
+	var in_hour: bool = controller != null \
+		and controller.phase == GAME_CONTROLLER.PHASE_HOUR
+	var detail := "Текущий час будет прерван, прогресс подготовки сохранён."
+	if not in_hour:
+		detail = "Прогресс подготовки сохранён."
+	confirm_modal.ask("Выйти в главное меню?", detail, "Выйти", "Отмена", true)
+	_sync_modal_pause()
 
 
-## Информационное окно «О программе» (пункт меню СПРАВКА).
+## Информационное окно «О программе» (пункт меню МЕНЮ).
 func _show_about() -> void:
 	if confirm_modal == null:
 		return
@@ -296,6 +422,7 @@ func _show_about() -> void:
 	confirm_modal.ask("PEAK HOUR 97",
 		"Диспетчер файлового обмена · версия 0.1.0 · Godot 4.7.2",
 		"OK", "Закрыть")
+	_sync_modal_pause()
 
 
 func _to_menu() -> void:
@@ -307,9 +434,10 @@ func _to_menu() -> void:
 		settings_modal.visible = false
 	if confirm_modal != null:
 		confirm_modal.visible = false
+	_auto_paused = false
 	if controller != null:
-		# Фаза остаётся hour, поэтому таймер держим на паузе до «Продолжить».
-		controller.set_paused(true)
+		# В час фаза остаётся hour: таймер держим на паузе до «Продолжить».
+		controller.set_paused(controller.phase == GAME_CONTROLLER.PHASE_HOUR)
 	if main_menu != null:
 		main_menu.set_has_save(true)
 		main_menu.visible = true
@@ -375,6 +503,7 @@ func _build_modals() -> void:
 	modal_root.add_child(settings_modal)
 	settings_modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	settings_modal.settings_changed.connect(_apply_settings)
+	settings_modal.closed.connect(_on_settings_closed)
 	settings_modal.visible = false
 
 	confirm_modal = ConfirmModal.new()
@@ -384,12 +513,13 @@ func _build_modals() -> void:
 	confirm_modal.answered.connect(func(yes: bool) -> void:
 		var action := _confirm_action
 		_confirm_action = ""
-		if not yes:
-			return
-		if action == "menu":
-			_to_menu()
-		elif action.begins_with("destroy:"):
-			_destroy_folder_contents(action.substr("destroy:".length())))
+		if yes:
+			if action == "menu":
+				_to_menu()
+			elif action.begins_with("destroy:"):
+				_destroy_folder_contents(action.substr("destroy:".length()))
+		_sync_modal_pause()
+	)
 	confirm_modal.visible = false
 
 	rename_modal = RENAME_MODAL.new()
@@ -397,7 +527,9 @@ func _build_modals() -> void:
 	modal_root.add_child(rename_modal)
 	rename_modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	rename_modal.rename_confirmed.connect(_on_rename_confirmed)
-	rename_modal.closed.connect(func() -> void: rename_modal.visible = false)
+	rename_modal.closed.connect(func() -> void:
+		rename_modal.visible = false
+		_sync_modal_pause())
 	rename_modal.visible = false
 
 
@@ -748,6 +880,9 @@ func _on_search_changed(_text: String) -> void:
 func _update_files_title() -> void:
 	if files_window == null or grid == null:
 		return
+	var folder_label := _folder_name(grid.folder_id).to_upper()
+	if folder_label.is_empty():
+		folder_label = "ПАПКА"
 	var total := _current_files.size()
 	var shown := grid.get_cards().size()
 	var hint := "ПУСТО"
@@ -757,7 +892,7 @@ func _update_files_title() -> void:
 		else:
 			hint = "%d из %s" % [shown,
 				_plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")]
-	files_window.set_title("ФАЙЛЫ · %s" % grid.folder_name, hint)
+	files_window.set_title("ФАЙЛЫ · %s" % folder_label, hint)
 	if workspace != null:
 		workspace.title_right = _plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
 
@@ -986,6 +1121,12 @@ func _on_modal_game_finished(_a = null, _b = null, game_node = null) -> void:
 		_modal_game = null
 	if controller != null:
 		controller.modal_open = false
+	# TCP-запрос подключён: если файлы уже собраны, отправка стартует сразу,
+	# без дополнительного клика по карточке (start_send сам защищён от повтора).
+	if _b is String and controller != null and controller.hour_director != null:
+		var req_id := str(_b)
+		if controller.hour_director.active_requests.has(req_id):
+			_maybe_start_send(req_id)
 	_refresh_hour()
 
 
@@ -1276,7 +1417,7 @@ func _refresh_packets(data: Array) -> void:
 			str(p.get("protocol", "")).to_upper(), left, total,
 			float(p.get("loading_progress", 0.0)), int(p.get("size_kb", 0)),
 			bool(p.get("is_attack", false)), str(p.get("attack_kind", "")),
-			str(p.get("attack_id", "")))
+			str(p.get("attack_id", "")), str(p.get("state", "waiting")))
 		card.set_time(left, total)
 
 	_sync_recv_scroll(data.size())
@@ -1601,30 +1742,17 @@ func _build() -> void:
 	sep.position = Vector2(0, 19)
 	sep.size = Vector2(W, 1)
 
-	var menu_defs := [
-		{"caption": "ФАЙЛ", "x": 6.0, "w": 48.0, "items": ["Новая папка", "Открыть папку", "Сохранить отчёт",
-			"-", "Параметры узла", "-", "Выход"]},
-		{"caption": "ВИД", "x": 60.0, "w": 44.0, "items": ["Дерево папок", "Список файлов", "Строка состояния",
-			"-", "Обновить"]},
-		{"caption": "СПРАВКА", "x": 110.0, "w": 72.0, "items": ["Руководство оператора", "Горячие клавиши",
-			"-", "О программе"]},
-	]
-	for d in menu_defs:
-		var b := Button90.new()
-		b.flat_style = true
-		b.caption = str(d["caption"])
-		b.caption_size = Theme90.FS_BODY
-		menu_bar.add_child(b)
-		b.position = Vector2(float(d["x"]), 1)
-		b.size = Vector2(float(d["w"]), 18)
-		var items: Array = d["items"]
-		var pm := _make_menu(items)
-		_menus[str(d["caption"])] = pm
-		var key := str(d["caption"])
-		b.pressed.connect(func() -> void:
-			b.active = true
-			pm.popup(Rect2i(Vector2i(int(b.global_position.x), 44), Vector2i.ZERO)))
-		pm.popup_hide.connect(func() -> void: b.active = false)
+	# Одна рабочая кнопка меню вместо демо-пунктов ФАЙЛ/ВИД/СПРАВКА.
+	var menu_btn := Button90.new()
+	menu_btn.name = "MenuButton"
+	menu_btn.caption = "МЕНЮ"
+	menu_btn.flat_style = true
+	menu_btn.caption_size = Theme90.FS_BODY
+	menu_bar.add_child(menu_btn)
+	menu_btn.position = Vector2(6, 1)
+	menu_btn.size = Vector2(72, 18)
+	menu_btn.pressed.connect(func() -> void: _popup_main_menu(menu_btn))
+	_menu_btn = menu_btn
 
 	# правая часть меню-бара: дата, часы, магазин, старт часа
 	var date_lbl := Label.new()
@@ -1885,18 +2013,54 @@ func _make_menu(labels: Array) -> PopupMenu:
 		var i := pm.get_item_index(id)
 		if i >= 0:
 			_on_menu_pick(pm.get_item_text(i)))
+	pm.popup_hide.connect(func() -> void:
+		if is_instance_valid(pm):
+			pm.queue_free())
 	return pm
 
 
-## Реальные действия верхнего меню; остальные пункты пока демонстрационные.
+## Пункты верхнего меню зависят от фазы: в меню нет выхода в само меню.
+func _main_menu_items() -> Array:
+	var items: Array = ["Настройки", "О программе"]
+	if controller != null and (controller.phase == GAME_CONTROLLER.PHASE_PREP \
+			or controller.phase == GAME_CONTROLLER.PHASE_HOUR):
+		items.append_array(["-", "В главное меню"])
+	if not OS.has_feature("web"):
+		items.append_array(["-", "Выход"])
+	return items
+
+
+func _popup_main_menu(button: Button90) -> void:
+	if button == null:
+		return
+	var pm := _make_menu(_main_menu_items())
+	_menus["МЕНЮ"] = pm
+	button.active = true
+	pm.popup_hide.connect(func() -> void:
+		if is_instance_valid(button):
+			button.active = false)
+	pm.popup(Rect2i(Vector2i(int(button.global_position.x), 44), Vector2i.ZERO))
+
+
+## Реальные действия верхнего меню (алиасы сохранены для старых тестов).
 func _on_menu_pick(text: String) -> void:
-	if text.contains("Параметр") or text.contains("Настройки"):
+	var key := text.to_lower()
+	if key.contains("параметр") or key.contains("настрой"):
 		_open_settings()
 		return
-	if text.contains("О программе"):
+	if key.contains("о программе"):
 		_show_about()
 		return
-	_toast("МЕНЮ: %s — ДЕМО-РЕЖИМ" % text.to_upper(), "info")
+	if key.contains("главное меню"):
+		_confirm_to_menu()
+		return
+	if key.contains("выход"):
+		if OS.has_feature("web"):
+			_toast("ЗАКРОЙТЕ ВКЛАДКУ БРАУЗЕРА", "info")
+		else:
+			get_tree().quit()
+		return
+	_toast("ПУНКТ МЕНЮ НЕДОСТУПЕН: %s" % text.to_upper(), "warn")
 
 
 # --------------------------------------------------------------------------
@@ -2032,6 +2196,11 @@ func _files_for(folder_id: String) -> Array:
 
 
 func _folder_name(fid: String) -> String:
+	# Сначала настоящий реестр: мок-дерево нужно только демо-сцене.
+	if Game.registry != null and Game.registry.folders.has(fid):
+		return str(Game.registry.folders[fid].name)
+	if grid != null and grid.folder_id == fid and not grid.folder_name.is_empty():
+		return grid.folder_name
 	for s in _mock_tree():
 		for f in s["folders"]:
 			if str(f["id"]) == fid:
@@ -2141,12 +2310,16 @@ func _on_file_selected(id: String) -> void:
 func _on_file_activated(id: String) -> void:
 	for c in grid.get_cards():
 		if c.id == id:
-			_toast("ПРОСМОТР: %s.%s — ДЕМО-РЕЖИМ" % [c.file_name, c.ext], "info")
+			_toast("ПРОСМОТР: %s.%s" % [c.file_name, c.ext], "info")
 
 
 func _on_service_filter(on: bool) -> void:
 	if on:
-		_toast("СКРЫТЫ СЛУЖЕБНЫЕ ОБЪЕКТЫ · 3", "warn")
+		var hidden := 0
+		if grid != null:
+			hidden = grid.hidden_count()
+		_toast("СКРЫТО ОПАСНЫХ ОБЪЕКТОВ · %d" % hidden,
+			"warn" if hidden > 0 else "info")
 	else:
 		_toast("ПОКАЗАНЫ ВСЕ ОБЪЕКТЫ", "info")
 
@@ -2416,10 +2589,12 @@ func _open_rename(folder_id: String) -> void:
 		return
 	_rename_folder_id = folder_id
 	rename_modal.open(str(Game.registry.folders[folder_id].name))
+	_sync_modal_pause()
 
 
 ## Применить новое имя из RenameModal: пустое/длинное/дубль — только тост.
 func _on_rename_confirmed(new_name: String) -> void:
+	_sync_modal_pause()
 	var folder_id := _rename_folder_id
 	_rename_folder_id = ""
 	if Game.registry == null or not Game.registry.folders.has(folder_id):
@@ -2478,7 +2653,7 @@ func _on_file_menu(action: String, file_id: String) -> void:
 		"attach":
 			_toast("ВЫБЕРИТЕ ЗАПРОС В ОКНЕ «ОТПРАВКА»", "info")
 		"rename":
-			_toast("ПЕРЕИМЕНОВАНИЕ — ДЕМО-РЕЖИМ", "info")
+			_toast("ПЕРЕИМЕНОВАНИЕ ФАЙЛА НЕДОСТУПНО", "info")
 		"destroy":
 			_destroy_selected_file(file_id)
 		_:

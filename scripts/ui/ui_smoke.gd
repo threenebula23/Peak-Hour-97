@@ -124,6 +124,11 @@ func _check_menu() -> void:
 		_check(str(ctrl.phase) == "menu", "стартовая фаза — menu (сейчас %s)" % str(ctrl.phase))
 	_check((_main.get("packets") as Array).is_empty(), "до забега ПРИЁМ пуст")
 	_check((_main.get("requests") as Array).is_empty(), "до забега ОТПРАВКА пуста")
+	var menu_btn: Button90 = _main.get("_menu_btn")
+	_check(menu_btn != null and menu_btn.caption == "МЕНЮ", "одна кнопка МЕНЮ")
+	var menus: Dictionary = _main.get("_menus")
+	_check(not menus.has("ФАЙЛ") and not menus.has("ВИД") and not menus.has("СПРАВКА"),
+		"нет демо-меню ФАЙЛ/ВИД/СПРАВКА")
 
 
 # --------------------------------------------------------------------------
@@ -171,6 +176,9 @@ func _check_prep() -> void:
 	print("сетка: %d файлов" % cards.size())
 	_check(cards.is_empty(), "в сетке 0 файлов на старте подготовки (сейчас %d)" % cards.size())
 	_check((_main.get("grid") as FileGrid).folder_name.length() > 0, "в сетке выбрана папка")
+	var files_win: WindowFrame = _main.get("files_window")
+	_check(files_win.title.contains((_main.get("grid") as FileGrid).folder_name),
+		"заголовок ФАЙЛЫ содержит имя папки (%s)" % files_win.title)
 
 	# ПРИЁМ/ОТПРАВКА пусты
 	_check((_main.get("packets") as Array).is_empty(), "ПРИЁМ пуст в подготовке")

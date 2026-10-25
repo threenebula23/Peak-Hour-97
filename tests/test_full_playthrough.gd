@@ -209,20 +209,12 @@ func _play_tick() -> void:
 			if str(file.location) == "folder" or str(file.location) == "registry":
 				if str(file.attached_request).is_empty():
 					hd.attach_file(str(req_id), str(file_id))
-		if str(req.protocol) == "tcp" and not bool(req.connected):
+		if str(req.protocol) == "tcp" and not bool(req.connected) and not bool(req.sending):
 			if hd.connect_request(str(req_id)):
 				_finish_connection(str(req_id))
-		if req.is_ready() and not bool(req.sending) and not bool(req.minigame_active):
-			if hd.start_send(str(req_id)):
-				# UDP может потеряться и перезапустить мини-игру — крутим до send.
-				var guard := 0
-				while req.minigame_active and guard < 10:
-					var mg = hd._minigame
-					hd._on_minigame_finished(1.0)
-					if mg != null and is_instance_valid(mg):
-						mg.free()
-					guard += 1
-		elif float(req.time_left) < 3.0 and not req.is_ready():
+		# Отправка автоматическая: udp стартует после attach, tcp — после
+		# успешного соединения. Если файлы собрать не удалось — отказ.
+		if not req.is_ready() and float(req.time_left) < 3.0:
 			hd.reject_request(str(req_id))
 
 

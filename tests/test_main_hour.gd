@@ -114,13 +114,13 @@ func _init() -> void:
 		_ok(card.position.y + 40.0 < content.size.y,
 			"карточка %s: заголовок/таймер в клипе" % str(card.name))
 
-	# Тайминги часа 1 (grace 1.5): пакет 30 с, запрос 45 с.
+	# Тайминги часа 1: пакет 30 с (grace 1.5), запрос 60 с (отдельный grace 2.0).
 	if not pid.is_empty() and director.active_packets.has(pid):
 		_ok(absf(float(director.active_packets[pid].timer_total) - 30.0) < 0.01,
 			"таймер пакета часа 1 = 30 с (%.1f)" % float(director.active_packets[pid].timer_total))
 	if not rid.is_empty() and director.active_requests.has(rid):
-		_ok(absf(float(director.active_requests[rid].timer_total) - 45.0) < 0.01,
-			"таймер запроса часа 1 = 45 с (%.1f)" % float(director.active_requests[rid].timer_total))
+		_ok(absf(float(director.active_requests[rid].timer_total) - 60.0) < 0.01,
+			"таймер запроса часа 1 = 60 с (%.1f)" % float(director.active_requests[rid].timer_total))
 	_ok(absf(float(director.channel_load())) < 0.01,
 		"канал в простое = 0 (%.2f)" % float(director.channel_load()))
 	_eq(str(main.status_bar.get_metric("channel").get("value", "")), "0%",

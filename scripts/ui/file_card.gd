@@ -82,6 +82,14 @@ static func type_color(t: String) -> Color:
 			return Theme90.ACCENT
 
 
+## Цвет иконки: по расширению, если оно известно, иначе — по типу файла.
+static func icon_color(t: String, e: String) -> Color:
+	var cat := Theme90.ext_category(e)
+	if not cat.is_empty():
+		return Theme90.ext_color(cat)
+	return type_color(t)
+
+
 func state_caption() -> String:
 	match state:
 		"attached":
@@ -99,7 +107,7 @@ func state_caption() -> String:
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
-	var tc := type_color(type)
+	var tc := icon_color(type, ext)
 	var locked := state == "locked"
 	var bad := state == "malicious" or state == "failed"
 
@@ -121,7 +129,7 @@ func _draw() -> void:
 
 	if locked:
 		tc = Theme90.SHADE
-	Theme90.draw_doc_icon(self, Rect2(10, 10, 24, 24), type, tc)
+	Theme90.draw_doc_icon(self, Rect2(10, 10, 24, 24), type, tc, ext)
 
 	# состояние — только маленькими значками, без подписей
 	if state == "attached":
@@ -196,7 +204,7 @@ func _gui_input(event: InputEvent) -> void:
 
 func _get_drag_data(_at_position: Vector2) -> Variant:
 	drag_started.emit(id)
-	var ghost := Theme90.DragGhost.new("%s.%s" % [file_name, ext], "%s КБ · %s" % [_spaced(size_kb), ext.to_upper()], "file", type_color(type))
+	var ghost := Theme90.DragGhost.new("%s.%s" % [file_name, ext], "%s КБ · %s" % [_spaced(size_kb), ext.to_upper()], "file", icon_color(type, ext), "text", ext)
 	ghost.size = Vector2(172, 32)
 	set_drag_preview(ghost)
 	return {"kind": "file", "id": id, "name": file_name, "type": type, "ext": ext}

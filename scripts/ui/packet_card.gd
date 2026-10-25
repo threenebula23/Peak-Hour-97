@@ -2,12 +2,15 @@ class_name PacketCard
 extends Control
 ## Карточка входящего пакета 400×44.
 ## Иконка, имя+ext, бейдж TCP/UDP, таймер (зелёный/жёлтый/красный + мигание <5 %),
-## секунды, кнопка «Соединиться» (только TCP) и прогресс загрузки.
+## секунды и прогресс загрузки. TCP-пакет в ожидании соединяется кликом по
+## карточке; перетаскивание в папку по-прежнему работает.
 ## Перетаскивается как {"kind": "packet", "id": ...}.
 
 signal connect_pressed(id: String)
 
 const CARD := Vector2(400, 44)
+## Допустимое смещение мыши, при котором нажатие считается кликом, а не drag.
+const CLICK_SLOP := 6.0
 
 var id := ""
 var file_name := ""
@@ -30,9 +33,11 @@ var hovered := false:
 		hovered = v
 		queue_redraw()
 
-var _btn: Button90
 var _blink := 0.0
 var _blink_on := true
+var _pressed := false
+var _press_pos := Vector2.ZERO
+var _drag_started := false
 
 
 func _ready() -> void:
@@ -40,24 +45,16 @@ func _ready() -> void:
 	custom_minimum_size = CARD
 	if size == Vector2.ZERO:
 		size = CARD
-	mouse_default_cursor_shape = Control.CURSOR_ARROW
+	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
 	mouse_entered.connect(func() -> void: hovered = true)
 	mouse_exited.connect(func() -> void: hovered = false)
-
-	_btn = Button90.new()
-	_btn.name = "ConnectButton"
-	_btn.caption = "СОЕДИНИТЬСЯ"
-	_btn.caption_size = Theme90.FS_MICRO
-	_btn.position = Vector2(300, 2)
-	_btn.size = Vector2(76, 18)
-	add_child(_btn)
-	_btn.pressed.connect(func() -> void: connect_pressed.emit(id))
 	set_process(true)
 
 
 func setup(p_id: String, p_name: String, p_ext: String, p_type: String, p_proto: String,
 		p_left: float, p_total: float, p_progress: float = 0.0, p_size_kb: int = 0,
-		p_is_attack: bool = false, p_attack_kind: String = "", p_attack_id: String = "") -> void:
+		p_is_attack: bool = false, p_attack_kind: String = "", p_attack_id: String = "",
+		p_state: String = "waiting") -> void:
 	id = p_id
 	file_name = p_name
 	ext = p_ext
@@ -70,21 +67,26 @@ func setup(p_id: String, p_name: String, p_ext: String, p_type: String, p_proto:
 	is_attack = p_is_attack
 	attack_kind = p_attack_kind
 	attack_id = p_attack_id
-	_update_button()
-	if is_attack:
-		tooltip_text = "УГРОЗА: %s\nПеретащите в ЩИТ (карантин)" % _display_name()
-	else:
-		tooltip_text = "%s\n%d КБ · %s" % [_display_name(), size_kb, protocol]
+	state = p_state
+	_update_interaction()
 	queue_redraw()
 
 
-func _update_button() -> void:
-	if _btn == null:
-		return
-	_btn.caption = "СОЕДИНИТЬСЯ"
-	_btn.visible = not is_attack
-	_btn.disabled = is_attack or protocol != "TCP"
-	_btn.tooltip_text = "" if protocol == "TCP" else "Только для TCP-пакетов"
+## Клик по карточке соединяет только готовый TCP-пакет.
+func _clickable() -> bool:
+	return not is_attack and protocol == "TCP" and state == "waiting"
+
+
+func _update_interaction() -> void:
+	mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND if _clickable() \
+		else Control.CURSOR_ARROW
+	if is_attack:
+		tooltip_text = "УГРОЗА: %s\nПеретащите в ЩИТ (карантин)" % _display_name()
+	elif protocol == "TCP":
+		tooltip_text = "%s\n%d КБ · TCP · Клик — соединиться; перетащите в папку" % [
+			_display_name(), size_kb]
+	else:
+		tooltip_text = "%s\n%d КБ · UDP · перетащите в папку" % [_display_name(), size_kb]
 
 
 ## Имя для показа: атака-шифровальщик приходит уже с расширением (.exe),
@@ -237,7 +239,36 @@ func _draw_attack_icon(r: Rect2) -> void:
 				Theme90.ERROR, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 
 
+func _gui_input(event: InputEvent) -> void:
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		if event.pressed:
+			_pressed = true
+			_press_pos = event.position
+			_drag_started = false
+			return
+		if not _pressed:
+			return
+		_pressed = false
+		# Drag начинается через _get_drag_data; отпускание после него — не клик.
+		if _drag_started or event.position.distance_to(_press_pos) > CLICK_SLOP:
+			_drag_started = false
+			return
+		if _clickable():
+			connect_pressed.emit(id)
+			accept_event()
+	elif event is InputEventMouseMotion and _pressed:
+		if event.position.distance_to(_press_pos) > CLICK_SLOP:
+			_drag_started = true
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_DRAG_END:
+		_pressed = false
+		_drag_started = false
+
+
 func _get_drag_data(_at_position: Vector2) -> Variant:
+	_drag_started = true
 	var ghost := Theme90.DragGhost.new(_display_name(),
 		("УГРОЗА · В ЩИТ" if is_attack else "%d КБ · %s" % [size_kb, protocol]), "packet")
 	ghost.size = Vector2(168, 30)

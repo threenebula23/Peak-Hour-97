@@ -184,6 +184,37 @@ func _test_search() -> void:
 	_main._refresh_prep()
 	_ok(not edit.visible, "без апгрейда поле поиска скрыто")
 	_game.upgrades["search_unlocked"] = 1
+	_test_service_filter()
+
+
+func _test_service_filter() -> void:
+	var check = _main.grid._check
+	_ok(check != null, "чекбокс фильтра создан")
+	if check == null:
+		return
+	_eq(check.caption, "СКРЫТЬ ОПАСНЫЕ", "подпись фильтра — «СКРЫТЬ ОПАСНЫЕ»")
+	_ok(check.tooltip_text.contains("заблокированные"),
+		"tooltip объясняет, что скрывается")
+
+	var cards: Array = _main.grid.get_cards()
+	_ok(not cards.is_empty(), "в сетке есть карточки для фильтра")
+	if cards.is_empty():
+		return
+	var first: FileCard = cards[0]
+	var old_state := first.state
+	first.state = "locked"
+	var hidden: int = _main.grid.hidden_count()
+	_ok(hidden >= 1, "hidden_count считает опасные файлы")
+	_main._on_service_filter(true)
+	var items: Array = _main.toast_layer._items
+	_ok(not items.is_empty(), "тост фильтра показан")
+	if not items.is_empty():
+		var text := str(items.back().txt)
+		_ok(text.contains(str(hidden)), "тост показывает реальное число (%s)" % text)
+		_ok(not text.contains("СЛУЖЕБНЫЕ"), "тост не про «служебные» (%s)" % text)
+	_main.grid._on_service_toggled(false)
+	first.state = old_state
+	_main.grid._apply_filter()
 
 
 func _test_delete_folder() -> void:

@@ -34,7 +34,8 @@ func _init() -> void:
 	_test_failed_file_cancel()
 	_test_modal_freeze()
 	_test_send_payout()
-	_test_minigame_fallback()
+	_test_auto_send()
+	_test_required_counts()
 	_test_attacks()
 	_test_connection_failure()
 	_test_full_hour_timescale()
@@ -243,20 +244,17 @@ func _test_send_payout() -> void:
 	var req_id := str(_hd._make_request([file], "tcp", false, "", ""))
 	var req = _hd.active_requests[req_id]
 	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
+	_ok(not req.sending, "TCP без соединения ещё не отправляется")
 	req.connected = true
-	_ok(req.is_ready(), "запрос готов (TCP подключён)")
 	var money_before: int = _game.money
 	var sla_before: float = _game.sla
-	_ok(_hd.start_send(req_id), "мини-игра открыта")
-	_ok(_hd.modal_open, "модалка отмечена")
-	_ok(req.minigame_active, "флаг minigame_active")
-	var mg = _hd._minigame
-	_ok(mg != null, "MiniGame создан")
-	if mg != null:
-		mg._send()
-	_ok(req.sending, "отправка началась после мини-игры")
+	_ok(_hd.start_send(req_id), "отправка стартовала")
+	_ok(req.sending, "отправка началась сразу, без окна-заглушки")
+	_ok(not req.minigame_active, "флаг minigame_active не поднимается")
+	_ok(_hd._minigame == null, "MiniGame не создаётся")
+	_ok(not _hd.modal_open, "модалка не открывается")
+	_approx(req.quality, 1.0, 0.0001, "quality = 1.0 без мини-игры")
 	_approx(_hd.channel_load(), 6.0, 0.0001, "sending text грузит канал на weight 6")
-	_ok(not _hd.modal_open, "модалка закрыта")
 	_ok(float(req.send_duration) > 0.0, "send_duration > 0")
 	for i in range(200):
 		_hd.tick(0.1)
@@ -341,26 +339,124 @@ func _test_attacks() -> void:
 	_ok(not _hd.active_packets.has(packet_id), "пакет удалён")
 
 
-func _test_minigame_fallback() -> void:
-	_set_case("minigame_fallback")
+func _test_auto_send() -> void:
+	_set_case("auto_send")
 	_game.hour = 1
 	_hd.start_hour(1)
 	_hd._recv_interval_current = 9999.0
 	_game.sla = 150.0
-	var file = _new_file("Фото-фолбэк", "photo", _folder_id())
-	_ok(file != null, "файл photo создан")
-	if file == null:
-		return
-	var req_id := str(_hd._make_request([file], "tcp", false, "", ""))
-	_ok(_hd.attach_file(req_id, str(file.id)), "photo прикреплён")
-	_hd.active_requests[req_id].connected = true
-	_ok(_hd.start_send(req_id), "отправка открыла мини-игру")
-	var mg = _hd._minigame
-	_ok(mg != null, "мини-игра создана")
-	if mg != null:
-		_eq(str(mg.game_type), "text", "час 1: photo-мини-игра не открыта → fallback text")
-	_hd._cleanup_request(req_id, true)
-	_ok(not _hd.modal_open, "модалка мини-игры закрыта")
+	var folder_id := _folder_id()
+	# UDP: последний прикреплённый файл сразу запускает отправку.
+	var udp_file = _new_file("Авто-UDP", "text", folder_id)
+	_ok(udp_file != null, "UDP: файл создан")
+	if udp_file != null:
+		var udp_id := str(_hd._make_request([udp_file], "udp", false, "", ""))
+		var udp_req = _hd.active_requests[udp_id]
+		_ok(_hd.attach_file(udp_id, str(udp_file.id)), "UDP: файл прикреплён")
+		_ok(udp_req.sending, "UDP: отправка началась без клика")
+		_ok(not udp_req.minigame_active, "UDP: minigame_active не поднимается")
+		_ok(_hd._minigame == null, "UDP: MiniGame не создаётся")
+		_ok(not _hd.modal_open, "UDP: модалка не осталась")
+		_ok(float(udp_req.send_duration) > 0.0, "UDP: send_duration задан")
+		var progress_before: float = float(udp_req.send_progress)
+		_hd.tick(0.1)
+		_ok(float(udp_req.send_progress) > progress_before, "UDP: прогресс отправки идёт")
+		for i in range(200):
+			_hd.tick(0.1)
+			if not _hd.active_requests.has(udp_id):
+				break
+		_ok(not _hd.active_requests.has(udp_id), "UDP: запрос отправлен и закрыт")
+
+	# TCP: отправка стартует сразу после успешного соединения.
+	var tcp_file = _new_file("Авто-TCP", "text", folder_id)
+	_ok(tcp_file != null, "TCP: файл создан")
+	if tcp_file != null:
+		var tcp_id := str(_hd._make_request([tcp_file], "tcp", false, "", ""))
+		var tcp_req = _hd.active_requests[tcp_id]
+		_ok(_hd.attach_file(tcp_id, str(tcp_file.id)), "TCP: файл прикреплён")
+		_ok(not tcp_req.sending, "TCP: до соединения отправки нет")
+		_ok(not _hd.start_send(tcp_id), "TCP: start_send до соединения → false")
+		_ok(_hd.connect_request(tcp_id), "TCP: соединение открыто")
+		var node = _hd._connection_games.get(tcp_id)
+		_hd._on_connection_finished(true, tcp_id)
+		_ok(tcp_req.connected, "TCP: соединение успешно")
+		_ok(tcp_req.sending, "TCP: отправка началась после соединения")
+		_ok(not _hd.modal_open, "TCP: модалка соединения закрыта")
+		if node != null and is_instance_valid(node):
+			node.free()
+		_hd._cleanup_request(tcp_id, true)
+
+	# UDP-потеря: guard разрешает один повтор и не зацикливает отправку.
+	var retry_file = _new_file("Авто-UDP-retry", "text", folder_id)
+	_ok(retry_file != null, "UDP-повтор: файл создан")
+	if retry_file != null:
+		var retry_id := str(_hd._make_request([retry_file], "udp", false, "", ""))
+		var retry_req = _hd.active_requests[retry_id]
+		var saved_rng = _hd.rng
+		_hd.rng = AlwaysZeroRng.new()
+		_ok(_hd.attach_file(retry_id, str(retry_file.id)), "UDP-повтор: файл прикреплён")
+		_hd.rng = saved_rng
+		_ok(retry_req.sending, "UDP-повтор: отправка началась после одного повтора")
+		_ok(_hd._minigame == null, "UDP-повтор: MiniGame не создаётся")
+		_hd._cleanup_request(retry_id, true)
+
+	# Открытая ConnectionGame (другого запроса) блокирует старт отправки.
+	var modal_id := str(_hd._make_request([], "udp", false, "", ""))
+	var modal_req = _hd.active_requests[modal_id]
+	_ok(modal_req != null and modal_req.is_ready(), "модальный кейс: запрос готов")
+	_hd._push_modal()
+	_ok(_hd.modal_open, "модалка открыта")
+	_ok(not _hd.start_send(modal_id), "modal_open=true → start_send false")
+	_ok(not modal_req.sending, "при открытой модалке отправка не началась")
+	_hd._pop_modal()
+	_ok(not _hd.modal_open, "модалка закрыта")
+	_ok(_hd.start_send(modal_id), "после закрытия модалки start_send true")
+	_ok(modal_req.sending, "отправка началась после закрытия модалки")
+	_hd._cleanup_request(modal_id, true)
+
+
+## RNG, который всегда «теряет» UDP-пакеты — проверка guard'а от зацикливания.
+class AlwaysZeroRng:
+	func randf() -> float:
+		return 0.0
+
+
+func _test_required_counts() -> void:
+	_set_case("required_count")
+	_hd.start_hour(1)
+	_hd._recv_interval_current = 9999.0
+	for i in range(30):
+		_eq(_hd._roll_required_count(), 1, "час 1: всегда 1 файл")
+	var folder_id := _folder_id()
+	for i in range(3):
+		_new_file("Счёт-1", "text", folder_id)
+	for i in range(12):
+		var rid := str(_hd.spawn_request_now())
+		_ok(rid != "", "час 1: запрос создан")
+		if rid.is_empty():
+			continue
+		_eq(_hd.active_requests[rid].required.size(), 1, "час 1: required.size() == 1")
+		_hd._cleanup_request(rid, true)
+
+	_hd.start_hour(2)
+	_hd._recv_interval_current = 9999.0
+	var saw_two := false
+	for i in range(60):
+		var count: int = int(_hd._roll_required_count())
+		_ok(count >= 1 and count <= 2, "час 2: required 1..2")
+		if count == 2:
+			saw_two = true
+	_ok(saw_two, "час 2: распределение даёт 2 файла")
+
+	_hd.start_hour(3)
+	_hd._recv_interval_current = 9999.0
+	var seen: Dictionary = {}
+	for i in range(120):
+		var count3: int = int(_hd._roll_required_count())
+		_ok(count3 >= 1 and count3 <= 3, "час 3+: required 1..3")
+		seen[count3] = true
+	_ok(seen.size() >= 2, "час 3+: встречаются разные размеры")
+
 
 
 func _test_connection_failure() -> void:

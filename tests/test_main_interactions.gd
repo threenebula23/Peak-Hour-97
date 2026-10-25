@@ -2,9 +2,9 @@ extends SceneTree
 ## Headless-тест интеракций экрана часа: Main.tscn ↔ GameController ↔ HourDirector.
 ##
 ## Проверяет реальные обработчики main.gd:
-##   • TCP-пакет: соединение через модалку ConnectionGame → приём в папку;
+##   • TCP-пакет: соединение кликом по карточке → приём в папку;
 ##   • UDP-пакет: приём без соединения;
-##   • запрос: прикрепление файлов, соединение (TCP), мини-игра отправки, выплата;
+##   • запрос: прикрепление файлов, соединение кликом (TCP), автоотправка;
 ##   • отказ от запроса;
 ##   • занятость TCP-слотов и освобождение через _on_slot_close.
 ##
@@ -129,7 +129,24 @@ func _test_tcp_packet() -> void:
 	var files_before: int = _game.registry.files.size()
 	_eq(str(_director.active_packets[pid].state), "waiting", "пакет ждёт соединения")
 
-	_main._on_packet_connect(pid)
+	var card = _packet_card(pid)
+	_ok(card != null, "карточка TCP-пакета найдена")
+	if card == null:
+		return
+	_ok(card.get_node_or_null("ConnectButton") == null, "у пакета нет кнопки СОЕДИНИТЬСЯ")
+
+	# Drag не должен считаться кликом.
+	var clicks := [0]
+	card.connect_pressed.connect(func(_id: String) -> void: clicks[0] += 1)
+	_press_card(card, Vector2(120, 20))
+	var motion := InputEventMouseMotion.new()
+	motion.position = Vector2(150, 20)
+	card._gui_input(motion)
+	_release_card(card, Vector2(150, 20))
+	_eq(clicks[0], 0, "перетаскивание не запускает соединение")
+
+	_click_card(card, Vector2(120, 20))
+	_eq(clicks[0], 1, "клик по карточке эмитит connect_pressed")
 	var conn = _find_modal(CONNECTION_SCRIPT)
 	_ok(conn != null, "ConnectionGame добавлен в modal_root")
 	_ok(_main._modal_game == conn, "Main запомнил активную модалку")
@@ -191,33 +208,31 @@ func _test_request_send() -> void:
 		_ok(req.attached.has(fid), "файл %s прикреплён" % fid)
 	_eq(req.attached.size(), req.required.size(), "все файлы прикреплены")
 
+	_main._refresh_hour()
+	var card = _request_card(rid)
+	_ok(card != null, "карточка запроса найдена")
+	if card == null:
+		return
+	_ok(card.get_node_or_null("ConnectButton") == null, "у запроса нет кнопки СОЕДИНИТЬСЯ")
+
 	var is_tcp := str(req.protocol).to_lower() == "tcp"
 	if is_tcp:
-		_main._on_request_connect(rid)
+		_ok(not req.sending, "TCP ждёт соединения перед отправкой")
+		_click_card(card, Vector2(140, 20))
 		var conn = _find_modal(CONNECTION_SCRIPT)
-		_ok(conn != null, "для TCP-запроса открыта ConnectionGame")
+		_ok(conn != null, "клик по TCP-запросу открыл ConnectionGame")
 		_ok(req.slot_reserved, "слот запроса зарезервирован")
 		_director._on_connection_finished(true, rid)
 		_main._on_modal_game_finished(true, rid, conn)
 		_ok(req.connected, "TCP-запрос подключён")
+	else:
+		_ok(req.sending, "UDP-запрос отправляется сразу после сборки")
 
-	_main._maybe_start_send(rid)
-	_ok(req.minigame_active, "мини-игра отправки активна")
-	_ok(_director._minigame != null, "директор держит _minigame")
-	_ok(_find_modal(MINIGAME_SCRIPT) != null, "MiniGame добавлен в modal_root")
-
-	# Мини-игра: quality 1.0. UDP может потерять пакет и перезапустить игру.
-	var guard := 0
-	while req.minigame_active and guard < 10:
-		guard += 1
-		# Освобождаем UI-модалку до вызова директора: при UDP-перезапуске
-		# директор сразу создаст новую MiniGame.
-		var mg = _main._modal_game
-		if mg != null:
-			_main._on_modal_game_finished(null, null, mg)
-		_director._on_minigame_finished(1.0)
-	_ok(not req.minigame_active, "мини-игра завершена")
-	_ok(req.sending, "отправка началась")
+	# Отправка стартует автоматически (core), без MiniGame-окна и лишнего клика.
+	_ok(req.sending, "отправка началась автоматически")
+	_ok(not req.minigame_active, "мини-игра отправки не включается")
+	_ok(_director._minigame == null, "директор не создаёт MiniGame")
+	_ok(_find_modal(MINIGAME_SCRIPT) == null, "MiniGame не добавлен в modal_root")
 
 	var money_before := int(_game.money)
 	var ticks := int(ceil(maxf(0.1, float(req.send_duration)) / 0.1)) + 10
@@ -302,6 +317,41 @@ func _find_modal(script) -> Node:
 		if c.get_script() == script:
 			return c
 	return null
+
+
+func _packet_card(id: String):
+	for c in _main.packets:
+		if c != null and is_instance_valid(c) and str(c.id) == id:
+			return c
+	return null
+
+
+func _request_card(id: String):
+	for c in _main.requests:
+		if c != null and is_instance_valid(c) and str(c.id) == id:
+			return c
+	return null
+
+
+func _click_card(card: Control, pos: Vector2) -> void:
+	_press_card(card, pos)
+	_release_card(card, pos)
+
+
+func _press_card(card: Control, pos: Vector2) -> void:
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = pos
+	card._gui_input(press)
+
+
+func _release_card(card: Control, pos: Vector2) -> void:
+	var release := InputEventMouseButton.new()
+	release.button_index = MOUSE_BUTTON_LEFT
+	release.pressed = false
+	release.position = pos
+	card._gui_input(release)
 
 
 func _finish() -> void:
