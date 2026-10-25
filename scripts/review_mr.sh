@@ -10,10 +10,16 @@
 #   GITEA_URL    — база Gitea (default: https://git.194-146-38-78.sslip.io).
 #   REPO         — owner/repo (default: admin/Game-JAM).
 #   DRY_RUN=1    — только напечатать ревью, ничего не постить.
+#   INPUT_DIFF   — локальный файл с diff'ом; если задан и существует, Gitea API
+#                  не вызывается (DIFF_CODE=200).
 #   OPENCODE_BIN — путь к opencode (default: из PATH или ~/.opencode/bin).
+#   REVIEW_MODEL — модель ревьюера (default: opencode-go/glm-5.3-flash).
+#   REVIEW_TIMEOUT_SEC — жёсткий таймаут OpenCode, сек (default: 600).
 #
 # Запуск локально:
 #   GITHUB_EVENT_PATH=/tmp/event.json DRY_RUN=1 bash scripts/review_mr.sh
+#   INPUT_DIFF=/tmp/x.diff DRY_RUN=1 GITHUB_EVENT_PATH=/tmp/event.json \
+#     bash scripts/review_mr.sh
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -23,8 +29,11 @@ GITEA_URL="${GITEA_URL:-https://git.194-146-38-78.sslip.io}"
 REPO="${REPO:-admin/Game-JAM}"
 GITEA_TOKEN="${GITEA_TOKEN:-}"
 DRY_RUN="${DRY_RUN:-0}"
+INPUT_DIFF="${INPUT_DIFF:-}"
 REVIEW_DIR="${REVIEW_DIR:-/tmp/opencode}"
 DIFF_LIMIT_BYTES="${DIFF_LIMIT_BYTES:-80000}"
+REVIEW_MODEL="${REVIEW_MODEL:-opencode-go/glm-5.3-flash}"
+REVIEW_TIMEOUT_SEC="${REVIEW_TIMEOUT_SEC:-600}"
 
 PR=""
 MR_TITLE=""
@@ -132,7 +141,12 @@ fi
 # --- 2. Diff из Gitea -------------------------------------------------------
 DIFF_FILE="$TMP_DIR/mr.diff"
 DIFF_CODE=""
-if [[ -n "$GITEA_TOKEN" ]]; then
+if [[ -n "$INPUT_DIFF" && -f "$INPUT_DIFF" ]]; then
+  # Локальный diff (dry-run/офлайн): Gitea API не трогаем.
+  cp -- "$INPUT_DIFF" "$DIFF_FILE"
+  DIFF_CODE="200"
+  log "using local diff: $INPUT_DIFF"
+elif [[ -n "$GITEA_TOKEN" ]]; then
   DIFF_CODE="$(curl -sS -o "$DIFF_FILE" -w '%{http_code}' \
     -H "Authorization: token ${GITEA_TOKEN}" \
     -H "Accept: text/plain" \
@@ -184,8 +198,7 @@ HTML5 без потоков, RU-only, 1280×720). Ревьюь MR #${PR} «${MR_
 - docs/GDD.md — геймдизайн и правила.
 - docs/DECISIONS.md — принятые решения (D01, D02, ...). При противоречии
   GDD и DECISIONS приоритет у DECISIONS.
-- docs/TEST_PLAN.md, docs/IMPLEMENTATION.md, docs/architecture.md — тесты и
-  архитектура.
+- Читать эти файлы не обязательно: весь нужный контекст — в diff ниже.
 
 Проверь diff ниже и найди РЕАЛЬНЫЕ проблемы, а не стилистические придирки.
 Фокус:
@@ -199,6 +212,11 @@ HTML5 без потоков, RU-only, 1280×720). Ревьюь MR #${PR} «${MR_
 7. Производительность: лишние аллокации в _process, перерисовка, IO.
 
 Правила:
+- ЖЁСТКОЕ ПРАВИЛО: НЕ запускай shell-команды, не читай файлы репозитория и не
+  используй инструменты. Весь контекст — в diff ниже. Если чего-то не хватает —
+  отметь как вопрос. Ответь сразу Markdown по разделам.
+- Единственное допустимое действие — вернуть текстовый ответ; diff уже в промпте,
+  ничего не открывай и не дочитывай.
 - НЕ меняй файлы и не предлагай патчи целиком — только замечания.
 - Ссылайся на файл и строку/фрагмент, объясняй риск и как проверить.
 - Не выдумывай проблемы: если сомневаешься — помечай как вопрос.
@@ -235,11 +253,15 @@ if [[ -z "$OPENCODE_BIN" ]]; then
 fi
 
 RAW_OUT="$TMP_DIR/opencode.jsonl"
-log "running opencode: $OPENCODE_BIN run --format json --agent oracle"
+log "running opencode: $OPENCODE_BIN run --format json --agent oracle --model $REVIEW_MODEL (timeout ${REVIEW_TIMEOUT_SEC}s)"
 set +e
-"$OPENCODE_BIN" run --format json --agent oracle "$(cat "$PROMPT_FILE")" >"$RAW_OUT" 2>"$TMP_DIR/opencode.err"
+timeout "$REVIEW_TIMEOUT_SEC" "$OPENCODE_BIN" run --format json --agent oracle --model "$REVIEW_MODEL" "$(cat "$PROMPT_FILE")" >"$RAW_OUT" 2>"$TMP_DIR/opencode.err"
 OC_RC=$?
 set -e
+if [[ "$OC_RC" -eq 124 ]]; then
+  tail -n 20 "$TMP_DIR/opencode.err" >&2 || true
+  fail "review timeout (${REVIEW_TIMEOUT_SEC}s)"
+fi
 if [[ "$OC_RC" -ne 0 ]]; then
   tail -n 20 "$TMP_DIR/opencode.err" >&2 || true
   fail "opencode exited with code $OC_RC"
