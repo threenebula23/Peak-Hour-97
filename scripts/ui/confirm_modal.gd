@@ -118,34 +118,17 @@ func _draw() -> void:
 
 
 func _draw_frame(r: Rect2) -> void:
-	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.FACE)
-	var inner := r.grow(-Theme90.BEVEL)
-	draw_rect(Rect2(inner.position, Vector2(inner.size.x, 1)), Theme90.FACE_HI)
-	draw_rect(Rect2(inner.position, Vector2(1, inner.size.y)), Theme90.FACE_HI)
-
-	var tr := Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4.0, TITLE_H))
-	Theme90.draw_vgrad(self, tr, Theme90.NAVY, Theme90.NAVY_DEEP)
-	draw_rect(Rect2(tr.position, Vector2(tr.size.x, 1)), Color(0.0, 0.0, 0.372549))
-	draw_rect(Rect2(tr.position.x, tr.end.y - 1, tr.size.x, 1), Theme90.DARK)
-	draw_rect(Rect2(tr.position.x, tr.end.y - 2, tr.size.x, 1), Theme90.ACCENT)
-
-	Theme90.text_vcenter(self, Theme90.logo(), Rect2(tr.position.x + 5, tr.position.y, 14, TITLE_H),
-		"?", 10, Theme90.WHITE)
-
-	var f := Theme90.ui()
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x + 22, tr.position.y, 200, TITLE_H),
-		"ПОДТВЕРЖДЕНИЕ", Theme90.FS_BODY, Theme90.WHITE)
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x, tr.position.y, tr.size.x - 40, TITLE_H),
-		"ТРЕБУЕТСЯ ОТВЕТ", Theme90.FS_MICRO, Theme90.ACCENT_LIGHT,
-		-1, HORIZONTAL_ALIGNMENT_RIGHT)
+	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
+	Theme90.modal_header(self, r, "ПОДТВЕРЖДЕНИЕ", "ТРЕБУЕТСЯ ОТВЕТ")
 
 	# знак вопроса в утопленной плашке
 	var well := Rect2(r.position + Vector2(18, 28), Vector2(34, 34))
-	Theme90.draw_bevel(self, well, true, 2.0, Theme90.FACE)
+	Theme90.draw_sunken(self, well)
 	Theme90.text_vcenter(self, Theme90.logo(), well, "?",
 		18, Theme90.ERROR if _danger else Theme90.NAVY)
 
 	# вопрос и пояснение
+	var f := Theme90.ui()
 	var lines := Theme90.wrap(f, _question, 14, 378, 2)
 	var y := r.position.y + 30
 	for line in lines:

@@ -21,14 +21,6 @@ const STICK_SPEEDS: Array[float] = [440.0, 340.0, 280.0]
 const FLASH_SEC := 0.8
 const CLICKS_REQUIRED := 3
 
-const COL_PANEL := Color("#c0c0c0")
-const COL_TITLE := Color("#000080")
-const COL_ZONE := Color("#007000")
-const COL_MISS := Color("#c00000")
-const COL_STICK := Color("#c0c0c0")
-const COL_DARK := Color("#000000")
-const COL_LIGHT := Color("#ffffff")
-
 var hour: int = 1
 var successes: int = 0
 var zone_level: int = 0
@@ -206,46 +198,71 @@ func _finish(success: bool) -> void:
 
 
 func _draw() -> void:
-	var font := get_theme_default_font()
-	# Корпус окна.
-	draw_rect(Rect2(Vector2.ZERO, WINDOW_SIZE), COL_PANEL, true)
-	draw_rect(Rect2(Vector2.ZERO, WINDOW_SIZE), COL_DARK, false, 2.0)
-	# Заголовок.
-	draw_rect(Rect2(2.0, 2.0, WINDOW_SIZE.x - 4.0, 22.0), COL_TITLE, true)
-	draw_string(font, Vector2(10.0, 18.0), "УСТАНОВЛЕНИЕ СОЕДИНЕНИЯ", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, COL_LIGHT)
-	# Полоса.
-	draw_rect(BAR_RECT, COL_TITLE, true)
-	draw_rect(BAR_RECT, COL_DARK, false, 2.0)
-	var green_rect := Rect2(zone_start_x(), BAR_RECT.position.y, zone_width_px(), BAR_RECT.size.y)
-	draw_rect(green_rect, COL_ZONE, true)
-	draw_rect(green_rect, COL_DARK, false, 1.0)
-	# Рамка полосы поверх зоны.
-	draw_rect(BAR_RECT, COL_DARK, false, 2.0)
+	var font := Theme90.ui()
+	var full := Rect2(Vector2.ZERO, WINDOW_SIZE)
+	Theme90.draw_bevel(self, full, false, Theme90.BEVEL, Theme90.PAPER)
+
+	# Светлый титлбар: тёмный текст и teal-акцент.
+	var tr := Rect2(1.0, 1.0, WINDOW_SIZE.x - 2.0, 28.0)
+	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 4), tr)
+	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0),
+		Theme90.HAIRLINE)
+	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0, Theme90.ACCENT)
+	draw_string(font, Vector2(tr.position.x + 25.0, tr.position.y + 19.0),
+		"УСТАНОВЛЕНИЕ СОЕДИНЕНИЯ", HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Theme90.NAVY)
+	draw_string(font, Vector2(80.0, 76.0),
+		"Проведите три палочки через зелёную зону по очереди.",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 12, Theme90.SHADE)
+
+	# Полоса: мягкий жёлоб, зона успеха и тонкие границы.
+	draw_style_box(Theme90.well_box(Theme90.PAPER_LO), BAR_RECT)
+	var zone_start := zone_start_x()
+	var green_rect := Rect2(zone_start, BAR_RECT.position.y, zone_width_px(),
+		BAR_RECT.size.y)
+	draw_style_box(Theme90.fill_box(Color(Theme90.SUCCESS.r, Theme90.SUCCESS.g,
+		Theme90.SUCCESS.b, 0.24), 3), green_rect.grow(-1.0))
+	draw_rect(Rect2(green_rect.position.x, BAR_RECT.position.y + 1.0, 1.0,
+		BAR_RECT.size.y - 2.0), Theme90.SUCCESS)
+	draw_rect(Rect2(green_rect.end.x - 1.0, BAR_RECT.position.y + 1.0, 1.0,
+		BAR_RECT.size.y - 2.0), Theme90.SUCCESS)
+
 	# Палочки.
 	for i in range(CLICKS_REQUIRED):
 		var x := -1.0
-		var color := COL_STICK
-		if hit_positions[i] >= 0.0:
+		var color := Theme90.SHADE
+		var is_hit := hit_positions[i] >= 0.0
+		if is_hit:
 			x = hit_positions[i]
-			color = COL_ZONE
+			color = Theme90.SUCCESS
 		elif i == active_index:
 			x = stick_positions[i]
+			color = Theme90.ACCENT
 		elif i > active_index:
 			x = BAR_RECT.position.x
 		if x < 0.0:
 			continue
 		if missed and flash_left > 0.0 and i == active_index:
-			color = COL_MISS
+			color = Theme90.ERROR
 		var y := BAR_RECT.position.y + (BAR_RECT.size.y - STICK_H) * 0.5
-		draw_rect(Rect2(x, y, STICK_W, STICK_H), color, true)
+		if is_hit and not missed:
+			draw_style_box(Theme90.box(Theme90.WHITE, Theme90.SUCCESS, 2, 1),
+				Rect2(x - 1.0, y - 1.0, STICK_W + 2.0, STICK_H + 2.0))
+		else:
+			draw_style_box(Theme90.fill_box(color, 1), Rect2(x, y, STICK_W, STICK_H))
+
 	# Подсказки.
-	var hint := "ЛКМ / ПРОБЕЛ — три попадания по очереди. Esc — отмена."
-	draw_string(font, Vector2(80.0, 196.0), hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, COL_DARK)
-	var zone_text := "ЗОНА %.0f%% · попаданий %d/3" % [zone_ratio * 100.0, active_index]
-	draw_string(font, Vector2(80.0, 214.0), zone_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, COL_DARK)
+	draw_string(font, Vector2(80.0, 196.0),
+		"ЛКМ / ПРОБЕЛ — три попадания по очереди. Esc — отмена.",
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Theme90.DARK)
+	draw_string(font, Vector2(80.0, 214.0),
+		"ЗОНА %.0f%% · попаданий %d/3" % [zone_ratio * 100.0, active_index],
+		HORIZONTAL_ALIGNMENT_LEFT, -1, 11, Theme90.SHADE)
 	if flash_left > 0.0:
-		draw_rect(Rect2(0.0, 24.0, WINDOW_SIZE.x, WINDOW_SIZE.y - 24.0), Color(COL_MISS.r, COL_MISS.g, COL_MISS.b, 0.12), true)
-		draw_string(font, Vector2(80.0, 86.0), "ПРОМАХ — СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, COL_MISS)
+		draw_rect(Rect2(0.0, 28.0, WINDOW_SIZE.x, WINDOW_SIZE.y - 28.0),
+			Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.08), true)
+		draw_string(font, Vector2(80.0, 96.0),
+			"ПРОМАХ — СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО",
+			HORIZONTAL_ALIGNMENT_LEFT, -1, 14, Theme90.ERROR)
 
 
 func _center_on_screen() -> void:

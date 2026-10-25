@@ -49,14 +49,12 @@ class Slider90:
 		return Rect2(roundf(travel * float(value) / 100.0), 0, 9, 14)
 
 	func _draw() -> void:
-		var track := _track()
-		draw_rect(track, Theme90.FACE_LO)
-		Theme90.draw_bevel(self, track, true, 1.0, Theme90.FACE_LO)
-		for i in 11:
-			var tx := roundf(track.position.x + travel_hint(i))
-			draw_rect(Rect2(tx, track.position.y + 2, 1, 4), Theme90.SHADE)
+		var track := Rect2(0, 6, size.x, 4)
+		Theme90.draw_meter(self, track, float(value) / 100.0, Theme90.ACCENT,
+			Theme90.PAPER_LO)
 		var g := _grabber()
-		Theme90.draw_bevel(self, g, false, 2.0, Theme90.FACE)
+		draw_style_box(Theme90.box(Theme90.WHITE, Theme90.ACCENT_LIGHT, 3, 1,
+			Theme90.SHADOW), g)
 		var gy := roundf(g.position.y + g.size.y * 0.5)
 		for i in 3:
 			draw_rect(Rect2(g.position.x + 3, gy - 3 + i * 2, 3, 1), Theme90.SHADE)
@@ -307,40 +305,20 @@ func _draw() -> void:
 
 
 func _draw_frame(r: Rect2) -> void:
-	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.FACE)
-	var inner := r.grow(-Theme90.BEVEL)
-	draw_rect(Rect2(inner.position, Vector2(inner.size.x, 1)), Theme90.FACE_HI)
-	draw_rect(Rect2(inner.position, Vector2(1, inner.size.y)), Theme90.FACE_HI)
-
-	var tr := Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4.0, TITLE_H))
-	Theme90.draw_vgrad(self, tr, Theme90.NAVY, Theme90.NAVY_DEEP)
-	draw_rect(Rect2(tr.position, Vector2(tr.size.x, 1)), Color(0.0, 0.0, 0.372549))
-	draw_rect(Rect2(tr.position.x, tr.end.y - 1, tr.size.x, 1), Theme90.DARK)
-	draw_rect(Rect2(tr.position.x, tr.end.y - 2, tr.size.x, 1), Theme90.ACCENT)
-
-	# три ползунка — пиктограмма окна
-	for i in 3:
-		var ly := tr.position.y + 5.0 + i * 3.0
-		draw_rect(Rect2(tr.position.x + 5, ly, 10, 1), Theme90.WHITE)
-		draw_rect(Rect2(tr.position.x + 7 + i * 2, ly - 1, 2, 3), Theme90.ACCENT_LIGHT)
-
-	var f := Theme90.ui()
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x + 22, tr.position.y, 200, TITLE_H),
-		_tr("ui.settings_title", "Настройки").to_upper(), Theme90.FS_BODY, Theme90.WHITE)
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x, tr.position.y, tr.size.x - 40, TITLE_H),
-		"УЗЕЛ 7 · ПРОФИЛЬ ОПЕРАТОРА", Theme90.FS_MICRO, Theme90.ACCENT_LIGHT,
-		-1, HORIZONTAL_ALIGNMENT_RIGHT)
+	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
+	Theme90.modal_header(self, r, _tr("ui.settings_title", "Настройки").to_upper(),
+		"УЗЕЛ 7 · ПРОФИЛЬ ОПЕРАТОРА")
 
 
 func _draw_group(r: Rect2, title: String) -> void:
-	Theme90.draw_bevel(self, r, true, Theme90.BEVEL, Theme90.FACE)
+	Theme90.draw_sunken(self, r)
 	var inner := r.grow(-Theme90.BEVEL)
 	var f := Theme90.ui()
-	Theme90.text(self, f, Vector2(inner.position.x + 8, inner.position.y + 5),
+	draw_circle(Vector2(inner.position.x + 8, inner.position.y + 10), 2.0, Theme90.ACCENT)
+	Theme90.text(self, f, Vector2(inner.position.x + 15, inner.position.y + 5),
 		title, Theme90.FS_MICRO, Theme90.NAVY)
 	var ly := inner.position.y + 22
-	draw_rect(Rect2(inner.position.x + 4, ly, inner.size.x - 8, 1), Theme90.SHADE)
-	draw_rect(Rect2(inner.position.x + 4, ly + 1, inner.size.x - 8, 1), Theme90.LIGHT)
+	draw_rect(Rect2(inner.position.x + 4, ly, inner.size.x - 8, 1), Theme90.HAIRLINE)
 
 
 func _draw_labels(r: Rect2) -> void:

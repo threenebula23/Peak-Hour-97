@@ -149,36 +149,15 @@ func _draw() -> void:
 
 
 func _draw_frame(r: Rect2) -> void:
-	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.FACE)
-	var inner := r.grow(-Theme90.BEVEL)
-	draw_rect(Rect2(inner.position, Vector2(inner.size.x, 1)), Theme90.FACE_HI)
-	draw_rect(Rect2(inner.position, Vector2(1, inner.size.y)), Theme90.FACE_HI)
-
-	var tr := Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4.0, TITLE_H))
-	Theme90.draw_vgrad(self, tr, Theme90.NAVY, Theme90.NAVY_DEEP)
-	draw_rect(Rect2(tr.position, Vector2(tr.size.x, 1)), Color(0.0, 0.0, 0.372549))
-	draw_rect(Rect2(tr.position.x, tr.end.y - 1, tr.size.x, 1), Theme90.DARK)
-	draw_rect(Rect2(tr.position.x, tr.end.y - 2, tr.size.x, 1), Theme90.ACCENT)
-
-	# пиктограмма папки в заголовке
-	var ix := tr.position.x + 5
-	var iy := tr.position.y + 6
-	draw_rect(Rect2(ix + 1, iy, 5, 3), Theme90.ACCENT_LIGHT)
-	draw_rect(Rect2(ix, iy + 3, 10, 8), Theme90.ACCENT_LIGHT)
-	draw_rect(Rect2(ix + 1, iy + 5, 8, 5), Theme90.NAVY)
-
-	var f := Theme90.ui()
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x + 22, tr.position.y, 200, TITLE_H),
-		"ПЕРЕИМЕНОВАТЬ ПАПКУ", Theme90.FS_BODY, Theme90.WHITE)
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x, tr.position.y, tr.size.x - 40, TITLE_H),
-		"ПАПКА · 16 СИМВОЛОВ", Theme90.FS_MICRO, Theme90.ACCENT_LIGHT,
-		-1, HORIZONTAL_ALIGNMENT_RIGHT)
+	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
+	Theme90.modal_header(self, r, "ПЕРЕИМЕНОВАТЬ ПАПКУ", "ПАПКА · 16 СИМВОЛОВ")
 
 	# подпись поля
+	var f := Theme90.ui()
 	Theme90.text(self, f, Vector2(r.position.x + 18, r.position.y + 34),
 		"ИМЯ ПАПКИ:", Theme90.FS_BODY, Theme90.INK)
 	Theme90.text_vcenter(self, f, Rect2(r.position.x + 18, r.position.y + 80, W - 36, 14),
-		"ENTER — ОК · ESC — ОТМЕНА", Theme90.FS_MICRO, Theme90.DARK)
+		"ENTER — ОК · ESC — ОТМЕНА", Theme90.FS_MICRO, Theme90.SHADE)
 
 	# разделитель над кнопками
 	var ly := r.position.y + 104

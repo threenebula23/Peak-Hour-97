@@ -17,13 +17,6 @@ const SEND_RECT := Rect2(150.0, 282.0, 150.0, 34.0)
 const REDO_RECT := Rect2(340.0, 282.0, 150.0, 34.0)
 const BAR_RECT := Rect2(100.0, 210.0, 440.0, 22.0)
 
-const COL_PANEL := Color("#c0c0c0")
-const COL_TITLE := Color("#000080")
-const COL_ZONE := Color("#007000")
-const COL_MISS := Color("#c00000")
-const COL_DARK := Color("#000000")
-const COL_LIGHT := Color("#ffffff")
-
 const TYPE_NAMES := {
 	"text": "ТЕКСТ",
 	"sound": "ЗВУК",
@@ -154,38 +147,59 @@ func _restart_bar() -> void:
 
 
 func _draw() -> void:
-	var font := get_theme_default_font()
-	draw_rect(Rect2(Vector2.ZERO, WINDOW_SIZE), COL_PANEL, true)
-	draw_rect(Rect2(Vector2.ZERO, WINDOW_SIZE), COL_DARK, false, 2.0)
-	draw_rect(Rect2(2.0, 2.0, WINDOW_SIZE.x - 4.0, 24.0), COL_TITLE, true)
+	var font := Theme90.ui()
+	var full := Rect2(Vector2.ZERO, WINDOW_SIZE)
+	Theme90.draw_bevel(self, full, false, Theme90.BEVEL, Theme90.PAPER)
+
+	# Светлый титлбар с teal-акцентом.
+	var tr := Rect2(1.0, 1.0, WINDOW_SIZE.x - 2.0, 28.0)
+	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 4), tr)
+	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0),
+		Theme90.HAIRLINE)
+	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0, Theme90.ACCENT)
 	var title := "МИНИ-ИГРА: %s" % type_label(game_type)
-	draw_string(font, Vector2(12.0, 20.0), title, HORIZONTAL_ALIGNMENT_LEFT, -1, 16, COL_LIGHT)
+	Theme90.text(self, font, Vector2(tr.position.x + 25.0, tr.position.y + 7.0),
+		title, 14, Theme90.NAVY, tr.size.x - 40.0)
 
-	draw_string(font, Vector2(40.0, 86.0), "заглушка", HORIZONTAL_ALIGNMENT_LEFT, -1, 24, COL_DARK)
-	draw_string(font, Vector2(40.0, 116.0), "Сложность: %.2f · quality = %.1f" % [difficulty, QUALITY_STUB], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, COL_TITLE)
-	draw_string(font, Vector2(40.0, 142.0), "Подготовьте файл к отправке. Esc не закрывает окно.", HORIZONTAL_ALIGNMENT_LEFT, -1, 12, COL_DARK)
+	Theme90.text(self, font, Vector2(40.0, 64.0), "ЗАГЛУШКА",
+		20, Theme90.INK)
+	Theme90.text(self, font, Vector2(40.0, 94.0),
+		"Сложность: %.2f · quality = %.1f" % [difficulty, QUALITY_STUB],
+		12, Theme90.SHADE)
+	Theme90.text(self, font, Vector2(40.0, 118.0),
+		"Подготовьте файл к отправке. Esc не закрывает окно.",
+		12, Theme90.DARK)
 
-	# Полоса 2 с.
-	draw_rect(BAR_RECT, COL_TITLE, true)
-	draw_rect(BAR_RECT, COL_DARK, false, 2.0)
+	# Полоса 2 с: тонкая дорожка + мягкая заливка.
+	Theme90.text(self, font, Vector2(BAR_RECT.position.x, BAR_RECT.position.y - 20.0),
+		"ОБРАБОТКА  %.1f / %.1f с" % [progress, DURATION], 11, Theme90.SHADE)
+	Theme90.draw_sunken(self, BAR_RECT)
 	var ratio := clampf(progress / DURATION, 0.0, 1.0)
-	if ratio > 0.0:
-		draw_rect(Rect2(BAR_RECT.position.x, BAR_RECT.position.y, BAR_RECT.size.x * ratio, BAR_RECT.size.y), COL_ZONE, true)
-	draw_string(font, Vector2(BAR_RECT.position.x, BAR_RECT.position.y - 8.0), "ОБРАБОТКА  %.1f / %.1f с" % [progress, DURATION], HORIZONTAL_ALIGNMENT_LEFT, -1, 12, COL_DARK)
+	Theme90.draw_meter(self, BAR_RECT.grow(-1.0), ratio, Theme90.SUCCESS,
+		Theme90.PAPER_LO)
 
-	# Кнопки.
-	_draw_button(SEND_RECT, "Отправить", ratio >= 1.0)
-	_draw_button(REDO_RECT, "Переделать", true)
+	# Компактные кнопки в стиле v2.
+	_draw_button(SEND_RECT, "Отправить", ratio >= 1.0, true)
+	_draw_button(REDO_RECT, "Переделать", true, false)
 
 
-func _draw_button(rect: Rect2, label: String, enabled: bool) -> void:
-	var font := get_theme_default_font()
-	var fill := COL_TITLE if enabled else Color("#808080")
-	draw_rect(rect, fill, true)
-	draw_rect(rect, COL_DARK, false, 2.0)
-	var text_size := font.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12)
-	var pos := Vector2(rect.position.x + (rect.size.x - text_size.x) * 0.5, rect.position.y + 22.0)
-	draw_string(font, pos, label, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, COL_LIGHT)
+func _draw_button(rect: Rect2, label: String, enabled: bool, primary: bool = false) -> void:
+	var font := Theme90.ui()
+	var face := Theme90.PAPER_HI
+	var fg := Theme90.INK
+	var border := Theme90.BORDER
+	if primary and enabled:
+		face = Theme90.ACCENT
+		fg = Theme90.WHITE
+		border = Theme90.ACCENT.darkened(0.18)
+	elif not enabled:
+		face = Theme90.PAPER
+		fg = Theme90.SHADE
+		border = Theme90.BORDER_SOFT
+	draw_style_box(Theme90.box(face, border, 3, 1,
+		Theme90.SHADOW if enabled else Color(0, 0, 0, 0)), rect)
+	Theme90.text_vcenter(self, font, rect, label, 12, fg, -1,
+		HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _center_on_screen() -> void:

@@ -126,44 +126,24 @@ func _draw() -> void:
 
 
 func _draw_frame(r: Rect2) -> void:
-	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.FACE)
-	var inner := r.grow(-Theme90.BEVEL)
-	draw_rect(Rect2(inner.position, Vector2(inner.size.x, 1)), Theme90.FACE_HI)
-	draw_rect(Rect2(inner.position, Vector2(1, inner.size.y)), Theme90.FACE_HI)
-
-	var tr := Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4.0, TITLE_H))
-	Theme90.draw_vgrad(self, tr, Theme90.NAVY, Theme90.NAVY_DEEP)
-	draw_rect(Rect2(tr.position, Vector2(tr.size.x, 1)), Color(0.0, 0.0, 0.372549))
-	draw_rect(Rect2(tr.position.x, tr.end.y - 1, tr.size.x, 1), Theme90.DARK)
-	draw_rect(Rect2(tr.position.x, tr.end.y - 2, tr.size.x, 1), Theme90.ACCENT)
-
-	# пиктограмма паузы
-	var ix := tr.position.x + 6.0
-	var iy := tr.position.y + 5.0
-	draw_rect(Rect2(ix, iy, 3, 10), Theme90.WHITE)
-	draw_rect(Rect2(ix + 6, iy, 3, 10), Theme90.WHITE)
-
-	var f := Theme90.ui()
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x + 22, tr.position.y, 140, TITLE_H),
-		_tr("ui.pause_title", "Пауза").to_upper(), Theme90.FS_BODY, Theme90.WHITE)
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x, tr.position.y, tr.size.x - 40, TITLE_H),
-		"ЧАС 3 · 03:42", Theme90.FS_MICRO, Theme90.ACCENT_LIGHT,
-		-1, HORIZONTAL_ALIGNMENT_RIGHT)
+	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
+	Theme90.modal_header(self, r, _tr("ui.pause_title", "Пауза").to_upper(), "ЧАС 3 · 03:42")
 
 	# информационная плашка
 	var well := Rect2(r.position + Vector2(14, 28), Vector2(r.size.x - 28, 56))
-	Theme90.draw_bevel(self, well, true, 2.0, Theme90.FACE)
+	Theme90.draw_sunken(self, well)
 	var bx := well.position.x + 14.0
 	var by := well.position.y + 18.0
 	draw_rect(Rect2(bx, by, 9, 20), Theme90.NAVY)
 	draw_rect(Rect2(bx + 14, by, 9, 20), Theme90.NAVY)
 	draw_rect(Rect2(bx, by, 9, 2), Theme90.ACCENT_LIGHT)
 	draw_rect(Rect2(bx + 14, by, 9, 2), Theme90.ACCENT_LIGHT)
+	var f := Theme90.ui()
 	Theme90.text(self, f, Vector2(well.position.x + 44, well.position.y + 10),
 		"СМЕНА ПРИОСТАНОВЛЕНА", Theme90.FS_BODY, Theme90.INK)
 	Theme90.text(self, f, Vector2(well.position.x + 44, well.position.y + 27),
-		"Таймеры, касса и канал ждут оператора", Theme90.FS_MICRO, Theme90.DARK)
+		"Таймеры, касса и канал ждут оператора", Theme90.FS_MICRO, Theme90.SHADE)
 
 	Theme90.text_vcenter(self, f, Rect2(r.position.x + 10, r.position.y + 194, r.size.x - 20, 12),
-		"ESC — ПРОДОЛЖИТЬ СМЕНУ", Theme90.FS_MICRO, Theme90.DARK,
+		"ESC — ПРОДОЛЖИТЬ СМЕНУ", Theme90.FS_MICRO, Theme90.SHADE,
 		-1, HORIZONTAL_ALIGNMENT_CENTER)

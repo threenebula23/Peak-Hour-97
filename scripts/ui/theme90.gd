@@ -215,6 +215,26 @@ static func top_box(bg: Color = WHITE, radius: int = 4) -> StyleBoxFlat:
 	return sb
 
 
+## Единый светлый титлбар модалки: тонкая полоса, тёмный текст, teal-точка.
+## Высота по умолчанию 20 px — как у старых TITLE_H, чтобы не двигать контент.
+static func modal_header(ci: CanvasItem, rect: Rect2, title: String, hint: String = "",
+		h: float = 20.0) -> void:
+	var tr := Rect2(rect.position.x + 1.0, rect.position.y + 1.0,
+		maxf(0.0, rect.size.x - 2.0), h)
+	ci.draw_style_box(top_box(PAPER_HI, 6), tr)
+	ci.draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0), HAIRLINE)
+	ci.draw_circle(Vector2(tr.position.x + 10.0, tr.position.y + h * 0.5), 2.5, ACCENT)
+	var f := ui()
+	var th := f.get_height(FS_BODY)
+	text(ci, f, Vector2(tr.position.x + 18.0,
+		tr.position.y + roundf((h - th) * 0.5)), title, FS_BODY, NAVY_DEEP,
+		tr.size.x - 90.0)
+	if not hint.is_empty():
+		var hw := f.get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1, FS_MICRO).x
+		text(ci, f, Vector2(tr.end.x - hw - 34.0, tr.position.y + roundf((h - 12.0) * 0.5)),
+			hint, FS_MICRO, SHADE)
+
+
 ## Утопленная поверхность (поля ввода, дорожки, пустые слоты).
 static func well_box(bg: Color = PAPER_HI) -> StyleBoxFlat:
 	return box(bg, BORDER_SOFT, 3, 1)
@@ -520,6 +540,74 @@ static func apply_bevel(control: Control, pressed: bool = false, thick: float = 
 
 # --- Тема (используется art/fonts/ui_theme.tres) --------------------------
 
+static func _circle_tex(fill: Color, border: Color, size: int = 12) -> ImageTexture:
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var c := (float(size) - 1.0) * 0.5
+	var r := float(size) * 0.5 - 1.0
+	for yy in size:
+		for xx in size:
+			var d := Vector2(float(xx) - c, float(yy) - c).length()
+			if d <= r:
+				img.set_pixel(xx, yy, border if d > r - 1.15 else fill)
+	return ImageTexture.create_from_image(img)
+
+
+static func _check_tex(fill: Color, border: Color, size: int = 14) -> ImageTexture:
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	var rad := 3.0
+	var half := float(size) * 0.5 - 1.0
+	var c := (float(size) - 1.0) * 0.5
+	for yy in size:
+		for xx in size:
+			var dx := maxf(absf(float(xx) - c) - half + rad, 0.0)
+			var dy := maxf(absf(float(yy) - c) - half + rad, 0.0)
+			var d := Vector2(dx, dy).length()
+			if d <= rad:
+				img.set_pixel(xx, yy, border if d > rad - 1.0 else fill)
+	# галочка
+	var a := Vector2(float(size) * 0.27, float(size) * 0.52)
+	var b := Vector2(float(size) * 0.44, float(size) * 0.68)
+	var e := Vector2(float(size) * 0.74, float(size) * 0.33)
+	for yy in size:
+		for xx in size:
+			var p := Vector2(float(xx), float(yy))
+			if _dist_seg(p, a, b) <= 1.2 or _dist_seg(p, b, e) <= 1.2:
+				img.set_pixel(xx, yy, WHITE)
+	return ImageTexture.create_from_image(img)
+
+
+static func _dist_seg(p: Vector2, a: Vector2, b: Vector2) -> float:
+	var ab := b - a
+	var t := clampf((p - a).dot(ab) / maxf(ab.length_squared(), 0.001), 0.0, 1.0)
+	return p.distance_to(a + ab * t)
+
+
+static func _arrow_tex(dir: int, color: Color, size: int = 9) -> ImageTexture:
+	var img := Image.create(size, size, false, Image.FORMAT_RGBA8)
+	img.fill(Color(0, 0, 0, 0))
+	for i in int(size / 2) + 1:
+		for j in range(-i, i + 1):
+			var x := j
+			var y := i
+			if dir == 0:
+				x = j + int(size / 2)
+				y = i
+			elif dir == 1:
+				x = j + int(size / 2)
+				y = size - 1 - i
+			elif dir == 2:
+				x = size - 1 - i
+				y = j + int(size / 2)
+			else:
+				x = i
+				y = j + int(size / 2)
+			if x >= 0 and x < size and y >= 0 and y < size:
+				img.set_pixel(x, y, color)
+	return ImageTexture.create_from_image(img)
+
+
 static func popup_panel_box() -> StyleBoxFlat:
 	var sb := box(FACE_HI, BORDER, 4, 1, Color(0, 0, 0, 0.16))
 	sb.shadow_size = 6
@@ -600,6 +688,49 @@ static func build_theme() -> Theme:
 
 	# Panel
 	t.set_stylebox("panel", "Panel", box(FACE_HI, BORDER, 4, 1, SHADOW))
+
+	# HSlider — тонкая бумажная дорожка, teal-заливка, круглый бегунок.
+	t.set_stylebox("slider", "HSlider", box(PAPER_LO, BORDER_SOFT, 2, 1))
+	t.set_stylebox("grabber_area", "HSlider", fill_box(ACCENT_LIGHT, 2))
+	t.set_stylebox("grabber_area_highlight", "HSlider", fill_box(ACCENT, 2))
+	var knob := _circle_tex(WHITE, ACCENT_LIGHT, 12)
+	var knob_hi := _circle_tex(WHITE, ACCENT, 12)
+	t.set_icon("grabber", "HSlider", knob)
+	t.set_icon("grabber_highlight", "HSlider", knob_hi)
+	t.set_icon("grabber_disabled", "HSlider", _circle_tex(PAPER, BORDER_SOFT, 12))
+	t.set_constant("grabber_offset", "HSlider", 0)
+
+	# CheckBox — скруглённый квадрат и галочка.
+	var cb_off := _check_tex(WHITE, BORDER, 14)
+	var cb_on := _check_tex(ACCENT, ACCENT, 14)
+	t.set_icon("unchecked", "CheckBox", cb_off)
+	t.set_icon("checked", "CheckBox", cb_on)
+	t.set_icon("radio_unchecked", "CheckBox", _circle_tex(WHITE, BORDER, 14))
+	t.set_icon("radio_checked", "CheckBox", _circle_tex(ACCENT, ACCENT, 14))
+	t.set_stylebox("normal", "CheckBox", box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 0))
+	t.set_stylebox("hover", "CheckBox", box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 0))
+	t.set_stylebox("pressed", "CheckBox", box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 0))
+	t.set_stylebox("focus", "CheckBox", box(Color(0, 0, 0, 0), Color(0, 0, 0, 0), 0, 0))
+	t.set_color("font_color", "CheckBox", INK)
+	t.set_color("font_hover_color", "CheckBox", NAVY)
+	t.set_color("font_pressed_color", "CheckBox", NAVY_DEEP)
+	t.set_color("font_disabled_color", "CheckBox", SHADE)
+
+	# ScrollBar — без серых дефолтов; в игре используются ScrollBar90.
+	var sb_track := box(PAPER_LO, BORDER_SOFT, 2, 1)
+	var sb_thumb := box(Color(SHADE.r, SHADE.g, SHADE.b, 0.30), Color(0, 0, 0, 0), 2, 0)
+	var sb_thumb_hi := box(Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.55),
+		Color(0, 0, 0, 0), 2, 0)
+	for bar_type in ["VScrollBar", "HScrollBar"]:
+		t.set_stylebox("scroll", bar_type, sb_track)
+		t.set_stylebox("scroll_focus", bar_type, sb_track)
+		t.set_stylebox("grabber", bar_type, sb_thumb)
+		t.set_stylebox("grabber_highlight", bar_type, sb_thumb_hi)
+		t.set_stylebox("grabber_pressed", bar_type, sb_thumb_hi)
+		t.set_icon("increment", bar_type, _arrow_tex(1, SHADE, 9))
+		t.set_icon("increment_highlight", bar_type, _arrow_tex(1, NAVY, 9))
+		t.set_icon("decrement", bar_type, _arrow_tex(0, SHADE, 9))
+		t.set_icon("decrement_highlight", bar_type, _arrow_tex(0, NAVY, 9))
 
 	# Вариации под кегли 10/12/16/24 — единая шкала для разметки.
 	t.set_type_variation("MicroLabel", "Label")

@@ -109,13 +109,12 @@ func _draw() -> void:
 
 	# штамп часа
 	var stamp := Rect2(r.position + Vector2(392, 30), Vector2(152, 40))
-	Theme90.draw_bevel(self, stamp, true, 2.0, Theme90.FACE)
+	Theme90.draw_sunken(self, stamp)
 	Theme90.text_vcenter(self, f, stamp, "ЧАС %d ИЗ %d" % [hour, total],
 		Theme90.FS_BODY, Theme90.INK, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 	var div := r.position.y + 76
-	draw_rect(Rect2(r.position.x + 16, div, r.size.x - 32, 1), Theme90.SHADE)
-	draw_rect(Rect2(r.position.x + 16, div + 1, r.size.x - 32, 1), Theme90.FACE_HI)
+	draw_rect(Rect2(r.position.x + 16, div, r.size.x - 32, 1), Theme90.HAIRLINE)
 
 	_draw_pair_row(r, r.position.y + 88, "Выполнено / провалено",
 		_value("done", 0), _value("failed", 0))
@@ -127,25 +126,21 @@ func _draw() -> void:
 	var sla := _value("sla", 0)
 	var sla_max := maxi(1, _value("sla_max", 200))
 	var well := Rect2(r.position + Vector2(16, 186), Vector2(r.size.x - 32, 46))
-	Theme90.draw_bevel(self, well, true, 2.0, Theme90.FACE)
+	Theme90.draw_sunken(self, well)
 	Theme90.text(self, f, Vector2(well.position.x + 8, well.position.y + 6),
-		"ИТОГОВЫЙ SLA", Theme90.FS_MICRO, Theme90.DARK)
+		"ИТОГОВЫЙ SLA", Theme90.FS_MICRO, Theme90.SHADE)
 	Theme90.text_vcenter(self, Theme90.logo(),
 		Rect2(well.position.x + well.size.x - 160, well.position.y + 3, 152, 14),
 		"%d / %d" % [sla, sla_max], 12, Theme90.INK, -1, HORIZONTAL_ALIGNMENT_RIGHT)
 
-	var bar := Rect2(well.position + Vector2(8, 26), Vector2(well.size.x - 16, 8))
-	Theme90.draw_bevel(self, bar, true, 1.0, Theme90.FACE_LO)
+	var bar := Rect2(well.position + Vector2(8, 26), Vector2(well.size.x - 16, 6))
 	var ratio := clampf(float(sla) / float(sla_max), 0.0, 1.0)
-	var fill_w := roundf((bar.size.x - 4.0) * ratio)
 	var col := Theme90.SUCCESS
 	if ratio <= 0.3:
 		col = Theme90.ERROR
 	elif ratio <= 0.6:
 		col = Theme90.WARN
-	if fill_w > 0.0:
-		draw_rect(Rect2(bar.position + Vector2(2, 2), Vector2(fill_w, bar.size.y - 4.0)), col)
-		draw_rect(Rect2(bar.position + Vector2(2, 2), Vector2(fill_w, 1)), col.lightened(0.35))
+	Theme90.draw_meter(self, bar, ratio, col, Theme90.PAPER_LO)
 
 	# подвал
 	Theme90.text(self, f, Vector2(r.position.x + 16, r.position.y + 252),
@@ -154,28 +149,8 @@ func _draw() -> void:
 
 
 func _draw_frame(r: Rect2, hour: int, total: int) -> void:
-	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.FACE)
-	var inner := r.grow(-Theme90.BEVEL)
-	draw_rect(Rect2(inner.position, Vector2(inner.size.x, 1)), Theme90.FACE_HI)
-	draw_rect(Rect2(inner.position, Vector2(1, inner.size.y)), Theme90.FACE_HI)
-
-	var tr := Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4.0, TITLE_H))
-	Theme90.draw_vgrad(self, tr, Theme90.NAVY, Theme90.NAVY_DEEP)
-	draw_rect(Rect2(tr.position, Vector2(tr.size.x, 1)), Color(0.0, 0.0, 0.372549))
-	draw_rect(Rect2(tr.position.x, tr.end.y - 1, tr.size.x, 1), Theme90.DARK)
-	draw_rect(Rect2(tr.position.x, tr.end.y - 2, tr.size.x, 1), Theme90.ACCENT)
-
-	# столбики отчёта
-	for i in 3:
-		draw_rect(Rect2(tr.position.x + 6 + i * 4, tr.position.y + 13 - i * 3, 3, 3 + i * 3),
-			Theme90.WHITE)
-
-	var f := Theme90.ui()
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x + 24, tr.position.y, 260, TITLE_H),
-		"ИТОГИ ЧАСА %d" % hour, Theme90.FS_BODY, Theme90.WHITE)
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x, tr.position.y, tr.size.x - 34, TITLE_H),
-		"УЗЕЛ 7 · 03:42", Theme90.FS_MICRO, Theme90.ACCENT_LIGHT,
-		-1, HORIZONTAL_ALIGNMENT_RIGHT)
+	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
+	Theme90.modal_header(self, r, "ИТОГИ ЧАСА %d" % hour, "УЗЕЛ 7 · 03:42")
 
 
 func _draw_pair_row(r: Rect2, y: float, label: String, good: int, bad: int) -> void:

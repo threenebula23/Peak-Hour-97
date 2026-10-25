@@ -108,8 +108,10 @@ func _unhandled_input(event: InputEvent) -> void:
 	if not visible:
 		return
 	if event is InputEventKey and event.pressed and not event.echo and event.keycode == KEY_ESCAPE:
-		close()
-		get_viewport().set_input_as_handled()
+		# Esc — сразу в главное меню, а не «закрыть без выбора» (иначе soft-lock).
+		_on_menu()
+		if is_inside_tree() and get_viewport() != null:
+			get_viewport().set_input_as_handled()
 
 
 # --- отрисовка -------------------------------------------------------------
@@ -125,14 +127,17 @@ func _draw() -> void:
 
 	var f := Theme90.ui()
 	var band := Rect2(r.position + Vector2(14, 28), Vector2(r.size.x - 28, 72))
-	var band_color := Theme90.NAVY if won else Color(0.36, 0.07, 0.07)
-	Theme90.draw_bevel(self, band, false, 2.0, band_color)
-	draw_rect(Rect2(band.position + Vector2(2, 2), Vector2(band.size.x - 4, 1)),
-		Color(1, 1, 1, 0.28))
+	var band_bg := Theme90.ACCENT_PALE if won else Color(Theme90.ERROR.r, Theme90.ERROR.g,
+		Theme90.ERROR.b, 0.10)
+	var band_border := Theme90.ACCENT_LIGHT if won else Color(Theme90.ERROR.r,
+		Theme90.ERROR.g, Theme90.ERROR.b, 0.35)
+	draw_style_box(Theme90.box(band_bg, band_border, 4, 1), band)
+	draw_rect(Rect2(band.position.x + 12, band.position.y + 1, 80, 2),
+		Theme90.ACCENT if won else Theme90.ERROR)
 
 	Theme90.text(self, Theme90.logo(), band.position + Vector2(16, 9),
 		"ПОБЕДА" if won else "ПОРАЖЕНИЕ", 24,
-		Theme90.WHITE if won else Color(1.0, 0.80, 0.80))
+		Theme90.NAVY if won else Theme90.ERROR)
 	var reason := str(_data.get("reason", ""))
 	if reason.is_empty():
 		if won:
@@ -141,7 +146,7 @@ func _draw() -> void:
 			reason = _tr("results.run.lost", "Смена сорвалась. Поражение.")
 	Theme90.text(self, f, band.position + Vector2(16, 50),
 		Theme90.fit(f, reason, Theme90.FS_MICRO, band.size.x - 120), Theme90.FS_MICRO,
-		Color(0.86, 0.90, 1.0) if won else Color(1.0, 0.86, 0.86))
+		Theme90.DARK)
 
 	if won:
 		_draw_cup(Rect2(band.position.x + band.size.x - 54, band.position.y + 20, 34, 34))
@@ -150,13 +155,13 @@ func _draw() -> void:
 
 	# счёт
 	var score_box := Rect2(r.position + Vector2(14, 108), Vector2(r.size.x - 28, 68))
-	Theme90.draw_bevel(self, score_box, true, 2.0, Theme90.FACE)
-	Theme90.text(self, f, score_box.position + Vector2(14, 4), "СЧЁТ", Theme90.FS_MICRO, Theme90.DARK)
+	Theme90.draw_sunken(self, score_box)
+	Theme90.text(self, f, score_box.position + Vector2(14, 4), "СЧЁТ", Theme90.FS_MICRO, Theme90.SHADE)
 	Theme90.text(self, Theme90.logo(), score_box.position + Vector2(14, 20),
 		_fmt(_value("score", 0)), 28, Theme90.INK)
 
 	Theme90.text_vcenter(self, f, Rect2(score_box.position.x, score_box.position.y + 6,
-		score_box.size.x - 14, 12), "ЛУЧШИЙ", Theme90.FS_MICRO, Theme90.DARK,
+		score_box.size.x - 14, 12), "ЛУЧШИЙ", Theme90.FS_MICRO, Theme90.SHADE,
 		-1, HORIZONTAL_ALIGNMENT_RIGHT)
 	Theme90.text_vcenter(self, Theme90.logo(), Rect2(score_box.position.x,
 		score_box.position.y + 22, score_box.size.x - 14, 18), _fmt(_value("best", 0)),
@@ -171,42 +176,64 @@ func _draw() -> void:
 	_draw_cell(Rect2(r.position + Vector2(418, 184), Vector2(188, 68)), "SLA",
 		"%d / %d" % [_value("sla", 0), maxi(1, _value("sla_max", 200))])
 
-	Theme90.text(self, f, Vector2(r.position.x + 16, r.position.y + 262),
-		"ВЫБЕРИТЕ, ЧТО ДЕЛАТЬ ДАЛЬШЕ · ESC — ЗАКРЫТЬ", Theme90.FS_MICRO, Theme90.DARK)
+	Theme90.text(self, Theme90.ui(), Vector2(r.position.x + 16, r.position.y + 262),
+		Theme90.fit(Theme90.ui(), _footer_text(), Theme90.FS_MICRO, r.size.x - 32),
+		Theme90.FS_MICRO, Theme90.ACCENT)
 
 
-func _draw_frame(r: Rect2, won: bool) -> void:
-	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.FACE)
-	var inner := r.grow(-Theme90.BEVEL)
-	draw_rect(Rect2(inner.position, Vector2(inner.size.x, 1)), Theme90.FACE_HI)
-	draw_rect(Rect2(inner.position, Vector2(1, inner.size.y)), Theme90.FACE_HI)
+## Нижняя строка: открытия забега, иначе подсказка про Esc.
+func _footer_text() -> String:
+	var unlocked := _unlocked_line()
+	return unlocked if not unlocked.is_empty() else "ESC — В МЕНЮ"
 
-	var tr := Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4.0, TITLE_H))
-	Theme90.draw_vgrad(self, tr, Theme90.NAVY, Theme90.NAVY_DEEP)
-	draw_rect(Rect2(tr.position, Vector2(tr.size.x, 1)), Color(0.0, 0.0, 0.372549))
-	draw_rect(Rect2(tr.position.x, tr.end.y - 1, tr.size.x, 1), Theme90.DARK)
-	draw_rect(Rect2(tr.position.x, tr.end.y - 2, tr.size.x, 1),
-		Theme90.ACCENT if won else Theme90.ERROR)
 
-	# флажок
-	var fx := tr.position.x + 5.0
-	var fy := tr.position.y + 4.0
-	draw_rect(Rect2(fx, fy, 1, 12), Theme90.WHITE)
-	draw_rect(Rect2(fx + 1, fy, 8, 6), Theme90.ACCENT_LIGHT)
-	draw_rect(Rect2(fx + 1, fy, 8, 1), Theme90.WHITE)
+func _unlocked_line() -> String:
+	var keys: Array = _data.get("unlocked", [])
+	if keys.is_empty():
+		return ""
+	var labels: Array[String] = []
+	var data := get_node_or_null("/root/Data")
+	for key in keys:
+		labels.append(_reward_label(str(key), data))
+	return "ОТКРЫТО: %s" % ", ".join(labels)
 
-	var f := Theme90.ui()
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x + 22, tr.position.y, 240, TITLE_H),
-		"ЗАБЕГ ОКОНЧЕН", Theme90.FS_BODY, Theme90.WHITE)
-	Theme90.text_vcenter(self, f, Rect2(tr.position.x, tr.position.y, tr.size.x - 34, TITLE_H),
-		"PEAK HOUR 97", Theme90.FS_MICRO, Theme90.ACCENT_LIGHT,
-		-1, HORIZONTAL_ALIGNMENT_RIGHT)
+
+func _reward_label(reward_key: String, data: Node) -> String:
+	if data == null:
+		return reward_key
+	var rewards = data.get("meta_rewards")
+	if not (rewards is Dictionary):
+		return reward_key
+	var reward = (rewards as Dictionary).get(reward_key)
+	if not (reward is Dictionary):
+		return reward_key
+	var features = (reward as Dictionary).get("unlocks", [])
+	if not (features is Array) or (features as Array).is_empty():
+		return reward_key
+	var unlocks = data.get("unlocks")
+	var parts: Array[String] = []
+	for feature in features:
+		var feature_id := str(feature)
+		var label := feature_id
+		if unlocks is Dictionary:
+			var info = (unlocks as Dictionary).get(feature_id)
+			if info is Dictionary:
+				var raw_label := str((info as Dictionary).get("label", ""))
+				if not raw_label.is_empty():
+					label = raw_label
+		parts.append(label)
+	return ", ".join(parts) if not parts.is_empty() else reward_key
+
+
+func _draw_frame(r: Rect2, _won: bool) -> void:
+	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
+	Theme90.modal_header(self, r, "ЗАБЕГ ОКОНЧЕН", "PEAK HOUR 97")
 
 
 func _draw_cell(r: Rect2, label: String, value: String) -> void:
-	Theme90.draw_bevel(self, r, true, 2.0, Theme90.FACE)
+	Theme90.draw_sunken(self, r)
 	var f := Theme90.ui()
-	Theme90.text(self, f, r.position + Vector2(10, 9), label, Theme90.FS_MICRO, Theme90.DARK)
+	Theme90.text(self, f, r.position + Vector2(10, 9), label, Theme90.FS_MICRO, Theme90.SHADE)
 	Theme90.text(self, Theme90.logo(), r.position + Vector2(10, 28), value, 16, Theme90.INK)
 
 

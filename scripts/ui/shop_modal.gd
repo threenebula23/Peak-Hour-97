@@ -30,7 +30,7 @@ const FALLBACK_SHOP := [
 	{"id": "shop_section", "name_ru": "Новая секция", "price": 300, "max_level": 5, "effect": "sections"},
 	{"id": "shop_search", "name_ru": "Поиск", "price": 250, "max_level": 1, "effect": "search_highlight"},
 	{"id": "shop_shield", "name_ru": "Щит", "price": 400, "max_level": 1, "effect": "shield"},
-	{"id": "shop_sla", "name_ru": "Запас SLA +10", "price": 300, "max_level": 3, "effect": "sla_max"},
+	{"id": "shop_sla", "name_ru": "SLA +24", "price": 300, "max_level": 3, "effect": "sla_add"},
 ]
 
 const EFFECT_DESC := {
@@ -42,7 +42,7 @@ const EFFECT_DESC := {
 	"sections": "Ещё одна секция для папок",
 	"search_highlight": "Подсветка нужных файлов",
 	"shield": "Автоматически отражает атаки",
-	"sla_max": "Запас SLA на смену",
+	"sla_add": "Запас SLA на смену",
 }
 
 var money := 0

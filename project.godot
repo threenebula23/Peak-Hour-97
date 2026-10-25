@@ -41,4 +41,4 @@ theme/custom="res://art/fonts/ui_theme.tres"
 renderer/rendering_method="gl_compatibility"
 renderer/rendering_method.mobile="gl_compatibility"
 textures/canvas_textures/default_texture_filter=0
-environment/defaults/default_clear_color=Color(0.752941, 0.752941, 0.752941, 1)
+environment/defaults/default_clear_color=Color(0.913725, 0.901961, 0.866667, 1)

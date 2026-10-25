@@ -134,12 +134,10 @@ func _process(delta: float) -> void:
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
-	if hovered:
-		Theme90.draw_bevel(self, r, false, 2.0, Theme90.FACE_HI)
-	else:
-		Theme90.draw_bevel(self, r, false, 2.0, Theme90.FACE)
-	if hovered:
-		draw_rect(Rect2(2, 2, size.x - 4, size.y - 4), Theme90.ACCENT_LIGHT, false, 1.0)
+	var face := Theme90.WHITE if hovered else Theme90.PAPER_HI
+	var border := Theme90.ACCENT_LIGHT if hovered else Theme90.BORDER
+	draw_style_box(Theme90.box(face, border, 4, 1,
+		Color(0, 0, 0, 0.11) if hovered else Theme90.SHADOW), r)
 
 	if is_attack:
 		_draw_attack_icon(Rect2(6, 12, 20, 20))
@@ -151,7 +149,7 @@ func _draw() -> void:
 
 	# бейдж протокола / тип угрозы
 	var badge := Rect2(222, 4, 28, 13)
-	Theme90.draw_bevel(self, badge, true, 1.0, Theme90.WHITE)
+	draw_style_box(Theme90.well_box(Theme90.WHITE), badge)
 	if is_attack:
 		var mark := "???"
 		var mark_color := Theme90.SHADE
@@ -174,22 +172,16 @@ func _draw() -> void:
 			Theme90.NAVY if protocol == "TCP" else Theme90.WARN, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 	# таймер
-	var tr := Rect2(32, 19, 160, 7)
-	draw_rect(tr, Theme90.FACE_LO)
-	draw_rect(Rect2(tr.position, Vector2(tr.size.x, 1)), Theme90.SHADE)
-	draw_rect(Rect2(tr.position, Vector2(1, tr.size.y)), Theme90.SHADE)
-	var fill_w := floorf((tr.size.x - 2.0) * ratio())
+	var tr := Rect2(32, 19, 160, 5)
 	var col := timer_color()
 	if not _blink_on:
 		col = Theme90.ERROR.lerp(Theme90.FACE, 0.45)
-	draw_rect(Rect2(tr.position.x + 1, tr.position.y + 1, fill_w, tr.size.y - 2.0), col)
-	if fill_w > 2.0:
-		draw_rect(Rect2(tr.position.x + 1, tr.position.y + 1, fill_w, 1), col.lightened(0.35))
+	Theme90.draw_meter(self, tr, ratio(), col, Theme90.PAPER_LO)
 
 	# секунды + размер
 	var w := Theme90.num_line(self, Vector2(197, 17), str(int(ceilf(time_left))), 8, timer_color(), " с", 10)
-	Theme90.text(self, f, Vector2(197 + w + 3, 19), "·", 10, Theme90.DARK)
-	Theme90.num_line(self, Vector2(197 + w + 8, 17), str(size_kb), 8, Theme90.DARK, " КБ", 10)
+	Theme90.text(self, f, Vector2(197 + w + 3, 19), "·", 10, Theme90.SHADE)
+	Theme90.num_line(self, Vector2(197 + w + 8, 17), str(size_kb), 8, Theme90.SHADE, " КБ", 10)
 
 	# состояние
 	var status := "В ОЧЕРЕДИ"
@@ -217,37 +209,30 @@ func _draw() -> void:
 	if is_attack:
 		Theme90.text(self, f, Vector2(300, 29), "ЩИТ", 10, Theme90.ERROR, 76)
 		return
-	var pr := Rect2(300, 25, 76, 6)
-	draw_rect(pr, Theme90.FACE_LO)
-	draw_rect(Rect2(pr.position, Vector2(pr.size.x, 1)), Theme90.SHADE)
-	draw_rect(Rect2(pr.position, Vector2(1, pr.size.y)), Theme90.SHADE)
-	if progress > 0.0:
-		draw_rect(Rect2(pr.position.x + 1, pr.position.y + 1, floorf((pr.size.x - 2.0) * progress), pr.size.y - 2.0), Theme90.ACCENT)
+	var pr := Rect2(300, 27, 76, 4)
+	Theme90.draw_meter(self, pr, progress, Theme90.ACCENT, Theme90.PAPER_LO)
 	Theme90.num_line(self, Vector2(380, 21), str(int(progress * 100.0)), 8, Theme90.DARK, "%", 8)
 
 
 func _draw_attack_icon(r: Rect2) -> void:
 	var f := Theme90.ui()
+	var soft := Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.12)
 	match attack_kind:
 		"junk":
-			# серая иконка «?» — мусорный пакет без типа
-			draw_rect(r, Theme90.FACE_LO)
-			draw_rect(r, Theme90.SHADE, false, 1.0)
+			draw_style_box(Theme90.box(Theme90.PAPER_LO, Theme90.BORDER_SOFT, 4, 1), r)
 			Theme90.text(self, f, Vector2(r.position.x, r.position.y + 2), "?", 14,
-				Theme90.FACE, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+				Theme90.SHADE, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 		"ddos":
-			draw_rect(r, Theme90.NAVY_DEEP)
-			draw_rect(r, Theme90.ERROR, false, 1.0)
+			draw_style_box(Theme90.box(soft, Color(0, 0, 0, 0), 4, 0), r)
 			for i in 3:
-				draw_rect(Rect2(r.position.x + 3, r.position.y + 3 + i * 5, r.size.x - 6, 2), Theme90.ERROR)
+				draw_rect(Rect2(r.position.x + 4, r.position.y + 5 + i * 4, r.size.x - 8, 1.5),
+					Theme90.ERROR)
 		"ransomware":
-			draw_rect(r, Theme90.NAVY_DEEP)
-			draw_rect(Rect2(r.position.x + 3, r.position.y + 3, 14, 14), Theme90.ERROR, false, 1.0)
-			# красный квадрат 4×4 по центру
-			draw_rect(Rect2(r.position.x + 8, r.position.y + 8, 4, 4), Theme90.ERROR)
+			draw_style_box(Theme90.box(soft, Color(0, 0, 0, 0), 4, 0), r)
+			draw_rect(Rect2(r.position.x + 4, r.position.y + 4, 12, 12), Theme90.ERROR, false, 1.0)
+			draw_rect(Rect2(r.position.x + 9, r.position.y + 9, 4, 4), Theme90.ERROR)
 		_:
-			draw_rect(r, Theme90.FACE_LO)
-			draw_rect(r, Theme90.ERROR, false, 1.0)
+			draw_style_box(Theme90.box(soft, Color(0, 0, 0, 0), 4, 0), r)
 			Theme90.text(self, f, Vector2(r.position.x, r.position.y + 2), "!", 14,
 				Theme90.ERROR, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 

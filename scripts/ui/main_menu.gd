@@ -199,7 +199,7 @@ func _draw_actions(w: Rect2) -> void:
 	Theme90.text(self, f, Vector2(panel.position.x + 24, panel.position.y + 22),
 		"НОЧНАЯ СМЕНА · УЗЕЛ 7", 10, Theme90.ACCENT)
 
-	var save_text := "Сохранение · час 3" if has_save else "Сохранения пока нет"
+	var save_text := "СОХРАНЕНИЕ НАЙДЕНО" if has_save else "СОХРАНЕНИЯ ПОКА НЕТ"
 	Theme90.text(self, f, Vector2(panel.position.x + 24, panel.position.y + 300),
 		save_text, 10, Theme90.SUCCESS if has_save else Theme90.SHADE)
 

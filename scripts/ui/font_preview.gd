@@ -94,7 +94,7 @@ class Specimen:
 			var br := Rect2(bx, by, 118, 24)
 			var pressed := st == 1
 			var disabled := st == 3
-			Theme90.draw_bevel(self, br, pressed, 2.0, Theme90.FACE)
+			Theme90.draw_bevel(self, br, pressed, Theme90.BEVEL, Theme90.FACE)
 			var fg := Theme90.INK
 			if st == 2:
 				Theme90.draw_bevel(self, br.grow(-2), true, 1.0, Theme90.FACE_HI)
@@ -130,7 +130,7 @@ class Specimen:
 
 		# образец статус-строки
 		var bar := Rect2(x, 240, 300, 46)
-		Theme90.draw_bevel(self, bar, true, 2.0, Theme90.FACE)
+		Theme90.draw_bevel(self, bar, true, Theme90.BEVEL, Theme90.FACE)
 		Theme90.text(self, f, Vector2(bar.position.x + 8, bar.position.y + 5), "БУФЕР ПРИЁМА", 10, Theme90.DARK)
 		Theme90.num_line(self, Vector2(bar.position.x + 8, bar.position.y + 19), "3 / 4", 12, Theme90.INK)
 		for i in 4:
@@ -151,18 +151,18 @@ class Specimen:
 		var y := 10.0
 		_section(x, y, 340.0, "ПАЛИТРА")
 		var colors := [
-			["FACE", Theme90.FACE, "C0C0C0"],
-			["LIGHT", Theme90.LIGHT, "FFFFFF"],
-			["SHADE", Theme90.SHADE, "808080"],
-			["DARK", Theme90.DARK, "404040"],
-			["INK", Theme90.INK, "000000"],
-			["NAVY", Theme90.NAVY, "000080"],
-			["ERROR", Theme90.ERROR, "C00000"],
-			["SUCCESS", Theme90.SUCCESS, "007000"],
-			["WARN", Theme90.WARN, "C08000"],
-			["ACCENT", Theme90.ACCENT, "1E4FFF"],
-			["ACCENT_LIGHT", Theme90.ACCENT_LIGHT, "7FB2FF"],
-			["ACCENT_PALE", Theme90.ACCENT_PALE, "F2F7FF"],
+			["PAPER", Theme90.PAPER, "E9E6DD"],
+			["PAPER_HI", Theme90.PAPER_HI, "F7F5EE"],
+			["SHADE", Theme90.SHADE, "9A958A"],
+			["DARK", Theme90.DARK, "2C2A26"],
+			["INK", Theme90.INK, "1F1E1B"],
+			["NAVY", Theme90.NAVY, "2C5C68"],
+			["ERROR", Theme90.ERROR, "C25B4A"],
+			["SUCCESS", Theme90.SUCCESS, "3F8F5E"],
+			["WARN", Theme90.WARN, "C58A2E"],
+			["ACCENT", Theme90.ACCENT, "2F7F8F"],
+			["ACCENT_LIGHT", Theme90.ACCENT_LIGHT, "83C7D4"],
+			["ACCENT_PALE", Theme90.ACCENT_PALE, "E6F5F7"],
 		]
 		var cy := 38.0
 		for c in colors:
@@ -185,7 +185,7 @@ class Specimen:
 		var x := 16.0
 		for s in samples:
 			var r := Rect2(x, y + 34, 120, 46)
-			Theme90.draw_bevel(self, r, bool(s[1]), 2.0, Theme90.FACE)
+			Theme90.draw_bevel(self, r, bool(s[1]), Theme90.BEVEL, Theme90.FACE)
 			if s[0] == "RAISED":
 				draw_rect(Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4, 1)), Theme90.FACE_HI)
 			Theme90.text_vcenter(self, f, r, str(s[0]), 10, Theme90.DARK, -1, HORIZONTAL_ALIGNMENT_CENTER)
@@ -213,7 +213,7 @@ class Specimen:
 		# чекбокс (создан в _ready)
 		# drop-подсветка
 		var dz := Rect2(820, y + 90, 200, 30)
-		Theme90.draw_bevel(self, dz, true, 2.0, Theme90.FACE)
+		Theme90.draw_bevel(self, dz, true, Theme90.BEVEL, Theme90.FACE)
 		Theme90.draw_dashed_box(self, dz.grow(-3), Theme90.NAVY, 3.0, 1.0)
 		Theme90.text_vcenter(self, f, dz, "DROP: ФАЙЛ → ПАПКА", 10, Theme90.NAVY, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
