@@ -13,7 +13,7 @@
 #   INPUT_DIFF   — локальный файл с diff'ом; если задан и существует, Gitea API
 #                  не вызывается (DIFF_CODE=200).
 #   OPENCODE_BIN — путь к opencode (default: из PATH или ~/.opencode/bin).
-#   REVIEW_MODEL — модель ревьюера (default: opencode-go/glm-5.3-flash).
+#   REVIEW_MODEL — модель ревьюера (default: opencode-go/deepseek-v4.1-flash).
 #   REVIEW_TIMEOUT_SEC — жёсткий таймаут OpenCode, сек (default: 600).
 #
 # Запуск локально:
@@ -32,7 +32,7 @@ DRY_RUN="${DRY_RUN:-0}"
 INPUT_DIFF="${INPUT_DIFF:-}"
 REVIEW_DIR="${REVIEW_DIR:-/tmp/opencode}"
 DIFF_LIMIT_BYTES="${DIFF_LIMIT_BYTES:-80000}"
-REVIEW_MODEL="${REVIEW_MODEL:-opencode-go/glm-5.3-flash}"
+REVIEW_MODEL="${REVIEW_MODEL:-opencode-go/deepseek-v4.1-flash}"
 REVIEW_TIMEOUT_SEC="${REVIEW_TIMEOUT_SEC:-600}"
 
 PR=""
