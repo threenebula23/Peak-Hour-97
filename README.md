@@ -115,7 +115,7 @@ bash scripts/run_all_tests.sh
 "$GODOT" --headless --path . --script scripts/ui/ui_smoke.gd
 ```
 
-Фактический итог: **5 498 проверок, 0 провалов**; `run_all_tests.sh` —
+Фактический итог: **около 5 460 проверок, 0 провалов**; `run_all_tests.sh` —
 **21/21 PASS** (20 наборов + parse-check). Подробности — в
 [AI_REPORT](AI_REPORT.md).
 

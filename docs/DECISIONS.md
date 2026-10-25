@@ -205,7 +205,7 @@ h2 26.325/39.825, h3 22.8/34.8, h4 18.5/28.5, h5 18/28, далее
 ## D25 — проверки и MR-ревью
 
 **Решение:** единый прогон — `scripts/run_all_tests.sh` (20 наборов +
-parse-check, **21/21 PASS**, **5 498** проверок). MR дополнительно проходит
+parse-check, **21/21 PASS**, **≈5 460** проверок). MR дополнительно проходит
 OpenCode-ревью агентом `oracle` на модели
 `opencode-go/deepseek-v4.1-flash`: dry-run 74–90 с, комментарий с
 Blockers/High/Medium/Test gaps/Verdict; бот не мержит.

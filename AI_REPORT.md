@@ -74,7 +74,7 @@ coeff = {text: 1.0, sound: 2.0, photo: 3.0, video: 4.0}
   9/9 часов, SLA 200;
   `test_main_*` — **317**, `test_toast` — **14**, `test_main_fullscreen` —
   **31**; `ui_smoke` — **132**.
-- Итого **5 498** проверок, **0 провалов**; `run_all_tests.sh` — **21/21
+- Итого **≈5 460** проверок, **0 провалов**; `run_all_tests.sh` — **21/21
   PASS**.
 - `godot --headless --path . --quit` — exit 0; Web-экспорт — exit 0;
   браузерный смоук Chromium: 1600×900, меню → «Новый забег» → подготовка,
