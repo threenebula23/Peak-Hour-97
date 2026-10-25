@@ -1,6 +1,6 @@
 class_name Shop
 extends RefCounted
-## Магазин: 9 позиций из data/balance.json → shop (D13).
+## Магазин: 10 позиций из data/balance.json → shop (D13 + SLA +24, п.13).
 ##
 ## Уровни покупок хранятся в Game.upgrades. Для совместимости с ядром
 ## дублируются агрегированные ключи эффектов: slot_level, buffer_level,
@@ -18,6 +18,7 @@ const EFFECT_TARGETS := {
 	"sections": "sections_unlocked",
 	"search_highlight": "search_unlocked",
 	"shield": "shield_unlocked",
+	"sla_add": "sla_level",
 }
 
 const FALLBACK_ITEMS := [
@@ -30,6 +31,7 @@ const FALLBACK_ITEMS := [
 	{"id": "shop_section", "name_ru": "Новая секция", "effect": "sections", "value": 1, "price": 300, "max_level": 5},
 	{"id": "shop_search", "name_ru": "Поиск", "effect": "search_highlight", "value": 1, "price": 250, "max_level": 1},
 	{"id": "shop_shield", "name_ru": "Щит", "effect": "shield", "value": 1, "price": 400, "max_level": 1},
+	{"id": "shop_sla", "name_ru": "SLA +24", "effect": "sla_add", "value": 24, "price": 300, "max_level": 3},
 ]
 
 var _items: Array = []
@@ -56,6 +58,27 @@ func refresh() -> void:
 
 func items() -> Array:
 	return _items.duplicate(true)
+
+
+## Каталог без закрытых прогрессией позиций. shop_sla доступен всегда.
+func available_items() -> Array:
+	var out: Array = []
+	for item in _items:
+		if item is Dictionary and item_unlocked(item):
+			out.append(item.duplicate(true))
+	return out
+
+
+## Открыта ли позиция: shop_sla всегда; shop_search/shield — по мета-награде;
+## остальные — по открытию магазина (progression.unlocks.shop).
+func item_unlocked(item: Dictionary) -> bool:
+	var key := _unlock_key(str(item.get("id", "")))
+	if key.is_empty():
+		return true
+	var game = _game()
+	if game != null and game.has_method("feature_unlocked"):
+		return bool(game.feature_unlocked(key))
+	return true
 
 
 func item_count() -> int:
@@ -118,6 +141,8 @@ func can_buy(id: String) -> bool:
 	var item := get_item(id)
 	if item.is_empty():
 		return false
+	if not item_unlocked(item):
+		return false
 	if level(id) >= max_level(id):
 		return false
 	var game = _game()
@@ -147,6 +172,11 @@ func buy(id: String) -> bool:
 		game.upgrades[target] = int(game.upgrades.get(target, 0)) + 1
 	if effect == "sections":
 		_unlock_section(game)
+	elif effect == "sla_add":
+		# SLA +24 за уровень; Game.add_sla сам клампит до MAX_SLA.
+		var value := float(item.get("value", 24))
+		if game.has_method("add_sla"):
+			game.add_sla(value, "shop")
 	_play_sfx(&"money_down")
 	purchased.emit(id)
 	if game.has_signal("toast"):
@@ -166,6 +196,22 @@ func effect_level(effect: String) -> int:
 
 
 # --- служебное -------------------------------------------------------------
+
+## Ключ открытия позиции. Данные — из Data, иначе локальная копия правила.
+func _unlock_key(id: String) -> String:
+	var data = _data_node()
+	if data != null and data.has_method("shop_unlock_key"):
+		return str(data.shop_unlock_key(id))
+	match id:
+		"shop_sla":
+			return ""
+		"shop_search":
+			return "search"
+		"shop_shield":
+			return "shield"
+		_:
+			return "shop"
+
 
 func _unlock_section(game) -> void:
 	if game.registry == null or not game.registry.has_method("create_section"):

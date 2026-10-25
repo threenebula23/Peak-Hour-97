@@ -68,14 +68,14 @@ func _test_new_run() -> void:
 	_c.new_run(1)
 	_eq(String(_c.phase), "prep", "new_run → prep")
 	_eq(int(_game.money), 150, "стартовые деньги")
-	_approx(float(_game.sla), 200.0, 0.0001, "стартовый SLA")
+	_approx(float(_game.sla), 128.0, 0.0001, "стартовый SLA")
 	_eq(int(_game.hour), 1, "час 1")
 	_eq(String(_game.phase), "prep", "Game.phase = prep")
 	_ok(_c.has_save(), "автосейв на входе в prep")
 
 	var prep: Dictionary = _c.prep_data()
 	_eq(int(prep.get("money", 0)), 150, "prep_data.money")
-	_approx(float(prep.get("sla", 0.0)), 200.0, 0.0001, "prep_data.sla")
+	_approx(float(prep.get("sla", 0.0)), 128.0, 0.0001, "prep_data.sla")
 	_eq(int(prep.get("hour", 0)), 1, "prep_data.hour")
 	_ok(prep.get("upgrades") is Dictionary, "prep_data.upgrades")
 
@@ -194,7 +194,7 @@ func _test_buy() -> void:
 	_eq(_shop_events, shop_before + 1, "shop_changed эмитится")
 	_ok(not _c.buy("shop_slot3"), "повторная покупка → false")
 	_eq(int(_game.money), 750, "деньги не списаны повторно")
-	_eq((_c.shop_data() as Array).size(), 9, "shop_data: 9 позиций")
+	_eq((_c.shop_data() as Array).size(), 10, "shop_data: 10 позиций")
 
 
 func _test_full_run() -> void:

@@ -11,21 +11,25 @@ const DEFAULT_TYPES := {
 		"name_ru": "Текст", "ext": "txt", "icon": "text",
 		"recv_time": 2.0, "send_time": 1.5, "recv_fee": 1,
 		"base_pay": 80, "weight": 8, "minigame_coeff": 1.0, "size_kb": 64,
+		"sla_loss": 2,
 	},
 	"sound": {
 		"name_ru": "Звук", "ext": "mp3", "icon": "sound",
 		"recv_time": 3.5, "send_time": 2.5, "recv_fee": 2,
 		"base_pay": 140, "weight": 12, "minigame_coeff": 2.0, "size_kb": 3072,
+		"sla_loss": 4,
 	},
 	"photo": {
 		"name_ru": "Фото", "ext": "jpg", "icon": "photo",
 		"recv_time": 5.0, "send_time": 3.5, "recv_fee": 3,
 		"base_pay": 220, "weight": 18, "minigame_coeff": 3.0, "size_kb": 5120,
+		"sla_loss": 8,
 	},
 	"video": {
 		"name_ru": "Видео", "ext": "mp4", "icon": "video",
 		"recv_time": 8.0, "send_time": 6.0, "recv_fee": 4,
 		"base_pay": 380, "weight": 22, "minigame_coeff": 4.0, "size_kb": 20480,
+		"sla_loss": 16,
 	},
 }
 
@@ -51,7 +55,31 @@ const DEFAULT_SHOP := [
 	{"id": "section", "name": "Секция", "cost": 300, "max_level": 5},
 	{"id": "search", "name": "Поиск", "cost": 250, "max_level": 1},
 	{"id": "shield", "name": "Щит", "cost": 400, "max_level": 1},
+	{"id": "shop_sla", "name": "SLA +24", "effect": "sla_add", "value": 24, "cost": 300, "max_level": 3},
 ]
+
+## Прогрессия/открытия (дублирует data/balance.json → progression).
+const DEFAULT_PROGRESSION := {
+	"unlocks": {
+		"shop": {"run_hour": 2, "label": "Магазин"},
+		"search": {"meta": "survive_hour_3", "label": "Поиск"},
+		"shield": {"meta": "survive_hour_5", "label": "Щит"},
+		"minigame_text": {"run_hour": 1},
+		"minigame_sound": {"run_hour": 2},
+		"minigame_photo": {"run_hour": 3},
+		"minigame_video": {"run_hour": 4},
+		"minigame_advanced": {"meta": "complete_run", "label": "Продвинутые мини-игры"},
+		"attack_junk": {"run_hour": 2},
+		"attack_ddos": {"run_hour": 2},
+		"attack_phishing": {"run_hour": 3},
+		"attack_ransomware": {"run_hour": 4},
+	},
+	"meta_rewards": {
+		"survive_hour_3": {"min_hours": 3, "unlocks": ["search"]},
+		"survive_hour_5": {"min_hours": 5, "unlocks": ["shield"]},
+		"complete_run": {"min_hours": 9, "unlocks": ["minigame_advanced"]},
+	},
+}
 
 var balance: Dictionary = {}
 var types: Dictionary = {}
@@ -59,6 +87,8 @@ var difficulty: Array = []
 var shop: Array = []
 var names: Dictionary = {}
 var strings: Dictionary = {}
+var unlocks: Dictionary = {}
+var meta_rewards: Dictionary = {}
 
 var _cache: Dictionary = {}
 
@@ -75,6 +105,9 @@ func load_all() -> void:
 	shop = _load_shop(balance.get("shop", null))
 	names = _load_names(load_json("names_ru.json"))
 	strings = load_json("strings_ru.json")
+	var progression = balance.get("progression", null)
+	unlocks = _load_unlocks(progression)
+	meta_rewards = _load_meta_rewards(progression)
 
 
 ## Прочитать data/<file_name> как Dictionary. Ошибки — warning + {}.
@@ -179,7 +212,80 @@ func shop_item(id: String) -> Dictionary:
 	return {}
 
 
+## Ключ открытия для позиции магазина. "" — позиция доступна всегда.
+## shop_sla продаётся вне прогрессии; поиск/щит открываются мета-наградами.
+func shop_unlock_key(id: String) -> String:
+	match str(id):
+		"shop_sla":
+			return ""
+		"shop_search":
+			return "search"
+		"shop_shield":
+			return "shield"
+		_:
+			return "shop"
+
+
+## Открыта ли позиция магазина по текущему состоянию Game (run_hour/meta).
+func shop_item_unlocked(item: Dictionary) -> bool:
+	var key := shop_unlock_key(str(item.get("id", "")))
+	if key.is_empty():
+		return true
+	var game = _game_node()
+	if game != null and game.has_method("feature_unlocked"):
+		return bool(game.feature_unlocked(key))
+	return true
+
+
+## Каталог магазина без закрытых позиций (shop_sla виден всегда).
+func available_shop() -> Array:
+	var out: Array = []
+	for item in shop:
+		if item is Dictionary and not str(item.get("id", "")).is_empty() and shop_item_unlocked(item):
+			out.append(item.duplicate(true))
+	return out
+
+
+## Случайное имя папки из names_ru.json → folders (массив или {default: []}).
+func folder_name() -> String:
+	var pool = names.get("folders", null)
+	var values: Array = []
+	if pool is Array:
+		values = pool
+	elif pool is Dictionary:
+		var default_pool = pool.get("default", [])
+		if default_pool is Array:
+			values = default_pool
+	if values.is_empty():
+		return "Разное"
+	return str(values[randi_range(0, values.size() - 1)])
+
+
 # --- служебное -------------------------------------------------------------
+
+func _game_node():
+	var loop := Engine.get_main_loop()
+	if loop is SceneTree:
+		return (loop as SceneTree).root.get_node_or_null("Game")
+	return null
+
+
+func _load_unlocks(progression) -> Dictionary:
+	if progression is Dictionary:
+		var raw = progression.get("unlocks", null)
+		if raw is Dictionary and not raw.is_empty():
+			return raw.duplicate(true)
+	push_warning("Data: balance.json → progression.unlocks отсутствует, используются дефолты")
+	return DEFAULT_PROGRESSION["unlocks"].duplicate(true)
+
+
+func _load_meta_rewards(progression) -> Dictionary:
+	if progression is Dictionary:
+		var raw = progression.get("meta_rewards", null)
+		if raw is Dictionary and not raw.is_empty():
+			return raw.duplicate(true)
+	push_warning("Data: balance.json → progression.meta_rewards отсутствует, используются дефолты")
+	return DEFAULT_PROGRESSION["meta_rewards"].duplicate(true)
 
 func _merge_types(raw) -> Dictionary:
 	var out: Dictionary = DEFAULT_TYPES.duplicate(true)

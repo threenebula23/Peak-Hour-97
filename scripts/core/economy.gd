@@ -3,9 +3,11 @@ extends RefCounted
 ## Чистая экономика и тайминги (D12). Все методы статические, без состояния
 ## и без обращений к сценам — удобно тестировать headless.
 
-const CHANNEL_BG_BASE := 10.0
-const CHANNEL_BG_PER_HOUR := 4.0
-const SLOT_LOAD := 8.0
+## Фон/слоты НЕ входят в load (уточнение п.11): канал грузят только
+## активные передачи. Константы оставлены нулевыми для совместимости.
+const CHANNEL_BG_BASE := 0.0
+const CHANNEL_BG_PER_HOUR := 0.0
+const SLOT_LOAD := 0.0
 const CHANNEL_CAPACITY_BASE := 80.0
 const CHANNEL_CAPACITY_STEP := 25.0
 
@@ -16,6 +18,10 @@ const TIMER_UPGRADE_STEP := 4.0
 const PACKET_TIMER_MIN := 12.0
 const REQUEST_TIMER_MIN := 20.0
 const TIMER_MAX := 999.0
+
+## Grace-множитель первых часов (п.10): больше времени на старте.
+## h1 1.5, h2 1.35, h3 1.2, h4+ 1.0.
+const TIMER_GRACE := {1: 1.5, 2: 1.35, 3: 1.2}
 
 const MINIGAME_COEFF := {
 	"text": 1.0,
@@ -36,13 +42,14 @@ const PAYOUT_STREAK_CAP := 10
 
 # --- канал -----------------------------------------------------------------
 
-static func channel_load(hour: int, used_slots: int, active_weights: Array, _upgrades: Dictionary = {}) -> float:
-	var h := maxi(1, hour)
-	var slots := maxi(0, used_slots)
+## load = Σ weight(active_transfers) — только файлы в процессе загрузки
+## (packet.loading) или отправки (request.sending). idle-канал = 0.
+## hour/used_slots оставлены в сигнатуре для совместимости и игнорируются.
+static func channel_load(_hour: int, _used_slots: int, active_weights: Array, _upgrades: Dictionary = {}) -> float:
 	var weight_sum := 0.0
 	for weight in active_weights:
 		weight_sum += maxf(0.0, float(weight))
-	return CHANNEL_BG_BASE + CHANNEL_BG_PER_HOUR * float(h - 1) + SLOT_LOAD * float(slots) + weight_sum
+	return weight_sum
 
 
 static func channel_capacity(upgrades: Dictionary = {}) -> float:
@@ -74,18 +81,27 @@ static func send_time(type_def: Dictionary, factor: float, _upgrades: Dictionary
 
 # --- таймеры ---------------------------------------------------------------
 
+## Формула (п.10): (base − 0.5*(h−1)) * grace(h) + 4*level.
+## Grace умножает только базовую часть; апгрейд таймера даёт чистые +4 с.
 static func packet_timer(hour: int, upgrades: Dictionary = {}) -> float:
 	var h := maxi(1, hour)
 	var level := _level(upgrades, ["timer", "timer_level", "packet_timer", "packet_timer_level", "shop_timer"])
-	var value := PACKET_TIMER_BASE - TIMER_PER_HOUR * float(h - 1) + TIMER_UPGRADE_STEP * float(level)
+	var base := PACKET_TIMER_BASE - TIMER_PER_HOUR * float(h - 1)
+	var value := base * timer_grace(h) + TIMER_UPGRADE_STEP * float(level)
 	return clampf(value, PACKET_TIMER_MIN, TIMER_MAX)
 
 
 static func request_timer(hour: int, upgrades: Dictionary = {}) -> float:
 	var h := maxi(1, hour)
 	var level := _level(upgrades, ["timer", "timer_level", "request_timer", "request_timer_level", "shop_timer"])
-	var value := REQUEST_TIMER_BASE - TIMER_PER_HOUR * float(h - 1) + TIMER_UPGRADE_STEP * float(level)
+	var base := REQUEST_TIMER_BASE - TIMER_PER_HOUR * float(h - 1)
+	var value := base * timer_grace(h) + TIMER_UPGRADE_STEP * float(level)
 	return clampf(value, REQUEST_TIMER_MIN, TIMER_MAX)
+
+
+## Grace-множитель таймеров по часу: h1 1.5, h2 1.35, h3 1.2, h4+ 1.0.
+static func timer_grace(hour: int) -> float:
+	return float(TIMER_GRACE.get(maxi(1, hour), 1.0))
 
 
 # --- мини-игры -------------------------------------------------------------

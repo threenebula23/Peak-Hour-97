@@ -14,6 +14,7 @@ const SEEDS: Array[int] = [1, 42, 777]
 const MAX_ITER_PER_HOUR := 20000
 const HOURS: int = 9
 const BUY_ORDER: Array[String] = [
+	"shop_sla",
 	"shop_buffer",
 	"shop_slot3",
 	"shop_timer",

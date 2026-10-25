@@ -20,6 +20,7 @@ func _init() -> void:
 	_test_type_selection()
 	_test_minigame_stub()
 	_test_connection_node()
+	_test_connection_miss_closes()
 	_finish()
 
 
@@ -111,6 +112,38 @@ func _test_connection_node() -> void:
 	esc.keycode = KEY_ESCAPE
 	cg2._input(esc)
 	_eq(_connection_result, 0, "Esc → finished(false)")
+
+
+func _test_connection_miss_closes() -> void:
+	_set_case("connection_miss")
+	# п.9: промах → вспышка 0.8 с → finished(false), без автоповтора.
+	var cg = CG.new()
+	cg.finished.connect(_on_connection_finished)
+	_connection_result = -1
+	cg.start(1, 0, 0, "req_miss")
+	cg.stick_positions[0] = CG.BAR_RECT.position.x + CG.BAR_RECT.size.x - 1.0
+	cg._attempt_click()
+	_ok(cg.missed, "промах зафиксирован")
+	_ok(cg.flash_left > 0.0, "идёт красная вспышка")
+	_eq(_connection_result, -1, "во время вспышки finished ещё не эмитится")
+	_eq(cg.active_index, 0, "попадание не засчитано")
+	for i in range(10):
+		cg._process(0.1)
+	_eq(_connection_result, 0, "после 0.8 с finished(false)")
+	_ok(cg.game_over, "игра закрыта, автоповтора нет")
+	_ok(not cg.running, "running = false")
+	# Уход палочки за край — тот же провал.
+	var cg2 = CG.new()
+	cg2.finished.connect(_on_connection_finished)
+	_connection_result = -1
+	cg2.start(1, 0, 0, "req_edge")
+	cg2.stick_positions[0] = CG.BAR_RECT.position.x + CG.BAR_RECT.size.x
+	cg2._process(0.1)
+	_ok(cg2.flash_left > 0.0 or cg2.game_over, "уход за край запускает провал")
+	if cg2.flash_left > 0.0:
+		for i in range(10):
+			cg2._process(0.1)
+	_eq(_connection_result, 0, "уход за край → finished(false)")
 
 
 # --- assert-хелперы --------------------------------------------------------

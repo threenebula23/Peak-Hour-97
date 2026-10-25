@@ -43,8 +43,11 @@ const FAILED_FILE_FINE_MONEY := -15
 const FAILED_FILE_FINE_SLA := -10.0
 const REJECT_FINE_MONEY := -5
 const REJECT_FINE_SLA := -5.0
-const PACKET_TIMEOUT_FINE := -5.0
-const OVERFLOW_FINE := -5.0
+## Fallback, если у обычного пакета нет типа/sla_loss: минимальный штраф.
+const DEFAULT_PACKET_SLA_LOSS := 2.0
+## Пакеты атак (junk/ransomware) не штрафуются повторно: их урон ведёт
+## AttackDirector (fail_sla/auto_unlock_sla), а не потеря карточки.
+const ATTACK_PACKET_SLA_LOSS := 0.0
 const RECV_FEE_SLA := 0.5
 const SEND_SLA := 1.0
 
@@ -210,7 +213,8 @@ func channel_factor() -> float:
 func channel_load() -> float:
 	if slots == null:
 		return 0.0
-	return ECONOMY.channel_load(hour, slots.used_count(), _active_weights(), _upgrades())
+	# Слоты не грузят канал: учитываются только активные передачи (_active_weights).
+	return ECONOMY.channel_load(hour, 0, _active_weights(), _upgrades())
 
 
 func max_slots() -> int:
@@ -553,6 +557,10 @@ func start_send(req_id: String) -> bool:
 	if req.required_types.is_empty():
 		req.required_types = _request_types(req)
 	var mini_type := ECONOMY.minigame_type(req.required_types)
+	# Тип мини-игры может быть ещё не открыт по прогрессии (п.16): играем
+	# ближайшим открытым типом (text — самый ранний).
+	if not _feature_unlocked("minigame_" + mini_type):
+		mini_type = _fallback_minigame_type()
 	var difficulty := ECONOMY.minigame_difficulty(req.required_types)
 	var mg = MINIGAME_SCRIPT.new()
 	_minigame = mg
@@ -613,17 +621,21 @@ func attack_channel_debuff(seconds: float) -> void:
 
 func attack_lose_packets(count: int) -> void:
 	var lost := 0
+	var sla_loss := 0.0
 	for id in active_packets.keys():
 		if lost >= maxi(0, count):
 			break
 		var packet = active_packets[id]
 		if packet.is_attack:
 			continue
+		sla_loss += _packet_sla_loss(packet)
 		_remove_packet(str(id))
 		_failed += 1
 		lost += 1
 	if lost > 0:
-		_emit_toast("DDoS: потеряно пакетов — %d" % lost)
+		if sla_loss > 0.0:
+			_add_sla(-sla_loss)
+		_emit_toast("DDoS: потеряно пакетов — %d (−%s SLA)" % [lost, _format_loss(sla_loss)])
 
 
 func attack_lock_random_file(seconds: float) -> void:
@@ -898,9 +910,11 @@ func _timeout_packet(packet_id: String) -> void:
 		# Атака не нанесла урона: карточка уходит, AttackDirector уберёт запись.
 		_remove_packet(packet_id)
 		return
-	_add_sla(PACKET_TIMEOUT_FINE)
+	var loss := _packet_sla_loss(packet)
+	_add_sla(-loss)
 	_failed += 1
-	_emit_toast("Пакет потерян по таймауту: −5 SLA")
+	# Плата за приём не начисляется: пакет не дошёл до папки (failed).
+	_emit_toast("Пакет потерян по таймауту: −%s SLA" % _format_loss(loss))
 	_remove_packet(packet_id)
 
 
@@ -1165,13 +1179,37 @@ func _add_packet(packet, _force: bool = false) -> bool:
 		if oldest.is_empty():
 			spawn_frozen.emit("buffer_full")
 			return false
+		var evicted = active_packets.get(oldest)
+		var loss := _packet_sla_loss(evicted)
 		_remove_packet(oldest)
-		_add_sla(OVERFLOW_FINE)
+		if loss > 0.0:
+			_add_sla(-loss)
 		_failed += 1
-		_emit_toast("Буфер переполнен: старый пакет потерян, −5 SLA")
+		_emit_toast("Буфер переполнен: старый пакет потерян, −%s SLA" % _format_loss(loss))
 	active_packets[packet.id] = packet
 	packet_added.emit(packet.id)
 	return true
+
+
+## Штраф SLA за потерю пакета — по типу (п.13): text 2 / sound 4 / photo 8 /
+## video 16. Пакеты атак не штрафуются повторно (их урон считает
+## AttackDirector), неизвестный/пустой тип обычного пакета → fallback 2.
+func _packet_sla_loss(packet) -> float:
+	if packet == null:
+		return DEFAULT_PACKET_SLA_LOSS
+	if bool(packet.is_attack):
+		return ATTACK_PACKET_SLA_LOSS
+	var type := str(packet.type)
+	if type.is_empty():
+		return DEFAULT_PACKET_SLA_LOSS
+	var def := _type_def(type)
+	return maxf(0.0, float(def.get("sla_loss", DEFAULT_PACKET_SLA_LOSS)))
+
+
+func _format_loss(value: float) -> String:
+	if is_equal_approx(value, roundf(value)):
+		return str(int(roundf(value)))
+	return "%.1f" % value
 
 
 ## Мусор занимает место в приёме, остальные атаки — отдельный слой (D07).
@@ -1270,14 +1308,19 @@ func _jitter() -> float:
 	return _randf_range(0.8, 1.2)
 
 
+const TYPE_ORDER: Array[String] = ["text", "sound", "photo", "video"]
+
+
 func _pick_type() -> String:
 	var pool := _type_pool()
 	if pool.is_empty():
-		return "text"
+		return _fallback_minigame_type()
 	return str(pool[_randi_range(0, pool.size() - 1)])
 
 
+## Пул типов с учётом открытий (п.16): minigame_text/sound/photo/video.
 func _type_pool() -> Array:
+	var raw_pool: Array = []
 	var data = _data()
 	if data != null and data.get("balance") is Dictionary:
 		var spawn = data.balance.get("spawn", null)
@@ -1287,10 +1330,44 @@ func _type_pool() -> Array:
 				var key := "1" if hour <= 1 else ("2" if hour == 2 else "3+")
 				var pool = by_hour.get(key, null)
 				if pool is Array and not (pool as Array).is_empty():
-					return pool
-	if hour <= 1:
-		return ["text", "sound"]
-	return ["text", "sound", "photo", "video"]
+					raw_pool = pool
+	if raw_pool.is_empty():
+		raw_pool = ["text", "sound"] if hour <= 1 else ["text", "sound", "photo", "video"]
+	var out: Array = []
+	for type in raw_pool:
+		var type_id := str(type)
+		if _type_unlocked(type_id):
+			out.append(type_id)
+	if out.is_empty():
+		for type_id in TYPE_ORDER:
+			if _type_unlocked(type_id):
+				out.append(type_id)
+	if out.is_empty():
+		out = ["text"]
+	return out
+
+
+## Открыт ли тип: проверяются minigame_<type> и (если задан) type_<type>.
+func _type_unlocked(type: String) -> bool:
+	if not _feature_unlocked("minigame_" + type):
+		return false
+	return _feature_unlocked("type_" + type)
+
+
+## Первый открытый тип мини-игры (text открыт с часа 1).
+func _fallback_minigame_type() -> String:
+	for type_id in TYPE_ORDER:
+		if _feature_unlocked("minigame_" + type_id):
+			return type_id
+	return "text"
+
+
+func _feature_unlocked(id: String) -> bool:
+	if game == null:
+		_bind()
+	if game != null and game.has_method("feature_unlocked"):
+		return bool(game.feature_unlocked(id))
+	return true
 
 
 func _type_def(type: String) -> Dictionary:
@@ -1376,7 +1453,7 @@ func _roll_required_count() -> int:
 func _channel_factor() -> float:
 	if slots == null:
 		return 1.0
-	var load := ECONOMY.channel_load(hour, slots.used_count(), _active_weights(), _upgrades())
+	var load := ECONOMY.channel_load(hour, 0, _active_weights(), _upgrades())
 	var factor := ECONOMY.channel_factor(load, _upgrades())
 	if hour_elapsed < channel_debuff_until:
 		factor *= 1.4

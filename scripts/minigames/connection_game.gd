@@ -6,9 +6,10 @@ extends Control
 ##   W = clamp(0.30 − 0.005×(hour−1) − 0.005×successes
 ##             + 0.05×zone_level, 0.18, 0.36)
 ## Три палочки 3×18 со скоростями 440/340/280 px/с. Три клика ЛКМ/Space
-## строго по очереди. Промах/уход за край — красная вспышка 0.8 с и повтор.
-## Esc — отмена (finished(false)). Всё рисуется вручную, UI-компоненты
-## не используются.
+## строго по очереди. Промах/уход за край — красная вспышка 0.8 с, затем
+## finished(false) и закрытие панели (без автоповтора): игрок сам нажимает
+## «Соединиться» заново. Esc — тоже finished(false). Всё рисуется вручную,
+## UI-компоненты не используются.
 
 signal finished(success: bool, request_id: String)
 
@@ -123,13 +124,18 @@ func _reset_attempt() -> void:
 func _process(delta: float) -> void:
 	if not running or game_over:
 		return
-	var dt := minf(maxf(delta, 0.0), 0.1)
+	# Вспышка идёт по реальному delta, движение палочек — с D11-капом 0.1.
+	var raw_dt := maxf(delta, 0.0)
 	if flash_left > 0.0:
-		flash_left = maxf(0.0, flash_left - dt)
+		flash_left = maxf(0.0, flash_left - raw_dt)
 		if flash_left <= 0.0:
-			_reset_attempt()
+			# Промах закрывает панель: без автоповтора, новый проход — только
+			# по повторному «Соединиться» (connect_packet/connect_request).
+			_finish(false)
+			return
 		queue_redraw()
 		return
+	var dt := minf(raw_dt, 0.1)
 	if active_index >= CLICKS_REQUIRED:
 		return
 	var speed := speed_for(active_index)
@@ -239,7 +245,7 @@ func _draw() -> void:
 	draw_string(font, Vector2(80.0, 214.0), zone_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 12, COL_DARK)
 	if flash_left > 0.0:
 		draw_rect(Rect2(0.0, 24.0, WINDOW_SIZE.x, WINDOW_SIZE.y - 24.0), Color(COL_MISS.r, COL_MISS.g, COL_MISS.b, 0.12), true)
-		draw_string(font, Vector2(80.0, 86.0), "ПРОМАХ — ПОВТОР", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, COL_MISS)
+		draw_string(font, Vector2(80.0, 86.0), "ПРОМАХ — СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО", HORIZONTAL_ALIGNMENT_LEFT, -1, 16, COL_MISS)
 
 
 func _center_on_screen() -> void:

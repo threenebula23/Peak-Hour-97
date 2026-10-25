@@ -109,13 +109,18 @@ func tick(delta: float) -> void:
 	_maybe_spawn()
 
 
-## Публичный спавн (UI/тесты). kind="" — случайный по весам.
+## Публичный спавн (UI/тесты). kind="" — случайный по весам среди открытых.
+## Закрытая в прогрессии атака не спавнится (п.16).
 func spawn_attack(kind: String = "") -> String:
 	var chosen := kind
 	if chosen.is_empty():
 		chosen = _pick_kind()
+	if chosen.is_empty():
+		return ""
 	if not KINDS.has(chosen):
 		chosen = "junk"
+	if not _kind_unlocked(chosen):
+		return ""
 	var id := "atk_%d_%d" % [hour, _counter]
 	_counter += 1
 	# Апгрейд «Щит» (shop_shield): первый DDoS часа отражается автоматически —
@@ -525,13 +530,39 @@ func _remove(id: String, success: bool) -> void:
 
 # --- служебное -------------------------------------------------------------
 
+## Открыта ли атака: progression.unlocks → attack_<kind>.
+func _kind_unlocked(kind: String) -> bool:
+	return _feature_unlocked("attack_" + str(kind))
+
+
+func _feature_unlocked(id: String) -> bool:
+	var game = _game()
+	if game != null and game.has_method("feature_unlocked"):
+		return bool(game.feature_unlocked(id))
+	return true
+
+
+func _unlocked_kinds() -> Array[String]:
+	var out: Array[String] = []
+	for kind in KINDS:
+		if _kind_unlocked(kind):
+			out.append(kind)
+	return out
+
+
 func _pick_kind() -> String:
+	var kinds := _unlocked_kinds()
+	if kinds.is_empty():
+		return ""
 	if hour <= 1:
-		return "junk"
-	var index := _weighted_index(KIND_WEIGHTS)
-	if index < 0 or index >= KINDS.size():
-		return "junk"
-	return KINDS[index]
+		return "junk" if kinds.has("junk") else ""
+	var weights: Array[float] = []
+	for kind in kinds:
+		weights.append(KIND_WEIGHTS[KINDS.find(kind)])
+	var index := _weighted_index(weights)
+	if index < 0 or index >= kinds.size():
+		return kinds[0]
+	return kinds[index]
 
 
 func _weighted_index(weights: Array) -> int:

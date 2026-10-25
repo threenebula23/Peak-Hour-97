@@ -19,6 +19,8 @@ var _module_fails: int = 0
 
 
 func _init() -> void:
+	# Ждём _ready автолоадов (Data/Game/Rng), иначе прогрессия читается пустой.
+	await process_frame
 	print("PEAK HOUR — headless tests")
 	var failed_modules: Array[String] = []
 	for entry in MODULES:

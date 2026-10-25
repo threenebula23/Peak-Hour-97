@@ -99,7 +99,7 @@ func _test_game_roundtrip(t) -> void:
 	var game = G.new()
 	game.start_new_run(4242)
 	t.eq(int(game.money), 150, "стартовые деньги")
-	t.approx(float(game.sla), 200.0, 0.0001, "стартовый SLA")
+	t.approx(float(game.sla), 128.0, 0.0001, "стартовый SLA")
 	t.eq(str(game.phase), "prep", "фаза prep")
 	t.eq(int(game.rng_seed), 4242, "сид забега")
 	var folder_id := ""
@@ -111,13 +111,15 @@ func _test_game_roundtrip(t) -> void:
 	game.add_money(100)
 	game.add_sla(5.0)
 	t.eq(int(game.money), 250, "деньги после add_money")
-	t.approx(float(game.sla), 200.0, 0.0001, "SLA после add_sla клампится на 200")
+	t.approx(float(game.sla), 133.0, 0.0001, "SLA после add_sla (+5 от 128)")
+	game.meta_unlocks["survive_hour_3"] = true
 
 	t.ok(game.save_game(), "Game.save_game")
 	var game2 = G.new()
 	t.ok(game2.load_game(), "Game.load_game")
 	t.eq(int(game2.money), 250, "деньги восстановлены")
-	t.approx(float(game2.sla), 200.0, 0.0001, "SLA восстановлен")
+	t.approx(float(game2.sla), 133.0, 0.0001, "SLA восстановлен")
+	t.ok(game2.meta_unlocks.has("survive_hour_3"), "мета-открытия восстановлены")
 	t.eq(str(game2.phase), "prep", "фаза восстановлена")
 	t.eq(int(game2.rng_seed), 4242, "сид восстановлен")
 	t.eq(game2.registry.files.size(), game.registry.files.size(), "файлы восстановлены")

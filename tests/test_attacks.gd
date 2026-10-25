@@ -31,6 +31,7 @@ func _init() -> void:
 	_hd = HD.new()
 	_hd.attack_added.connect(_on_attack_added)
 	_test_schedule_table()
+	_test_attack_unlocks()
 	_test_spawn_window()
 	_test_no_spawn_in_minigame()
 	_test_junk()
@@ -57,10 +58,33 @@ func _test_schedule_table() -> void:
 				_eq(int(row["attacks"]), expected[h - 1], "balance difficulty.attacks для часа %d" % h)
 
 
+func _test_attack_unlocks() -> void:
+	_set_case("attack_unlocks")
+	# п.16: attack_junk/ddos — с часа 2, phishing — с 3, ransomware — с 4.
+	_reset(900, 1)
+	var ad = _hd.attack_director
+	_ok(str(ad.spawn_attack("junk")).is_empty(), "час 1: junk закрыт")
+	_eq(ad._unlocked_kinds().size(), 0, "час 1: открытых атак нет")
+	_reset(901, 2)
+	ad = _hd.attack_director
+	_ok(not str(ad.spawn_attack("junk")).is_empty(), "час 2: junk открыт")
+	_ok(not str(ad.spawn_attack("ddos")).is_empty(), "час 2: ddos открыт")
+	_ok(str(ad.spawn_attack("phishing")).is_empty(), "час 2: phishing закрыт")
+	_reset(902, 3)
+	ad = _hd.attack_director
+	_ok(not str(ad.spawn_attack("phishing")).is_empty(), "час 3: phishing открыт")
+	_ok(str(ad.spawn_attack("ransomware")).is_empty(), "час 3: ransomware закрыт")
+	_reset(903, 4)
+	ad = _hd.attack_director
+	_ok(not str(ad.spawn_attack("ransomware")).is_empty(), "час 4: ransomware открыт")
+
+
 func _test_spawn_window() -> void:
 	_set_case("spawn_window")
 	for h in range(1, 10):
 		_game.start_new_run(1000 + h)
+		# feature_unlocked смотрит на Game.hour — синхронизируем с часом теста.
+		_game.hour = h
 		_hd.start_hour(h)
 		_hd.set_time_scale(1.0)
 		_attack_marks.clear()
@@ -69,8 +93,9 @@ func _test_spawn_window() -> void:
 			_hd.tick(0.1)
 			guard += 1
 		_ok(not _hd.running, "час %d завершился" % h)
-		var expected: int = AD.attacks_for_hour(h)
-		_eq(_attack_marks.size(), expected, "час %d: число атак по таблице" % h)
+		# Час 1: расписание есть, но ни одна атака ещё не открыта.
+		var expected: int = 0 if h == 1 else AD.attacks_for_hour(h)
+		_eq(_attack_marks.size(), expected, "час %d: число заспавненных атак (с учётом unlock)" % h)
 		for mark in _attack_marks:
 			var t: float = float(mark.get("t", -1.0))
 			_ok(t >= 59.5 and t <= 240.5, "час %d: окно спавна 60–240 (t=%.1f)" % [h, t])
@@ -78,7 +103,7 @@ func _test_spawn_window() -> void:
 
 func _test_no_spawn_in_minigame() -> void:
 	_set_case("no_spawn_in_minigame")
-	_reset(555, 1)
+	_reset(555, 2)
 	var ad = _hd.attack_director
 	_ok(ad != null, "attack director есть")
 	if ad == null:
@@ -103,7 +128,7 @@ func _test_no_spawn_in_minigame() -> void:
 
 func _test_junk() -> void:
 	_set_case("junk")
-	_reset(201, 1)
+	_reset(201, 2)
 	var ad = _hd.attack_director
 	var folder_id := _first_folder()
 	var money_before: int = _game.money
@@ -123,7 +148,7 @@ func _test_junk() -> void:
 	_ok(not _hd.active_packets.has(junk_packet_id), "пакет мусора убран из приёма")
 
 	# Игнор 15 с → авто-занос (malicious/fake) и штраф.
-	_reset(202, 1)
+	_reset(202, 2)
 	ad = _hd.attack_director
 	money_before = _game.money
 	sla_before = _game.sla
@@ -149,7 +174,7 @@ func _test_junk() -> void:
 
 func _test_ddos() -> void:
 	_set_case("ddos")
-	_reset(301, 1)
+	_reset(301, 2)
 	var ad = _hd.attack_director
 	var money_before: int = _game.money
 	var sla_before: float = _game.sla
@@ -165,7 +190,7 @@ func _test_ddos() -> void:
 	_eq(int(_hd._attacks_blocked), 1, "DDoS учтён как отражённая атака")
 
 	# Провал: 2 пакета теряются, канал −40% на 15 с, приём off 5 с.
-	_reset(302, 1)
+	_reset(302, 2)
 	ad = _hd.attack_director
 	money_before = _game.money
 	sla_before = _game.sla
@@ -179,7 +204,8 @@ func _test_ddos() -> void:
 	_ok(not ad.active_attacks.has(id), "DDoS провален по таймауту")
 	_eq(_hd.active_packets.size(), 1, "DDoS: потеряно ровно 2 пакета")
 	_eq(int(_hd._failed), 2, "DDoS: потери учтены")
-	_approx(_game.sla, sla_before - 15.0, 0.001, "DDoS пробил канал: −15 SLA")
+	# −15 за DDoS + 2 потерянных text-пакета × 2 SLA (п.13).
+	_approx(_game.sla, sla_before - 19.0, 0.001, "DDoS: −15 SLA и −2×2 за потерю пакетов")
 	_ok(_hd.recv_disabled_until - _hd.hour_elapsed >= 4.99, "DDoS: приём off 5 с")
 	_ok(_hd.channel_debuff_until - _hd.hour_elapsed >= 14.99, "DDoS: дебафф канала 15 с")
 	var factor_after: float = _hd.channel_factor()
@@ -239,7 +265,7 @@ func _test_shield_upgrade() -> void:
 func _test_phishing() -> void:
 	_set_case("phishing")
 	# Отказ бесплатный (и даёт награду за отражение).
-	_reset(401, 2)
+	_reset(401, 3)
 	var ad = _hd.attack_director
 	var file = _new_file("phish", "text")
 	_ok(file != null, "фишинг: файл для блокировки")
@@ -257,7 +283,7 @@ func _test_phishing() -> void:
 	_ok(not _hd.active_requests.has(req_id), "фейковый запрос убран")
 
 	# Отправка фишинга: −40 $, −10 SLA, lock файла на 60 с.
-	_reset(402, 2)
+	_reset(402, 3)
 	ad = _hd.attack_director
 	file = _new_file("phish_send", "text")
 	money_before = _game.money
@@ -272,7 +298,7 @@ func _test_phishing() -> void:
 	_check_lock(file, 60.0, "фишинг: lock 60 с")
 
 	# Таймаут: −20 $, −5 SLA, lock файла на 30 с.
-	_reset(403, 2)
+	_reset(403, 3)
 	ad = _hd.attack_director
 	file = _new_file("phish_timeout", "text")
 	money_before = _game.money
@@ -291,7 +317,7 @@ func _test_phishing() -> void:
 func _test_ransomware() -> void:
 	_set_case("ransomware")
 	# Уничтожение .exe до заноса: +25 $, +2 SLA.
-	_reset(501, 3)
+	_reset(501, 4)
 	var file = null
 	var ad = _hd.attack_director
 	var money_before: int = _game.money
@@ -307,7 +333,7 @@ func _test_ransomware() -> void:
 	_ok(not ad.active_attacks.has(id), "атака закрыта")
 
 	# Занос в папку: файл становится malicious, через 3 с должен быть locked.
-	_reset(502, 3)
+	_reset(502, 4)
 	ad = _hd.attack_director
 	file = null
 	id = str(ad.spawn_attack("ransomware"))
@@ -345,7 +371,7 @@ func _test_ransomware() -> void:
 	_ok(not ad.active_attacks.has(id), "атака закрыта после уничтожения файла")
 
 	# Авто-unlock через 30 с: −30 $, −10 SLA, файл пропадает.
-	_reset(503, 3)
+	_reset(503, 4)
 	ad = _hd.attack_director
 	id = str(ad.spawn_attack("ransomware"))
 	packet_id = str(ad.active_attacks[id].get("packet_id", ""))
@@ -373,6 +399,7 @@ func _test_ransomware() -> void:
 
 func _reset(seed: int, hour: int) -> void:
 	_game.start_new_run(seed)
+	_game.hour = hour
 	_hd.start_hour(hour)
 	_hd.set_time_scale(1.0)
 	_hd._recv_interval_current = 9999.0

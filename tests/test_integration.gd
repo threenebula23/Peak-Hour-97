@@ -80,7 +80,8 @@ func _test_nine_hours() -> void:
 	_game.start_new_run(2026)
 	_game.hour = 1
 	_game.phase = &"hour"
-	var expected: Array[int] = [1, 1, 1, 2, 2, 3, 3, 4, 4]
+	# unlock-гейты: на часе 1 ещё нет открытых атак (junk с часа 2).
+	var expected: Array[int] = [0, 1, 1, 2, 2, 3, 3, 4, 4]
 	for h in range(1, 10):
 		_game.sla = 200.0
 		_game.phase = &"hour"

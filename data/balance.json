@@ -6,13 +6,14 @@
     "note": "null = параметр не задан в постановке, уточнить до кода (см. _todo). Никаких выдуманных чисел.",
     "_todo": [
       "attacks.junk.spawn_probability — не задан в спецификации (явно null)",
-      "income_target_by_hour: часы 4,6,7,8 — интерполяция, уточнить"
+      "income_target_by_hour: часы 4,6,7,8 — интерполяция, уточнить",
+      "difficulty.h2 packet_timer/request_timer: формула даёт 26.325/39.825 (19.5×1.35 и 29.5×1.35); в постановке было 26.25/39.75 — оставлена формула"
     ]
   },
   "constants": {
     "hour_seconds": 300,
     "run_hours": 9,
-    "sla_start": 200,
+    "sla_start": 128,
     "sla_max": 200,
     "money_start": 150,
     "buffer_base": 4,
@@ -39,7 +40,8 @@
       "recv_fee": 2,
       "base_pay": 20,
       "weight": 6,
-      "minigame_coeff": 1.0
+      "minigame_coeff": 1.0,
+      "sla_loss": 2
     },
     "sound": {
       "name_ru": "Звук",
@@ -50,7 +52,8 @@
       "recv_fee": 3,
       "base_pay": 35,
       "weight": 10,
-      "minigame_coeff": 2.0
+      "minigame_coeff": 2.0,
+      "sla_loss": 4
     },
     "photo": {
       "name_ru": "Фото",
@@ -61,7 +64,8 @@
       "recv_fee": 5,
       "base_pay": 55,
       "weight": 14,
-      "minigame_coeff": 3.0
+      "minigame_coeff": 3.0,
+      "sla_loss": 8
     },
     "video": {
       "name_ru": "Видео",
@@ -72,13 +76,14 @@
       "recv_fee": 8,
       "base_pay": 90,
       "weight": 22,
-      "minigame_coeff": 4.0
+      "minigame_coeff": 4.0,
+      "sla_loss": 16
     }
   },
   "difficulty": [
-    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 20, "request_timer": 30, "attacks": 1 },
-    { "hour": 2, "recv_interval": 11, "send_interval": 20, "max_requests": 2, "buffer": 4, "packet_timer": 19.5, "request_timer": 29.5, "attacks": 1 },
-    { "hour": 3, "recv_interval": 10, "send_interval": 18, "max_requests": 3, "buffer": 5, "packet_timer": 19, "request_timer": 29, "attacks": 1 },
+    { "hour": 1, "recv_interval": 12, "send_interval": 22, "max_requests": 2, "buffer": 4, "packet_timer": 30, "request_timer": 45, "attacks": 1 },
+    { "hour": 2, "recv_interval": 11, "send_interval": 20, "max_requests": 2, "buffer": 4, "packet_timer": 26.325, "request_timer": 39.825, "attacks": 1 },
+    { "hour": 3, "recv_interval": 10, "send_interval": 18, "max_requests": 3, "buffer": 5, "packet_timer": 22.8, "request_timer": 34.8, "attacks": 1 },
     { "hour": 4, "recv_interval": 9, "send_interval": 17, "max_requests": 3, "buffer": 5, "packet_timer": 18.5, "request_timer": 28.5, "attacks": 2 },
     { "hour": 5, "recv_interval": 8, "send_interval": 15, "max_requests": 4, "buffer": 6, "packet_timer": 18, "request_timer": 28, "attacks": 2 },
     { "hour": 6, "recv_interval": 7.5, "send_interval": 14, "max_requests": 4, "buffer": 6, "packet_timer": 17.5, "request_timer": 27.5, "attacks": 3 },
@@ -91,7 +96,29 @@
     "after_end_hour": "значения часа 8; +5% к скорости спавна каждые 2 часа",
     "spawn_speedup_after_end": 0.05,
     "spawn_speedup_period_hours": 2,
-    "type_availability": "все 4 типа к часу 2; в часе 1 — text и sound (D16); 1 атака (мусор) уже в часе 1 (D16)"
+    "type_availability": "все 4 типа к часу 2; в часе 1 — text и sound (D16); 1 атака (мусор) уже в часе 1 (D16)",
+    "timer_grace": "packet_timer/request_timer в таблице — итоговые значения с grace-множителем Economy: h1 1.5, h2 1.35, h3 1.2, h4+ 1.0. Формула: (base − 0.5*(h−1))*grace + 4*level. h2: 19.5*1.35=26.325, 29.5*1.35=39.825."
+  },
+  "progression": {
+    "unlocks": {
+      "shop": {"run_hour": 2, "label": "Магазин"},
+      "search": {"meta": "survive_hour_3", "label": "Поиск"},
+      "shield": {"meta": "survive_hour_5", "label": "Щит"},
+      "minigame_text": {"run_hour": 1},
+      "minigame_sound": {"run_hour": 2},
+      "minigame_photo": {"run_hour": 3},
+      "minigame_video": {"run_hour": 4},
+      "minigame_advanced": {"meta": "complete_run", "label": "Продвинутые мини-игры"},
+      "attack_junk": {"run_hour": 2},
+      "attack_ddos": {"run_hour": 2},
+      "attack_phishing": {"run_hour": 3},
+      "attack_ransomware": {"run_hour": 4}
+    },
+    "meta_rewards": {
+      "survive_hour_3": {"min_hours": 3, "unlocks": ["search"]},
+      "survive_hour_5": {"min_hours": 5, "unlocks": ["shield"]},
+      "complete_run": {"min_hours": 9, "unlocks": ["minigame_advanced"]}
+    }
   },
   "timers": {
     "packet_timer": 20,
@@ -138,13 +165,14 @@
     "hit_window_ms": [130, 200]
   },
   "channel": {
-    "CHANNEL_BG_BASE": 10,
-    "CHANNEL_BG_PER_HOUR": 4,
-    "SLOT_LOAD": 8,
+    "CHANNEL_BG_BASE": 0,
+    "CHANNEL_BG_PER_HOUR": 0,
+    "SLOT_LOAD": 0,
+    "BG_note": "фоновый шум и занятые слоты НЕ грузят канал; load = только активные передачи (loading/sending)",
     "CHANNEL_CAPACITY": 80,
     "capacity_per_upgrade": 25,
     "capacity_upgrade_max_level": 4,
-    "formula": "load = CHANNEL_BG_BASE + CHANNEL_BG_PER_HOUR*(hour-1) + SLOT_LOAD*used_slots + sum(weight(active_transfers)); factor = max(1.0, load / CHANNEL_CAPACITY); actual_time = base_time * factor"
+    "formula": "load = sum(weight(active_transfers)); factor = max(1.0, load / CHANNEL_CAPACITY); actual_time = base_time * factor. idle load = 0"
   },
   "attacks": {
     "junk": {
@@ -210,7 +238,8 @@
     { "id": "shop_channel", "name_ru": "Канал +25", "effect": "channel_capacity", "value": 25, "price": 250, "max_level": 4 },
     { "id": "shop_section", "name_ru": "Новая секция", "effect": "sections", "value": 1, "price": 300, "max_level": 5 },
     { "id": "shop_search", "name_ru": "Поиск", "effect": "search_highlight", "value": 1, "price": 250, "max_level": 1 },
-    { "id": "shop_shield", "name_ru": "Щит", "effect": "shield", "value": 1, "price": 400, "max_level": 1 }
+    { "id": "shop_shield", "name_ru": "Щит", "effect": "shield", "value": 1, "price": 400, "max_level": 1 },
+    { "id": "shop_sla", "name_ru": "SLA +24", "effect": "sla_add", "value": 24, "price": 300, "max_level": 3 }
   ],
   "shop_reserve": {
     "items": ["scanner", "autosort"],

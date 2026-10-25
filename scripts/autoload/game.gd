@@ -12,7 +12,7 @@ signal run_ended(reason)
 signal toast(text)
 
 const START_MONEY := 150
-const START_SLA := 200.0
+const START_SLA := 128.0
 const HOURS_PER_RUN := 9
 const MAX_SLA := 200.0
 
@@ -30,6 +30,7 @@ const FALLBACK_SHOP := {
 	"shop_section": {"id": "shop_section", "name_ru": "Новая секция", "price": 300, "max_level": 5},
 	"shop_search": {"id": "shop_search", "name_ru": "Поиск", "price": 250, "max_level": 1},
 	"shop_shield": {"id": "shop_shield", "name_ru": "Щит", "price": 400, "max_level": 1},
+	"shop_sla": {"id": "shop_sla", "name_ru": "SLA +24", "price": 300, "max_level": 3},
 }
 
 var money: int = START_MONEY
@@ -39,6 +40,8 @@ var phase: StringName = &"menu"
 var streak: int = 0
 var stats: Dictionary = {}
 var upgrades: Dictionary = {}
+## Мета-открытия между забегами: ключ meta_rewards → true (переживает reset_run).
+var meta_unlocks: Dictionary = {}
 ## FileRegistry; без type hint, чтобы работать без прогретого class cache.
 var registry = null
 var rng_seed: int = 0
@@ -51,7 +54,8 @@ func _ready() -> void:
 # --- жизненный цикл --------------------------------------------------------
 
 func start_new_run(seed: int = 0) -> void:
-	_reset_fields()
+	# Мета-прогресс (unlocks за прошлые забеги) не стирается новым забегом.
+	_reset_fields(true)
 	rng_seed = seed
 	var rng = _rng_node()
 	if rng != null and rng.has_method("start_run"):
@@ -94,7 +98,8 @@ func end_hour() -> bool:
 
 
 func reset_run() -> void:
-	_reset_fields()
+	# reset_run — сброс забега, мета-открытия остаются.
+	_reset_fields(true)
 	phase = &"menu"
 	rng_seed = 0
 	_emit_all()
@@ -124,6 +129,54 @@ func add_sla(delta: float, reason: String = "") -> void:
 
 func add_stat(key: String, delta: int = 1) -> void:
 	stats[key] = int(stats.get(key, 0)) + int(delta)
+
+
+# --- прогрессия/открытия ---------------------------------------------------
+
+## Открыта ли фича по data/balance.json → progression.unlocks.
+## Неизвестный id считается открытым (обратная совместимость).
+## run_hour сравнивается с текущим Game.hour; meta — с meta_unlocks.
+func feature_unlocked(id: String) -> bool:
+	var data = _data_node()
+	var defs: Dictionary = {}
+	if data != null and data.get("unlocks") is Dictionary:
+		defs = data.unlocks
+	var def = defs.get(str(id), null)
+	if not (def is Dictionary):
+		return true
+	var info: Dictionary = def
+	if info.has("meta") and not meta_unlocks.has(str(info.get("meta", ""))):
+		return false
+	if info.has("run_hour") and hour < int(info.get("run_hour", 1)):
+		return false
+	return true
+
+
+## Начислить мета-награды за завершённый забег (hours часов).
+## Возвращает список выданных ключей meta_rewards; сохраняет прогресс.
+func award_meta_for_run(hours: int) -> Array[String]:
+	var awarded: Array[String] = []
+	var data = _data_node()
+	var rewards: Dictionary = {}
+	if data != null and data.get("meta_rewards") is Dictionary:
+		rewards = data.meta_rewards
+	if rewards.is_empty():
+		return awarded
+	var played := maxi(0, int(hours))
+	for key in rewards.keys():
+		var reward_key := str(key)
+		var info = rewards[key]
+		if not (info is Dictionary):
+			continue
+		var min_hours := int((info as Dictionary).get("min_hours", 999))
+		if played < min_hours or meta_unlocks.has(reward_key):
+			continue
+		meta_unlocks[reward_key] = true
+		awarded.append(reward_key)
+	if not awarded.is_empty():
+		save_game()
+		toast.emit(_tr("msg.meta_unlock", "Открыто: %s") % ", ".join(awarded))
+	return awarded
 
 
 # --- магазин (заглушка эффектов) ------------------------------------------
@@ -165,6 +218,7 @@ func save_game() -> bool:
 		"streak": streak,
 		"stats": stats.duplicate(true),
 		"upgrades": upgrades.duplicate(true),
+		"meta": meta_unlocks.duplicate(true),
 		"rng_seed": rng_seed,
 		"rng_state": rng_state,
 		"registry": registry.to_dict(),
@@ -192,6 +246,7 @@ func load_game() -> bool:
 	phase = StringName(str(data.get("phase", "menu")))
 	streak = maxi(0, int(data.get("streak", 0)))
 	upgrades = _dict_of(data.get("upgrades", {}))
+	meta_unlocks = _dict_of(data.get("meta", {}))
 	stats = _default_stats()
 	var raw_stats = data.get("stats", {})
 	if raw_stats is Dictionary:
@@ -212,13 +267,15 @@ func load_game() -> bool:
 
 # --- служебное -------------------------------------------------------------
 
-func _reset_fields() -> void:
+func _reset_fields(keep_meta: bool = true) -> void:
 	money = START_MONEY
 	sla = START_SLA
 	hour = 1
 	streak = 0
 	stats = _default_stats()
 	upgrades = {}
+	if not keep_meta:
+		meta_unlocks = {}
 	registry = _make_registry()
 
 

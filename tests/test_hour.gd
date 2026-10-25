@@ -34,7 +34,9 @@ func _init() -> void:
 	_test_failed_file_cancel()
 	_test_modal_freeze()
 	_test_send_payout()
+	_test_minigame_fallback()
 	_test_attacks()
+	_test_connection_failure()
 	_test_full_hour_timescale()
 	_finish()
 
@@ -55,6 +57,8 @@ func _test_start_hour() -> void:
 	_eq(_hd.slots.max_slots(), 2, "2 слота соединений")
 	_ok(_hd.attack_director != null, "AttackDirector создан")
 	_eq(_hd.attack_director.active_attacks.size(), 0, "атаки сброшены")
+	_approx(_hd.channel_load(), 0.0, 0.0001, "idle-канал не нагружен")
+	_eq(_hd._type_pool(), ["text"], "час 1: открыт только text (sound с часа 2)")
 
 
 func _test_spawn_and_buffer() -> void:
@@ -67,8 +71,10 @@ func _test_spawn_and_buffer() -> void:
 		_ok(id != "", "пакет %d заспавнен" % i)
 	_eq(_hd.active_packets.size(), 4, "буфер заполнен до 4")
 	_eq(_hd._buffer_used(), 4, "buffer_used = 4")
+	_approx(_hd.channel_load(), 0.0, 0.0001, "waiting-пакеты не грузят канал")
+	_eq(_hd._active_weights().size(), 0, "active_weights пуст без loading/sending")
 	var packet = _hd.active_packets[ids[0]]
-	_approx(float(packet.timer_total), 20.0, 0.0001, "таймер пакета 20 с")
+	_approx(float(packet.timer_total), 30.0, 0.0001, "таймер пакета часа 1: 30 с (grace 1.5)")
 	_eq(str(packet.protocol), "tcp", "протокол tcp")
 	_eq(str(packet.state), "waiting", "состояние waiting")
 
@@ -81,14 +87,32 @@ func _test_spawn_and_buffer() -> void:
 	_eq(_hd.active_packets.size(), 4, "при полном буфере таймер не спавнит")
 	_ok(_frozen_events > 0, "сигнал spawn_frozen(buffer_full)")
 
-	# Прямой спавн = переполнение: вытесняется самый старый, −5 SLA.
+	# Прямой спавн = переполнение: вытесняется самый старый, штраф по типу.
 	var sla_before: float = _game.sla
 	var oldest_id: String = ids[0]
 	var new_id := str(_hd.spawn_packet_now("sound", "udp"))
 	_eq(_hd.active_packets.size(), 4, "размер буфера не превышен")
 	_ok(new_id != "", "новый пакет добавлен")
 	_ok(not _hd.active_packets.has(oldest_id), "самый старый пакет вытеснен")
-	_approx(_game.sla, sla_before - 5.0, 0.001, "переполнение: −5 SLA")
+	_approx(_game.sla, sla_before - 2.0, 0.001, "переполнение: вытеснен text → −2 SLA")
+	# Штраф зависит от типа вытесненного пакета (п.13).
+	_hd.start_hour(2)
+	var sound_id := str(_hd.spawn_packet_now("sound", "tcp"))
+	for i in range(3):
+		_hd.spawn_packet_now("text", "tcp")
+	sla_before = _game.sla
+	_hd.spawn_packet_now("text", "tcp")
+	_ok(not _hd.active_packets.has(sound_id), "sound вытеснен из буфера")
+	_approx(_game.sla, sla_before - 4.0, 0.001, "вытеснение sound → −4 SLA")
+
+	_hd.start_hour(2)
+	var video_id := str(_hd.spawn_packet_now("video", "tcp"))
+	for i in range(3):
+		_hd.spawn_packet_now("text", "tcp")
+	sla_before = _game.sla
+	_hd.spawn_packet_now("text", "tcp")
+	_ok(not _hd.active_packets.has(video_id), "video вытеснен из буфера")
+	_approx(_game.sla, sla_before - 16.0, 0.001, "вытеснение video → −16 SLA")
 	# Прибираем пакеты, чтобы не мешали следующим кейсам.
 	for id in _hd.active_packets.keys():
 		_hd._remove_packet(str(id))
@@ -108,6 +132,7 @@ func _test_receive() -> void:
 	_ok(_hd.receive_packet(packet_id, folder_id), "пакет принят в загрузку")
 	var packet = _hd.active_packets.get(packet_id)
 	_ok(packet != null and str(packet.state) == "loading", "state loading")
+	_approx(_hd.channel_load(), 6.0, 0.0001, "loading text грузит канал на weight 6")
 	for i in range(60):
 		_hd.tick(0.1)
 		if not _hd.active_packets.has(packet_id):
@@ -135,7 +160,18 @@ func _test_timeouts() -> void:
 	_hd.active_packets[packet_id].time_left = 0.05
 	_hd.tick(0.1)
 	_ok(not _hd.active_packets.has(packet_id), "пакет удалён по таймауту")
-	_approx(_game.sla, sla_before - 5.0, 0.001, "таймаут пакета: −5 SLA")
+	_approx(_game.sla, sla_before - 2.0, 0.001, "таймаут text-пакета: −2 SLA")
+	# Фото/видео штрафуются строже (п.13).
+	_game.sla = 200.0
+	var photo_id := str(_hd.spawn_packet_now("photo", "tcp"))
+	_hd.active_packets[photo_id].time_left = 0.05
+	_hd.tick(0.1)
+	_approx(_game.sla, 192.0, 0.001, "таймаут photo: −8 SLA")
+	_game.sla = 200.0
+	var video_id := str(_hd.spawn_packet_now("video", "tcp"))
+	_hd.active_packets[video_id].time_left = 0.05
+	_hd.tick(0.1)
+	_approx(_game.sla, 184.0, 0.001, "таймаут video: −16 SLA")
 
 	_hd.start_hour(1)
 	_game.sla = 200.0
@@ -219,6 +255,7 @@ func _test_send_payout() -> void:
 	if mg != null:
 		mg._send()
 	_ok(req.sending, "отправка началась после мини-игры")
+	_approx(_hd.channel_load(), 6.0, 0.0001, "sending text грузит канал на weight 6")
 	_ok(not _hd.modal_open, "модалка закрыта")
 	_ok(float(req.send_duration) > 0.0, "send_duration > 0")
 	for i in range(200):
@@ -242,9 +279,11 @@ func _test_attacks() -> void:
 	_eq(AD.attacks_for_hour(8), 4, "час 8: 4 атаки")
 	_eq(AD.attacks_for_hour(9), 4, "час 9: 4 атаки")
 
-	_hd.start_hour(1)
+	# junk/ddos открыты с часа 2, phishing — с 3, ransomware — с 4 (п.16).
+	_game.hour = 2
+	_hd.start_hour(2)
 	var ad = _hd.attack_director
-	ad.reset(1)
+	ad.reset(2)
 	_game.sla = 150.0
 	var money_before: int = _game.money
 	var sla_before: float = _game.sla
@@ -255,7 +294,7 @@ func _test_attacks() -> void:
 	_eq(_game.money, money_before + 5, "мусор: +5 $")
 	_approx(_game.sla, sla_before + 1.0, 0.001, "мусор: +1 SLA")
 
-	ad.reset(1)
+	ad.reset(2)
 	var ddos_id := str(ad.spawn_attack("ddos"))
 	_ok(ddos_id != "", "DDoS заспавнен")
 	var cards := int(ad.active_attacks[ddos_id].get("cards", 0))
@@ -266,10 +305,11 @@ func _test_attacks() -> void:
 	_ok(not ad.active_attacks.has(ddos_id), "1.5 с щита отражают DDoS")
 	_eq(_game.money, money_before + 30, "DDoS: +30 $")
 
-	_hd.start_hour(1)
+	_game.hour = 3
+	_hd.start_hour(3)
 	var file = _new_file("Фишинг", "text", _folder_id())
 	_ok(file != null, "файл для фишинга")
-	ad.reset(1)
+	ad.reset(3)
 	var phish_id := str(ad.spawn_attack("phishing"))
 	_ok(phish_id != "", "фишинг заспавнен")
 	var phish_req := str(ad.active_attacks[phish_id].get("request_id", ""))
@@ -281,7 +321,9 @@ func _test_attacks() -> void:
 	_ok(not ad.active_attacks.has(phish_id), "атака фишинга закрыта")
 	_ok(_game.money >= money_before + 20, "фишинг: награда без штрафа")
 
-	ad.reset(1)
+	_game.hour = 4
+	_hd.start_hour(4)
+	ad.reset(4)
 	var rw_id := str(ad.spawn_attack("ransomware"))
 	_ok(rw_id != "", "шифровальщик заспавнен")
 	var packet_id := str(ad.active_attacks[rw_id].get("packet_id", ""))
@@ -292,8 +334,53 @@ func _test_attacks() -> void:
 	_ok(not _hd.active_packets.has(packet_id), "пакет удалён")
 
 
+func _test_minigame_fallback() -> void:
+	_set_case("minigame_fallback")
+	_game.hour = 1
+	_hd.start_hour(1)
+	_hd._recv_interval_current = 9999.0
+	_game.sla = 150.0
+	var file = _new_file("Фото-фолбэк", "photo", _folder_id())
+	_ok(file != null, "файл photo создан")
+	if file == null:
+		return
+	var req_id := str(_hd._make_request([file], "tcp", false, "", ""))
+	_ok(_hd.attach_file(req_id, str(file.id)), "photo прикреплён")
+	_hd.active_requests[req_id].connected = true
+	_ok(_hd.start_send(req_id), "отправка открыла мини-игру")
+	var mg = _hd._minigame
+	_ok(mg != null, "мини-игра создана")
+	if mg != null:
+		_eq(str(mg.game_type), "text", "час 1: photo-мини-игра не открыта → fallback text")
+	_hd._cleanup_request(req_id, true)
+	_ok(not _hd.modal_open, "модалка мини-игры закрыта")
+
+
+func _test_connection_failure() -> void:
+	_set_case("connection_fail")
+	_hd.start_hour(1)
+	_hd._recv_interval_current = 9999.0
+	var packet_id := str(_hd.spawn_packet_now("text", "tcp"))
+	_ok(_hd.connect_packet(packet_id), "соединение открыто")
+	_eq(_hd.slots.used_count(), 1, "слот занят на время соединения")
+	var node = _hd._connection_games.get(packet_id)
+	_hd._on_connection_finished(false, packet_id)
+	_eq(_hd.slots.used_count(), 0, "провал соединения освобождает слот")
+	_ok(not _hd.modal_open, "провал закрывает модалку")
+	if _hd.active_packets.has(packet_id):
+		_eq(str(_hd.active_packets[packet_id].state), "waiting", "пакет остаётся waiting")
+	if node != null and is_instance_valid(node):
+		node.free()
+	# Повторное «Соединиться» создаёт новую панель.
+	_ok(_hd.connect_packet(packet_id), "после провала можно соединиться снова")
+	_hd._on_connection_finished(true, packet_id)
+	_eq(_hd.slots.used_count(), 1, "успех снова занимает слот")
+	_hd._remove_packet(packet_id)
+
+
 func _test_full_hour_timescale() -> void:
 	_set_case("full_hour")
+	_game.hour = 2
 	_hd.start_hour(2)
 	_hour_events = 0
 	_hour_report = {}

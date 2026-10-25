@@ -1,5 +1,5 @@
 extends SceneTree
-## Headless-тест магазина (9 позиций, цены, покупки, эффекты).
+## Headless-тест магазина (10 позиций, цены, покупки, эффекты, unlock-гейты).
 ## Запуск: godot --headless --path . --script tests/test_shop.gd
 
 const SHOP := preload("res://scripts/systems/shop.gd")
@@ -7,12 +7,13 @@ const SM := preload("res://scripts/core/slot_manager.gd")
 
 const IDS := [
 	"shop_slot3", "shop_slot4", "shop_buffer", "shop_timer", "shop_zone",
-	"shop_channel", "shop_section", "shop_search", "shop_shield",
+	"shop_channel", "shop_section", "shop_search", "shop_shield", "shop_sla",
 ]
 const PRICES := {
 	"shop_slot3": 250, "shop_slot4": 450, "shop_buffer": 200,
 	"shop_timer": 350, "shop_zone": 300, "shop_channel": 250,
 	"shop_section": 300, "shop_search": 250, "shop_shield": 400,
+	"shop_sla": 300,
 }
 
 var _checks: int = 0
@@ -30,9 +31,15 @@ func _init() -> void:
 		return
 	game.start_new_run(1)
 	_test_catalog()
+	_test_unlocks()
+	# Дальнейшие кейсы — в часе 2, когда магазин и базовые позиции открыты.
+	game.hour = 2
+	game.meta_unlocks["survive_hour_3"] = true
+	game.meta_unlocks["survive_hour_5"] = true
 	_test_money_gate()
 	_test_slots()
 	_test_effects()
+	_test_sla_effect()
 	_test_limits()
 	_test_signal()
 	_finish()
@@ -41,7 +48,7 @@ func _init() -> void:
 func _test_catalog() -> void:
 	_set_case("catalog")
 	var shop = SHOP.new()
-	_eq(shop.item_count(), 9, "ровно 9 позиций")
+	_eq(shop.item_count(), 10, "ровно 10 позиций")
 	for id in IDS:
 		var item := shop.get_item(id)
 		_ok(not item.is_empty(), "товар %s есть" % id)
@@ -50,6 +57,37 @@ func _test_catalog() -> void:
 		_eq(shop.level(id), 0, "начальный уровень %s" % id)
 	_ok(shop.get_item("scanner").is_empty(), "сканера нет (D13)")
 	_ok(shop.get_item("autosort").is_empty(), "автосортировки нет (D13)")
+	var sla_item := shop.get_item("shop_sla")
+	_eq(str(sla_item.get("effect", "")), "sla_add", "shop_sla: effect sla_add")
+	_eq(int(sla_item.get("value", 0)), 24, "shop_sla: +24")
+	_eq(shop.max_level("shop_sla"), 3, "shop_sla: max 3 уровня")
+
+
+func _test_unlocks() -> void:
+	_set_case("unlocks")
+	var game = root.get_node("Game")
+	var shop = SHOP.new()
+	# Час 1: магазин ещё закрыт, но shop_sla доступен всегда.
+	game.start_new_run(1)
+	_ok(not shop.item_unlocked(shop.get_item("shop_slot3")), "час 1: slot3 закрыт")
+	_ok(not shop.can_buy("shop_slot3"), "час 1: slot3 нельзя купить")
+	_ok(shop.item_unlocked(shop.get_item("shop_sla")), "shop_sla открыт всегда")
+	game.money = 300
+	_ok(shop.can_buy("shop_sla"), "shop_sla можно купить на часе 1")
+	game.money = 150
+	var available = shop.available_items()
+	_eq(available.size(), 1, "час 1: в available_items только shop_sla")
+	_ok(not shop.item_unlocked(shop.get_item("shop_search")), "search закрыт до мета")
+	_ok(not shop.item_unlocked(shop.get_item("shop_shield")), "shield закрыт до мета")
+	game.hour = 2
+	_ok(shop.item_unlocked(shop.get_item("shop_slot3")), "час 2: базовые позиции открыты")
+	_ok(not shop.item_unlocked(shop.get_item("shop_search")), "час 2: search ещё закрыт")
+	game.meta_unlocks["survive_hour_3"] = true
+	_ok(shop.item_unlocked(shop.get_item("shop_search")), "мета survive_hour_3 открывает search")
+	_ok(not shop.item_unlocked(shop.get_item("shop_shield")), "shield ещё закрыт")
+	game.meta_unlocks["survive_hour_5"] = true
+	_ok(shop.item_unlocked(shop.get_item("shop_shield")), "мета survive_hour_5 открывает shield")
+	_eq(shop.available_items().size(), 10, "все 10 позиций открыты")
 
 
 func _test_money_gate() -> void:
@@ -115,6 +153,33 @@ func _test_effects() -> void:
 	_eq(int(game.upgrades.get("shield_unlocked", 0)), 1, "shield_unlocked = 1")
 
 
+func _test_sla_effect() -> void:
+	_set_case("sla_add")
+	var game = root.get_node("Game")
+	var shop = SHOP.new()
+	game.money = 10000
+	game.upgrades.erase("shop_sla")
+	game.upgrades.erase("sla_level")
+	game.sla = 128.0
+	_ok(shop.buy("shop_sla"), "shop_sla куплен")
+	_approx(float(game.sla), 152.0, 0.0001, "SLA 128 → 152")
+	_eq(shop.level("shop_sla"), 1, "уровень shop_sla = 1")
+	_eq(shop.effect_level("sla_add"), 1, "effect_level(sla_add) = 1")
+	_eq(int(game.money), 9700, "списано 300")
+	_ok(shop.buy("shop_sla"), "shop_sla куплен 2-й раз")
+	_approx(float(game.sla), 176.0, 0.0001, "SLA 152 → 176")
+	_ok(shop.buy("shop_sla"), "shop_sla куплен 3-й раз")
+	_approx(float(game.sla), 200.0, 0.0001, "SLA 176 → 200")
+	_eq(shop.level("shop_sla"), 3, "уровень shop_sla = 3")
+	_ok(not shop.can_buy("shop_sla"), "4-й уровень не продаётся (max 3)")
+	# add_sla клампит: покупка при 180 не поднимает выше 200.
+	game.upgrades.erase("shop_sla")
+	game.upgrades.erase("sla_level")
+	game.sla = 180.0
+	_ok(shop.buy("shop_sla"), "shop_sla при SLA 180")
+	_approx(float(game.sla), 200.0, 0.0001, "SLA клампится на 200")
+
+
 func _test_limits() -> void:
 	_set_case("limits")
 	var game = root.get_node("Game")
@@ -163,6 +228,14 @@ func _eq(actual, expected, message: String) -> bool:
 	if actual == expected:
 		return true
 	_fail("%s — получено %s, ожидалось %s" % [message, str(actual), str(expected)])
+	return false
+
+
+func _approx(actual: float, expected: float, eps: float, message: String) -> bool:
+	_checks += 1
+	if absf(actual - expected) <= eps:
+		return true
+	_fail("%s — получено %.6f, ожидалось %.6f" % [message, actual, expected])
 	return false
 
 
