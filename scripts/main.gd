@@ -10,6 +10,7 @@ const H := 720.0
 
 ## Preload вместо глобального имени: работает и без прогретого class cache.
 const GAME_CONTROLLER := preload("res://scripts/game_controller.gd")
+const RENAME_MODAL := preload("res://scripts/ui/rename_modal.gd")
 
 var title_bar: WindowFrame
 var menu_bar: Panel90
@@ -44,6 +45,10 @@ var run_result_modal: RunResultModal
 var pause_modal: PauseModal
 var settings_modal: SettingsModal
 var confirm_modal: ConfirmModal
+var rename_modal = null
+var _rename_folder_id := ""
+## Какое действие подтверждает confirm_modal: "" / "menu" (см. _confirm_to_menu).
+var _confirm_action := ""
 var _backdrop: Control = null
 var _hour_ui_shown := false
 var _hour_signals_connected := false
@@ -129,6 +134,10 @@ func _unhandled_input(event: InputEvent) -> void:
 		return
 	if settings_modal != null and settings_modal.visible:
 		settings_modal.close()
+		_mark_input_handled()
+		return
+	if rename_modal != null and rename_modal.visible:
+		rename_modal.close()
 		_mark_input_handled()
 		return
 	if confirm_modal != null and confirm_modal.visible:
@@ -238,9 +247,20 @@ func _apply_fullscreen(on: bool) -> void:
 func _confirm_to_menu() -> void:
 	if confirm_modal == null:
 		return
+	_confirm_action = "menu"
 	confirm_modal.ask("Выйти в главное меню?",
 		"Текущий час будет прерван, прогресс подготовки сохранён.",
 		"Выйти", "Отмена", true)
+
+
+## Информационное окно «О программе» (пункт меню СПРАВКА).
+func _show_about() -> void:
+	if confirm_modal == null:
+		return
+	_confirm_action = ""
+	confirm_modal.ask("PEAK HOUR 97",
+		"Диспетчер файлового обмена · версия 0.1.0 · Godot 4.7.2",
+		"OK", "Закрыть")
 
 
 func _to_menu() -> void:
@@ -329,9 +349,19 @@ func _build_modals() -> void:
 	modal_root.add_child(confirm_modal)
 	confirm_modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	confirm_modal.answered.connect(func(yes: bool) -> void:
-		if yes:
+		var action := _confirm_action
+		_confirm_action = ""
+		if yes and action == "menu":
 			_to_menu())
 	confirm_modal.visible = false
+
+	rename_modal = RENAME_MODAL.new()
+	rename_modal.name = "RenameModal"
+	modal_root.add_child(rename_modal)
+	rename_modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	rename_modal.rename_confirmed.connect(_on_rename_confirmed)
+	rename_modal.closed.connect(func() -> void: rename_modal.visible = false)
+	rename_modal.visible = false
 
 
 func _start_new_run() -> void:
@@ -1547,8 +1577,19 @@ func _make_menu(labels: Array) -> PopupMenu:
 	pm.id_pressed.connect(func(id: int) -> void:
 		var i := pm.get_item_index(id)
 		if i >= 0:
-			_toast("МЕНЮ: %s — ДЕМО-РЕЖИМ" % pm.get_item_text(i).to_upper(), "info"))
+			_on_menu_pick(pm.get_item_text(i)))
 	return pm
+
+
+## Реальные действия верхнего меню; остальные пункты пока демонстрационные.
+func _on_menu_pick(text: String) -> void:
+	if text.contains("Параметр") or text.contains("Настройки"):
+		_open_settings()
+		return
+	if text.contains("О программе"):
+		_show_about()
+		return
+	_toast("МЕНЮ: %s — ДЕМО-РЕЖИМ" % text.to_upper(), "info")
 
 
 # --------------------------------------------------------------------------
@@ -1999,12 +2040,46 @@ func _on_tree_menu(action: String, folder_id: String) -> void:
 		"new":
 			_new_folder_in(folder_id)
 		"rename":
-			_toast("ПЕРЕИМЕНОВАНИЕ — ДЕМО-РЕЖИМ", "info")
+			_open_rename(folder_id)
 		"delete":
 			_delete_folder(folder_id)
 		_:
 			_toast("СОДЕРЖИМОЕ УНИЧТОЖЕНО · SLA −5", "error")
 			status_bar.flash("sla", "−5", Theme90.ERROR)
+
+
+## Открыть диалог переименования папки (только для реальных папок, не секций).
+func _open_rename(folder_id: String) -> void:
+	if Game.registry == null or not Game.registry.folders.has(folder_id):
+		_toast("ПАПКА НЕ НАЙДЕНА", "warn")
+		return
+	if rename_modal == null:
+		return
+	_rename_folder_id = folder_id
+	rename_modal.open(str(Game.registry.folders[folder_id].name))
+
+
+## Применить новое имя из RenameModal: пустое/длинное/дубль — только тост.
+func _on_rename_confirmed(new_name: String) -> void:
+	var folder_id := _rename_folder_id
+	_rename_folder_id = ""
+	if Game.registry == null or not Game.registry.folders.has(folder_id):
+		_toast("ПАПКА НЕ НАЙДЕНА", "warn")
+		return
+	var clean := new_name.strip_edges()
+	if clean.is_empty():
+		_toast("ИМЯ ПАПКИ НЕ МОЖЕТ БЫТЬ ПУСТЫМ", "warn")
+		return
+	if clean.length() > 16:
+		_toast("ИМЯ ДЛИННЕЕ 16 СИМВОЛОВ", "warn")
+		return
+	if not Game.registry.rename_folder(folder_id, clean):
+		_toast("ПАПКА С ТАКИМ ИМЕНЕМ УЖЕ ЕСТЬ", "warn")
+		return
+	if controller != null:
+		controller.save()
+	_refresh_prep()
+	_toast("ПАПКА ПЕРЕИМЕНОВАНА", "success")
 
 
 ## Удаление папки: реестр разрешает только пустые (без файлов и резерваций).
