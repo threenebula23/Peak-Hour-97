@@ -1,8 +1,9 @@
 class_name FileCard
 extends Control
-## Плитка файла 132×84: иконка типа, имя в 2 строки, расширение, размер.
-## Состояния: stored / attached / locked / malicious / failed.
-## Перетаскивается как {"kind": "file", "id": ...}.
+## Плитка файла 132×84: цветная иконка типа, имя в 2 строки, размер.
+## Светлая карточка с 1 px контуром и мягкой тенью; attached — зелёная
+## галочка, locked/malicious — маленькие значки. Перетаскивается как
+## {"kind": "file", "id": ...}.
 
 signal file_selected(id: String)
 signal file_activated(id: String)
@@ -78,7 +79,7 @@ static func type_color(t: String) -> Color:
 		"video":
 			return Theme90.ERROR
 		_:
-			return Theme90.NAVY
+			return Theme90.ACCENT
 
 
 func state_caption() -> String:
@@ -99,98 +100,65 @@ func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
 	var tc := type_color(type)
+	var locked := state == "locked"
+	var bad := state == "malicious" or state == "failed"
 
+	var bg := Theme90.PAPER_HI
+	var border := Theme90.BORDER
+	var shadow := Theme90.SHADOW
 	if selected:
-		Theme90.draw_bevel(self, r, true, 2.0, Theme90.NAVY)
+		bg = Theme90.ACCENT_PALE
+		border = Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.8)
+		shadow = Color(0, 0, 0, 0.12)
 	elif hovered:
-		Theme90.draw_bevel(self, r, false, 2.0, Theme90.FACE)
-		draw_rect(Rect2(2, 2, size.x - 4, size.y - 4), Theme90.FACE_HI, false, 1.0)
-	else:
-		Theme90.draw_bevel(self, r, false, 2.0, Theme90.FACE)
+		bg = Theme90.WHITE
+		border = Theme90.ACCENT_LIGHT
+		shadow = Color(0, 0, 0, 0.11)
 
-	var sc := Theme90.ACCENT_LIGHT if selected else Theme90.SHADE
-	var fg := Theme90.WHITE if selected else Theme90.INK
-	if not selected:
-		if state == "locked":
-			fg = Theme90.SHADE
-			sc = Theme90.SHADE
-		elif state == "failed":
-			fg = Theme90.DARK
-
-	# лёгкая фактура «мёртвых» состояний — под содержимым, а не поверх
-	if state == "locked":
-		Theme90.draw_hatch(self, Rect2(3, 3, size.x - 6, 56), Color(1, 1, 1, 0.20), 8.0)
-	elif state == "failed":
-		Theme90.draw_hatch(self, Rect2(3, 3, size.x - 6, 56), Color(0.752941, 0.0, 0.0, 0.10), 8.0)
-	elif state == "malicious":
-		draw_rect(Rect2(2, 2, size.x - 4, 3), Theme90.ERROR)
-
-	# иконка 24×24
-	Theme90.draw_doc_icon(self, Rect2(6, 6, 24, 24), type, tc)
-
-	# тип и состояние рядом с иконкой
-	Theme90.text(self, f, Vector2(36, 6), type_title(type), 10,
-		Theme90.WHITE if selected else tc, 70)
-	Theme90.text(self, f, Vector2(36, 18), state_caption(), 10,
-		Theme90.ACCENT_LIGHT if selected else _state_color(), 70)
-
-	# имя в две строки
-	var lines := Theme90.wrap(f, file_name, 10, 118.0, 2)
-	var ly := 36.0
-	for line in lines:
-		Theme90.text(self, f, Vector2(6, ly), line, 10, fg, 120)
-		ly += 11.0
-
-	# разделитель и метаданные
-	draw_rect(Rect2(4, 60, size.x - 8, 1), Theme90.SHADE if not selected else Theme90.NAVY_DEEP)
-	draw_rect(Rect2(4, 61, size.x - 8, 1), Theme90.FACE_HI if not selected else Color(0.1, 0.1, 0.6))
-	var ext_s := "%s · " % ext.to_upper()
-	Theme90.text(self, f, Vector2(6, 64), ext_s, 10, sc)
-	var mw := f.get_string_size(ext_s, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	Theme90.num_line(self, Vector2(6 + mw, 64), _spaced(size_kb), 8, sc, " КБ", 10)
-
-	# бейдж состояния
-	_draw_state_badge(Rect2(size.x - 20, 62, 14, 14), tc)
-
-	# выделение — синяя внутренняя рамка
+	draw_style_box(Theme90.box(bg, border, 4, 1, shadow), r)
 	if selected:
-		draw_rect(Rect2(2, 2, size.x - 4, size.y - 4), Theme90.ACCENT_LIGHT, false, 1.0)
+		draw_rect(Rect2(1.5, 12, 2.5, size.y - 24), Theme90.ACCENT)
 
+	if locked:
+		tc = Theme90.SHADE
+	Theme90.draw_doc_icon(self, Rect2(10, 10, 24, 24), type, tc)
 
-func _state_color() -> Color:
-	match state:
-		"malicious", "failed":
-			return Theme90.ERROR
-		"attached":
-			return Theme90.NAVY
-		"locked":
-			return Theme90.SHADE
-		_:
-			return Theme90.SHADE
+	# состояние — только маленькими значками, без подписей
+	if state == "attached":
+		Theme90.draw_check_badge(self, Vector2(size.x - 14, 14), 7.0)
+	elif locked:
+		draw_circle(Vector2(size.x - 14, 14), 7.0, Color(Theme90.SHADE.r, Theme90.SHADE.g,
+			Theme90.SHADE.b, 0.16))
+		Theme90.draw_lock_icon(self, Vector2(size.x - 18, 9), Theme90.SHADE)
+	elif state == "malicious":
+		draw_circle(Vector2(size.x - 14, 14), 7.0, Color(Theme90.ERROR.r, Theme90.ERROR.g,
+			Theme90.ERROR.b, 0.16))
+		draw_rect(Rect2(size.x - 14.5, 10, 1.6, 5), Theme90.ERROR)
+		draw_circle(Vector2(size.x - 13.7, 17.5), 1.0, Theme90.ERROR)
+	elif state == "failed":
+		draw_circle(Vector2(size.x - 14, 14), 7.0, Color(Theme90.ERROR.r, Theme90.ERROR.g,
+			Theme90.ERROR.b, 0.16))
+		Theme90.draw_x(self, Rect2(size.x - 21, 7, 14, 14), Theme90.ERROR, 1.3)
 
+	var name_color := Theme90.SHADE if locked else Theme90.INK
+	var lines := Theme90.wrap(f, file_name, 12, size.x - 20.0, 2)
+	var ly := 40.0
+	for line in lines:
+		Theme90.text(self, f, Vector2(10, ly), line, 12, name_color, size.x - 20.0)
+		ly += 13.0
 
-func _draw_state_badge(r: Rect2, tc: Color) -> void:
-	if state == "stored":
-		return
-	var bg := Theme90.NAVY
-	match state:
-		"locked":
-			bg = Theme90.DARK
-		"malicious", "failed":
-			bg = Theme90.ERROR
-		_:
-			bg = Theme90.NAVY
-	draw_rect(r, bg)
-	match state:
-		"attached":
-			Theme90.draw_arrow(self, r.grow(-2), 2, Theme90.WHITE)
-		"locked":
-			Theme90.draw_lock_icon(self, Vector2(r.position.x + 2, r.position.y + 2), Theme90.FACE)
-		"malicious":
-			draw_rect(Rect2(r.get_center().x - 0.5, r.position.y + 3, 2, 5), Theme90.WHITE)
-			draw_rect(Rect2(r.get_center().x - 0.5, r.position.y + 9, 2, 2), Theme90.WHITE)
-		"failed":
-			Theme90.draw_x(self, r, Theme90.WHITE, 1.0)
+	# тип и размер — одна спокойная строка
+	var meta_col := Theme90.SHADE
+	if state == "malicious" or state == "failed":
+		meta_col = Theme90.ERROR
+	var ext_s := ext.to_upper()
+	Theme90.text(self, f, Vector2(10, 68), ext_s, 10, meta_col)
+	var ew := f.get_string_size(ext_s, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	Theme90.text(self, f, Vector2(10 + ew + 5, 68), _spaced(size_kb) + " КБ", 10,
+		meta_col)
+
+	if hovered and not selected:
+		draw_rect(Rect2(10, 34, size.x - 20, 1), Theme90.HAIRLINE)
 
 
 static func _spaced(v: int) -> String:
@@ -229,7 +197,7 @@ func _gui_input(event: InputEvent) -> void:
 func _get_drag_data(_at_position: Vector2) -> Variant:
 	drag_started.emit(id)
 	var ghost := Theme90.DragGhost.new("%s.%s" % [file_name, ext], "%s КБ · %s" % [_spaced(size_kb), ext.to_upper()], "file", type_color(type))
-	ghost.size = Vector2(168, 30)
+	ghost.size = Vector2(172, 32)
 	set_drag_preview(ghost)
 	return {"kind": "file", "id": id, "name": file_name, "type": type, "ext": ext}
 

@@ -1,7 +1,7 @@
 class_name SlotCell
 extends Control
-## Ячейка TCP-канала 236×44: стрелка, файл, мини-прогресс, ×.
-## Пустая — пунктир; заблокированная — замок и цена.
+## Ячейка TCP-канала 236×44: направление, файл, тонкий прогресс, ×.
+## Пустая — пунктир; заблокированная — замок и цена в магазине.
 
 signal close_pressed(id: String)
 signal cell_pressed(id: String)
@@ -42,7 +42,7 @@ func _ready() -> void:
 	_x.name = "CloseButton"
 	_x.icon = Button90.Icon.X
 	_x.size = Vector2(14, 14)
-	_x.position = Vector2(216, 4)
+	_x.position = Vector2(216, 5)
 	_x.tooltip_text = "Прервать передачу"
 	add_child(_x)
 	_x.pressed.connect(func() -> void: close_pressed.emit(id))
@@ -64,52 +64,48 @@ func setup(p_id: String, p_name: String, p_dir: String, p_progress: float, p_sta
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
-	match state:
-		"active":
-			Theme90.draw_bevel(self, r, false, 2.0, Theme90.FACE_HI if hovered else Theme90.FACE)
-		"locked":
-			Theme90.draw_bevel(self, r, true, 2.0, Theme90.FACE)
-			Theme90.draw_hatch(self, Rect2(2, 2, size.x - 4, size.y - 4), Color(1, 1, 1, 0.16), 8.0)
-		_:
-			Theme90.draw_bevel(self, r, true, 2.0, Theme90.FACE)
-			Theme90.draw_dashed_box(self, Rect2(3, 3, size.x - 6, size.y - 6), Theme90.SHADE, 3.0, 1.0)
 
 	if state == "active":
-		var ab := Rect2(6, 12, 20, 20)
-		Theme90.draw_bevel(self, ab, true, 1.0, Theme90.WHITE)
-		Theme90.draw_arrow(self, ab, 1 if direction == "down" else 0,
-			Theme90.SUCCESS if direction == "down" else Theme90.NAVY)
-		Theme90.text(self, f, Vector2(32, 4), Theme90.fit(f, file_name, 12, 150), 12, Theme90.INK, 150)
-		var word := "ПРИЁМ " if direction == "down" else "ПЕРЕДАЧА "
-		Theme90.text(self, f, Vector2(32, 20), word, 10, Theme90.DARK)
+		var border := Theme90.ACCENT_LIGHT if hovered else Theme90.BORDER
+		draw_style_box(Theme90.box(Theme90.WHITE, border, 4, 1, Theme90.SHADOW), r)
+		var accent := Theme90.SUCCESS if direction == "down" else Theme90.ACCENT
+		draw_style_box(Theme90.box(Color(accent.r, accent.g, accent.b, 0.12),
+			Color(0, 0, 0, 0), 3, 0), Rect2(8, 11, 20, 20))
+		Theme90.draw_arrow(self, Rect2(8, 11, 20, 20), 1 if direction == "down" else 0,
+			accent)
+		Theme90.text(self, f, Vector2(34, 4), Theme90.fit(f, file_name, 12, 166), 12,
+			Theme90.INK, 166)
+		var word := "ПРИЁМ" if direction == "down" else "ПЕРЕДАЧА"
+		Theme90.text(self, f, Vector2(34, 20), word, 10, Theme90.SHADE)
 		var ww := f.get_string_size(word, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-		Theme90.num_line(self, Vector2(32 + ww, 20), str(int(progress * 100.0)), 8,
-			Theme90.DARK, "%", 8)
-		var bar := Rect2(32, 33, 150, 5)
-		draw_rect(bar, Theme90.FACE_LO)
-		draw_rect(Rect2(bar.position, Vector2(bar.size.x, 1)), Theme90.SHADE)
-		draw_rect(Rect2(bar.position.x, bar.position.y, floorf(bar.size.x * progress), bar.size.y),
-			Theme90.SUCCESS if direction == "down" else Theme90.ACCENT)
+		Theme90.text(self, f, Vector2(34 + ww + 6, 20), "%d%%" % int(roundf(progress * 100.0)),
+			10, accent)
+		Theme90.draw_meter(self, Rect2(34, 33, 160, 4), progress, accent)
 		return
 
 	if state == "locked":
-		Theme90.draw_lock_icon(self, Vector2(10, 15), Theme90.DARK)
-		Theme90.text(self, f, Vector2(30, 4), "СЛОТ %s" % slot_label, 12, Theme90.DARK, 90)
-		Theme90.text(self, f, Vector2(30, 20), sub_text if not sub_text.is_empty() else "КУПИТЬ В МАГАЗИНЕ", 10,
-			Theme90.SHADE, 180)
+		draw_style_box(Theme90.box(Theme90.PAPER, Theme90.BORDER_SOFT, 4, 1), r)
+		Theme90.draw_lock_icon(self, Vector2(11, 15), Theme90.SHADE)
+		Theme90.text(self, f, Vector2(28, 4), "СЛОТ %s" % slot_label, 11, Theme90.DARK, 120)
+		Theme90.text(self, f, Vector2(28, 20), sub_text if not sub_text.is_empty()
+			else "КУПИТЬ В МАГАЗИНЕ", 10, Theme90.SHADE, 198)
 		return
 
 	# пустой слот
-	Theme90.text(self, f, Vector2(30, 6), sub_text if not sub_text.is_empty() else "СВОБОДЕН", 12,
-		Theme90.DARK, 180)
-	Theme90.text(self, f, Vector2(30, 22), "ПЕРЕТАЩИТЕ ПАКЕТ СЮДА", 10,
-		Theme90.NAVY if drop_active else Theme90.SHADE, 190)
-	var plus := Rect2(10, 14, 16, 16)
-	draw_rect(plus, Theme90.FACE)
-	draw_rect(Rect2(plus.get_center().x, plus.position.y + 3, 1, 10), Theme90.SHADE)
-	draw_rect(Rect2(plus.position.x + 3, plus.get_center().y, 10, 1), Theme90.SHADE)
+	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 4, 1), r)
+	Theme90.draw_dashed_box(self, Rect2(3, 3, size.x - 6, size.y - 6),
+		Color(Theme90.SHADE.r, Theme90.SHADE.g, Theme90.SHADE.b, 0.45), 3.0, 1.0)
+	draw_style_box(Theme90.box(Color(1, 1, 1, 0.7), Theme90.BORDER_SOFT, 3, 1),
+		Rect2(10, 14, 16, 16))
+	draw_rect(Rect2(17.5, 18, 1.2, 8), Theme90.SHADE)
+	draw_rect(Rect2(14, 21.4, 8, 1.2), Theme90.SHADE)
+	Theme90.text(self, f, Vector2(32, 6), sub_text if not sub_text.is_empty()
+		else "СВОБОДЕН", 12, Theme90.DARK, 190)
+	Theme90.text(self, f, Vector2(32, 24), "перетащите пакет", 10,
+		Theme90.ACCENT if drop_active else Theme90.SHADE, 190)
 	if drop_active:
-		Theme90.draw_dashed_box(self, Rect2(3, 3, size.x - 6, size.y - 6), Theme90.NAVY, 3.0, 2.0)
+		Theme90.draw_dashed_box(self, Rect2(2, 2, size.x - 4, size.y - 4),
+			Theme90.ACCENT, 3.0, 1.4)
 
 
 func _gui_input(event: InputEvent) -> void:

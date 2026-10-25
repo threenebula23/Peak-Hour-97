@@ -1,9 +1,8 @@
 class_name RequestCard
 extends Control
-## Карточка запроса клиента 400×64 (compact — 56 при 5+ запросах).
-## Аватар 24×24, клиент, client_id, протокол, 1–3 слота 24×24 с именем файла,
-## «ожидается» с миганием, таймер, «Соединиться» и ×.
-## Принимает drag&drop {kind:"file"}.
+## Карточка запроса клиента 400×64. Светлая карточка, компактные кнопки,
+## три слота файлов. attached-файл помечается зелёной галочкой,
+## пустой слот — пунктиром и мигающим «ожидается».
 
 signal connect_pressed(id: String)
 signal reject_pressed(id: String)
@@ -11,9 +10,11 @@ signal file_dropped(request_id: String, slot_index: int, payload: Dictionary)
 signal detach_pressed(request_id: String, slot_index: int)
 
 const CARD := Vector2(400, 64)
-const SLOT_X := 33.0
-const SLOT_STEP := 82.0
-const SLOT_Y := 30.0
+const SLOT_X := 40.0
+const SLOT_STEP := 72.0
+const SLOT_Y := 36.0
+const SLOT_W := 68.0
+const SLOT_H := 20.0
 
 var id := ""
 var client_name := ""
@@ -57,15 +58,15 @@ func _ready() -> void:
 	_btn.name = "ConnectButton"
 	_btn.caption = "СОЕДИНИТЬСЯ"
 	_btn.caption_size = Theme90.FS_MICRO
-	_btn.position = Vector2(296, 3)
-	_btn.size = Vector2(76, 18)
+	_btn.position = Vector2(300, 36)
+	_btn.size = Vector2(84, 20)
 	add_child(_btn)
 	_btn.pressed.connect(func() -> void: connect_pressed.emit(id))
 
 	_reject = Button90.new()
 	_reject.name = "RejectButton"
 	_reject.icon = Button90.Icon.X
-	_reject.position = Vector2(378, 4)
+	_reject.position = Vector2(386, 38)
 	_reject.size = Vector2(14, 14)
 	_reject.tooltip_text = "Отклонить запрос"
 	add_child(_reject)
@@ -115,80 +116,85 @@ func _process(delta: float) -> void:
 
 
 func _slot_rect(i: int) -> Rect2:
-	return Rect2(SLOT_X + i * SLOT_STEP, SLOT_Y, 78, 24)
+	return Rect2(SLOT_X + i * SLOT_STEP, SLOT_Y, SLOT_W, SLOT_H)
 
 
 func _icon_rect(i: int) -> Rect2:
-	return Rect2(SLOT_X + i * SLOT_STEP, SLOT_Y, 24, 24)
+	return Rect2(SLOT_X + i * SLOT_STEP + 1, SLOT_Y + 1, 18, 18)
 
 
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
-	var face := Theme90.FACE_HI if hovered else Theme90.FACE
-	Theme90.draw_bevel(self, r, false, 2.0, face)
+	var bg := Theme90.WHITE if hovered else Theme90.PAPER_HI
+	var border := Theme90.ACCENT_LIGHT if hovered else Theme90.BORDER
+	draw_style_box(Theme90.box(bg, border, 4, 1,
+		Color(0, 0, 0, 0.11) if hovered else Theme90.SHADOW), r)
 
-	# аватар
-	_draw_avatar(Rect2(5, 4, 24, 24))
+	_draw_avatar(Rect2(8, 8, 24, 24))
 
-	# клиент
-	Theme90.text(self, f, Vector2(36, 2), Theme90.fit(f, client_name, 12, 146), 12, Theme90.INK, 146)
-	Theme90.text(self, f, Vector2(36, 16), client_id, 10,
-		Theme90.ACCENT if not avatar_muted else Theme90.SHADE, 120)
+	Theme90.text(self, f, Vector2(40, 4), Theme90.fit(f, client_name, 12, 146), 12,
+		Theme90.INK, 146)
+	Theme90.text(self, f, Vector2(40, 19), Theme90.fit(f, client_id, 10, 148), 10,
+		Theme90.SHADE, 148)
 
-	# бейдж протокола; у фишинга — «???»
-	var badge := Rect2(186, 5, 28, 13)
-	Theme90.draw_bevel(self, badge, true, 1.0, Theme90.WHITE)
+	# протокол — маленький цветной чип
+	var chip := Rect2(190, 7, 34, 13)
 	if is_attack and attack_kind == "phishing":
-		Theme90.text_vcenter(self, f, badge, "???", 10, Theme90.ERROR, -1, HORIZONTAL_ALIGNMENT_CENTER)
+		draw_style_box(Theme90.box(Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.12),
+			Color(0, 0, 0, 0), 3, 0), chip)
+		Theme90.text_vcenter(self, f, chip, "???", 10, Theme90.ERROR, -1,
+			HORIZONTAL_ALIGNMENT_CENTER)
 	else:
-		Theme90.text_vcenter(self, f, badge, protocol, 10,
-			Theme90.NAVY if protocol == "TCP" else Theme90.WARN, -1, HORIZONTAL_ALIGNMENT_CENTER)
+		var pcol := Theme90.NAVY if protocol == "TCP" else Theme90.WARN
+		draw_style_box(Theme90.box(Color(pcol.r, pcol.g, pcol.b, 0.12),
+			Color(0, 0, 0, 0), 3, 0), chip)
+		Theme90.text_vcenter(self, f, chip, protocol, 10, pcol, -1,
+			HORIZONTAL_ALIGNMENT_CENTER)
 
-	# слоты
 	for i in slot_count:
 		_draw_slot(i, f)
 
-	# таймер справа
-	var tb := Rect2(296, 26, 98, 6)
-	draw_rect(tb, Theme90.FACE_LO)
-	draw_rect(Rect2(tb.position, Vector2(tb.size.x, 1)), Theme90.SHADE)
-	draw_rect(Rect2(tb.position, Vector2(1, tb.size.y)), Theme90.SHADE)
-	var col := Theme90.SUCCESS
-	if ratio() < 0.2:
-		col = Theme90.ERROR
-	elif ratio() < 0.5:
-		col = Theme90.WARN
-	draw_rect(Rect2(tb.position.x + 1, tb.position.y + 1, floorf((tb.size.x - 2.0) * ratio()), tb.size.y - 2.0), col)
-	Theme90.text(self, f, Vector2(296, 34), "осталось", 10, Theme90.DARK)
-	var lw := f.get_string_size("осталось", HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	Theme90.num_line(self, Vector2(296 + lw + 3, 34), str(int(ceilf(time_left))), 8,
-		Theme90.DARK, " с", 10)
-	Theme90.num_right(self, 392, 34, str(int(progress * 100.0)), 8, Theme90.ACCENT, "%", 8)
-
-	var pr := Rect2(296, 47, 98, 4)
-	draw_rect(pr, Theme90.FACE_LO)
-	if progress > 0.0:
-		draw_rect(Rect2(pr.position.x, pr.position.y, floorf(pr.size.x * progress), pr.size.y), Theme90.ACCENT)
+	# таймер / прогресс отправки
+	var tr := Rect2(300, 4, 92, 12)
+	var label := "ОТПРАВКА" if progress > 0.0 else "ОСТАЛОСЬ"
+	var value := "%d%%" % int(roundf(progress * 100.0)) if progress > 0.0 \
+		else "%d с" % int(ceilf(time_left))
+	Theme90.text(self, f, Vector2(tr.position.x, tr.position.y), label, 10, Theme90.SHADE)
+	var vw := f.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	Theme90.text(self, f, Vector2(tr.end.x - vw, tr.position.y), value, 10,
+		_time_color())
+	var bar := Rect2(300, 20, 92, 4)
+	var fill := progress if progress > 0.0 else ratio()
+	var bcol := Theme90.ACCENT if progress > 0.0 else _time_color()
+	Theme90.draw_meter(self, bar, fill, bcol)
 
 	if hovered and _drop_slot < 0:
-		draw_rect(Rect2(2, 2, size.x - 4, size.y - 4), Theme90.ACCENT_LIGHT, false, 1.0)
+		draw_style_box(Theme90.box(Color(0, 0, 0, 0), Theme90.ACCENT_LIGHT, 4, 1),
+			r.grow(-1.0))
 	if _drop_slot >= 0:
-		Theme90.draw_dashed_box(self, Rect2(2, 2, size.x - 4, size.y - 4), Theme90.NAVY, 4.0, 2.0)
+		Theme90.draw_dashed_box(self, Rect2(2, 2, size.x - 4, size.y - 4),
+			Theme90.ACCENT, 4.0, 1.2)
+
+
+func _time_color() -> Color:
+	if ratio() < 0.2:
+		return Theme90.ERROR
+	if ratio() < 0.5:
+		return Theme90.WARN
+	return Theme90.SUCCESS
 
 
 func _draw_avatar(r: Rect2) -> void:
-	var bg := Theme90.FACE_LO if avatar_muted else Theme90.NAVY
-	draw_rect(r, bg)
-	draw_rect(Rect2(r.position.x, r.position.y, r.size.x, 1), bg.lightened(0.35))
-	draw_rect(r, Theme90.SHADE if avatar_muted else Theme90.NAVY_DEEP, false, 1.0)
+	var bg := Theme90.PAPER_LO if avatar_muted else Theme90.ACCENT
+	var fg := Theme90.SHADE if avatar_muted else Theme90.WHITE
+	draw_style_box(Theme90.box(bg, Color(0, 0, 0, 0), 5, 0), r)
 	var f := Theme90.ui()
-	Theme90.text(self, f, Vector2(r.position.x, r.position.y + 4), _monogram(), 16,
-		Theme90.FACE if avatar_muted else Theme90.WHITE, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
-	# индикатор «онлайн»
-	draw_rect(Rect2(r.position.x + 17, r.position.y + 17, 5, 5),
+	Theme90.text(self, f, Vector2(r.position.x, r.position.y + 5), _monogram(), 14, fg,
+		r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	draw_circle(Vector2(r.end.x - 4, r.end.y - 4), 3.0, Theme90.PAPER_HI)
+	draw_circle(Vector2(r.end.x - 4, r.end.y - 4), 2.0,
 		Theme90.SHADE if avatar_muted else Theme90.SUCCESS)
-	draw_rect(Rect2(r.position.x + 17, r.position.y + 17, 5, 1), Theme90.WHITE)
 
 
 func _monogram() -> String:
@@ -204,33 +210,41 @@ func _monogram() -> String:
 
 
 func _draw_slot(i: int, f: Font) -> void:
+	var cell := _slot_rect(i)
 	var ir := _icon_rect(i)
 	var data: Variant = slots[i] if i < slots.size() else null
 	var drop := _drop_slot == i
 	if data == null:
-		Theme90.draw_dashed_box(self, ir, Theme90.SHADE, 2.0, 1.0)
-		Theme90.text(self, f, Vector2(ir.position.x + 5, ir.position.y + 8), "+", 12, Theme90.SHADE)
+		Theme90.draw_dashed_box(self, cell, Color(Theme90.SHADE.r, Theme90.SHADE.g,
+			Theme90.SHADE.b, 0.55), 2.5, 1.0)
+		Theme90.text(self, f, Vector2(cell.position.x + 5, cell.position.y + 4), "+", 12,
+			Theme90.SHADE)
 		if _blink_on:
-			Theme90.text(self, f, Vector2(ir.position.x + 28, ir.position.y + 7), "ожидается", 10, Theme90.WARN)
+			Theme90.text(self, f, Vector2(cell.position.x + 15, cell.position.y + 5),
+				"ожидается", 10, Theme90.WARN)
 		if drop:
-			draw_rect(ir.grow(1), Theme90.NAVY, false, 1.0)
+			Theme90.draw_dashed_box(self, cell.grow(1), Theme90.ACCENT, 2.5, 1.4)
 		return
 	var d: Dictionary = data
 	var t := str(d.get("type", "text"))
 	var col := FileCard.type_color(t)
-	draw_rect(ir, Theme90.WHITE)
-	draw_rect(ir, col, false, 1.0)
+	draw_style_box(Theme90.box(Theme90.WHITE, Color(col.r, col.g, col.b, 0.5), 3, 1),
+		cell)
 	Theme90.draw_doc_icon(self, ir, t, col)
 	var nm := "%s.%s" % [str(d.get("name", "")), str(d.get("ext", ""))]
-	Theme90.text(self, f, Vector2(ir.position.x + 28, ir.position.y + 7), Theme90.fit(f, nm, 10, 52),
-		10, Theme90.INK, 52)
+	Theme90.text(self, f, Vector2(cell.position.x + 22, cell.position.y + 5),
+		Theme90.fit(f, nm, 10, SLOT_W - 24.0), 10, Theme90.INK, SLOT_W - 24.0)
+	if bool(d.get("attached", false)):
+		Theme90.draw_check_badge(self, Vector2(cell.position.x + 17, cell.position.y + 2),
+			4.5)
 	# подсказка «отсоединить» на наведении
 	if _hover_slot == i or drop:
-		var xr := Rect2(ir.position.x + 14, ir.position.y + 2, 10, 10)
-		draw_rect(xr, Theme90.ERROR)
+		var xr := Rect2(cell.end.x - 12, cell.position.y + 1, 11, 11)
+		draw_circle(xr.get_center(), 5.5, Color(Theme90.ERROR.r, Theme90.ERROR.g,
+			Theme90.ERROR.b, 0.92))
 		Theme90.draw_x(self, xr, Theme90.WHITE, 1.0)
 	if drop:
-		draw_rect(ir.grow(1), Theme90.NAVY, false, 1.0)
+		Theme90.draw_dashed_box(self, cell.grow(1), Theme90.ACCENT, 2.5, 1.4)
 
 
 func _gui_input(event: InputEvent) -> void:

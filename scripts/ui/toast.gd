@@ -1,6 +1,7 @@
 class_name ToastLayer
 extends Control
 ## Очередь сообщений внизу справа. Живут над статус-баром, не перекрывая его.
+## Светлые карточки с цветной точкой и мягкой тенью.
 
 const W := 400.0
 const H := 30.0
@@ -73,26 +74,15 @@ class ToastItem:
 			"error":
 				return Theme90.ERROR
 			_:
-				return Theme90.NAVY
+				return Theme90.ACCENT
 
 	func _draw() -> void:
 		var r := Rect2(Vector2.ZERO, size)
-		Theme90.draw_bevel(self, r, false, 2.0, Theme90.FACE)
 		var col := _kind_color()
-		draw_rect(Rect2(2, 2, 3, size.y - 4), col)
-		# иконка
-		var ic := Rect2(10, 9, 12, 12)
-		draw_rect(ic, col)
-		match kind:
-			"success":
-				draw_line(ic.position + Vector2(3, 6), ic.position + Vector2(5, 9), Theme90.WHITE, 1.0)
-				draw_line(ic.position + Vector2(5, 9), ic.position + Vector2(9, 3), Theme90.WHITE, 1.0)
-			"warn", "error":
-				draw_rect(Rect2(ic.get_center().x, ic.position.y + 2, 1, 5), Theme90.WHITE)
-				draw_rect(Rect2(ic.get_center().x, ic.position.y + 8, 1, 2), Theme90.WHITE)
-			_:
-				draw_rect(Rect2(ic.get_center().x, ic.position.y + 3, 1, 6), Theme90.WHITE)
-				draw_rect(Rect2(ic.get_center().x, ic.position.y + 10, 1, 1), Theme90.WHITE)
+		Theme90.draw_bevel(self, r, false, 1.0, Theme90.PAPER_HI)
+		# цветная точка-статус вместо тяжёлой иконки
+		draw_circle(Vector2(15, size.y * 0.5), 4.0, Color(col.r, col.g, col.b, 0.18))
+		draw_circle(Vector2(15, size.y * 0.5), 2.4, col)
 		var f := Theme90.ui()
-		Theme90.text_vcenter(self, f, Rect2(28, 0, size.x - 34, size.y),
-			Theme90.fit(f, txt, 12, size.x - 36), 12, Theme90.INK)
+		Theme90.text_vcenter(self, f, Rect2(28, 0, size.x - 38, size.y),
+			Theme90.fit(f, txt, 12, size.x - 44), 12, Theme90.INK)

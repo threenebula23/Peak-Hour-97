@@ -1,8 +1,8 @@
 class_name FolderRow
 extends Control
-## Строка дерева 24 px: квадрат +/−, папка, имя, счётчик «3/16».
-## Секции C:/D:/E: — отдельный вид (sunken-полоса с гравировкой).
-## Принимает drag&drop {kind:"file"} и {kind:"packet"}.
+## Строка дерева 24 px: мягкий шеврон, папка, имя, счётчик «3/16».
+## Выделение — светлая teal-подложка с тонкой полоской слева, без инверсии.
+## Секции C:/D:/E: — спокойная строка с волосяной линией снизу.
 
 signal folder_selected(folder_id: String)
 signal expansion_toggled(folder_id: String)
@@ -70,67 +70,63 @@ func _draw() -> void:
 		return
 
 	if selected:
-		draw_rect(r, Theme90.NAVY)
+		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Color(0, 0, 0, 0), 3, 0),
+			Rect2(2, 1, size.x - 4, size.y - 2))
+		draw_rect(Rect2(2, 5, 2, size.y - 10), Theme90.ACCENT)
 	elif drop_active:
-		draw_rect(r, Theme90.ACCENT_PALE)
+		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT, 3, 1),
+			Rect2(2, 1, size.x - 4, size.y - 2))
 	elif hovered:
-		draw_rect(r, Color(0.941176, 0.956863, 1.0))
+		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2), Color(1, 1, 1, 0.45))
 
-	var fg := Theme90.WHITE if selected else Theme90.INK
-	var sub := Theme90.ACCENT_LIGHT if selected else Theme90.SHADE
+	var fg := Theme90.NAVY if selected else Theme90.INK
+	var sub := Theme90.ACCENT if selected else Theme90.SHADE
 	var sx := 5.0 + depth * 12.0
 
-	# квадрат +/−
+	# тонкий шеврон вместо объёмного квадрата
 	if expandable:
-		var sq := Rect2(sx, 5, 12, 12)
-		Theme90.draw_bevel(self, sq, false, 1.0, Theme90.FACE)
-		var gc := Theme90.INK if not selected else Theme90.INK
-		draw_rect(Rect2(sq.position.x + 3, sq.position.y + 5, 6, 1), gc)
-		if not expanded:
-			draw_rect(Rect2(sq.position.x + 5, sq.position.y + 3, 1, 6), gc)
+		Theme90.draw_chevron(self, Vector2(sx + 6, size.y * 0.5), 1 if expanded else 2,
+			sub, 3.0, 1.3)
 	else:
-		draw_rect(Rect2(sx + 3, 11, 6, 1), sub)
+		draw_circle(Vector2(sx + 6, size.y * 0.5), 1.2, sub)
 
 	# иконка папки
-	var icon_x := sx + 16.0
-	Theme90.draw_folder_icon(self, Vector2(icon_x, 6), Theme90.WARN if not locked else Theme90.SHADE,
-		expanded and not is_section)
+	var icon_x := sx + 15.0
+	Theme90.draw_folder_icon(self, Vector2(icon_x, 7),
+		Theme90.ACCENT if not locked else Theme90.SHADE, expanded and not is_section)
 
 	# имя
 	var tx := icon_x + 17.0
-	var name_w := size.x - tx - 50.0
+	var name_w := maxf(20.0, size.x - tx - 56.0)
 	var label := Theme90.fit(f, folder_name, 12, name_w)
 	Theme90.text_vcenter(self, f, Rect2(tx, 0, name_w, size.y), label, 12, fg)
 
-	# счётчик
+	# счётчик — спокойные цифры без «логотипного» шрифта
 	if capacity > 0:
 		var cnt := "%d/%d" % [count, capacity]
-		Theme90.num_right(self, size.x - 6.0, 5.0, cnt, 8, sub)
+		var cw := f.get_string_size(cnt, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+		Theme90.text_vcenter(self, f, Rect2(size.x - cw - 8.0, 0, cw + 2, size.y),
+			cnt, 10, sub)
 
 	if locked:
-		Theme90.draw_lock_icon(self, Vector2(size.x - 62, 7), Theme90.SHADE)
-
-	# подсветка drop
-	if drop_active:
-		draw_rect(Rect2(1, 1, size.x - 2, size.y - 2), Theme90.NAVY, false, 1.0)
-		draw_rect(Rect2(2, 2, size.x - 4, size.y - 4), Theme90.ACCENT_PALE, false, 1.0)
+		Theme90.draw_lock_icon(self, Vector2(size.x - 58, 8), Theme90.SHADE)
 
 
 func _draw_section(r: Rect2, f: Font) -> void:
-	Theme90.draw_bevel(self, r, false, 1.0, Theme90.FACE)
-	draw_rect(Rect2(1, 1, size.x - 2, 1), Theme90.FACE_HI)
+	if hovered:
+		draw_rect(r, Color(1, 1, 1, 0.35))
+	draw_rect(Rect2(2, size.y - 1, maxf(0.0, size.x - 4), 1), Theme90.HAIRLINE)
 	var sx := 4.0
 	if expandable:
-		var sq := Rect2(sx, 5, 12, 12)
-		Theme90.draw_bevel(self, sq, false, 1.0, Theme90.FACE)
-		draw_rect(Rect2(sq.position.x + 3, sq.position.y + 5, 6, 1), Theme90.INK)
-		if not expanded:
-			draw_rect(Rect2(sq.position.x + 5, sq.position.y + 3, 1, 6), Theme90.INK)
+		Theme90.draw_chevron(self, Vector2(sx + 6, size.y * 0.5), 1 if expanded else 2,
+			Theme90.NAVY, 3.0, 1.3)
 	Theme90.draw_drive_icon(self, Vector2(sx + 16, 6), Theme90.NAVY)
-	Theme90.text_engraved(self, f, Vector2(sx + 32, 4), folder_name, 10)
+	var fg := Theme90.NAVY if selected else Theme90.INK
+	Theme90.text_vcenter(self, f, Rect2(sx + 32, 0, size.x - 80, size.y),
+		Theme90.fit(f, folder_name, 11, size.x - 110), 11, fg)
 	if not free_text.is_empty():
-		var w := f.get_string_size(free_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-		Theme90.text_engraved(self, f, Vector2(size.x - w - 6, 4), free_text, 10)
+		var tw := f.get_string_size(free_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+		Theme90.text(self, f, Vector2(size.x - tw - 8, 6), free_text, 10, Theme90.SHADE)
 
 
 func _gui_input(event: InputEvent) -> void:

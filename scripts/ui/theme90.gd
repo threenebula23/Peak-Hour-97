@@ -1,27 +1,41 @@
 class_name Theme90
 extends RefCounted
-## Палитра, шрифты и примитивы отрисовки в стиле shareware-программ 90-х.
+## Палитра, шрифты и примитивы отрисовки UI. Версия 2 — «тёплая бумага»:
+## тонкие 1 px контуры вместо 2 px фасок, мягкие тени, скругления 3–4 px.
 ##
-## Никаких внешних текстур: всё рисуется кодом (фаски 2 px, гравировка,
-## пиксельные иконки). Единый источник цветов/кеглей для всех UI-компонентов.
+## Никаких внешних текстур: всё рисуется кодом. Единый источник цветов,
+## кеглей и StyleBox для всех UI-компонентов.
 
 # --- Палитра ---------------------------------------------------------------
-const FACE := Color(0.752941, 0.752941, 0.752941)        # #C0C0C0
-const FACE_HI := Color(0.874510, 0.874510, 0.874510)     # #DFDFDF
-const FACE_LO := Color(0.627451, 0.627451, 0.627451)     # #A0A0A0
+const PAPER := Color(0.913725, 0.901961, 0.866667)       # #E9E6DD
+const PAPER_HI := Color(0.968627, 0.960784, 0.933333)    # #F7F5EE
+const PAPER_LO := Color(0.847059, 0.827451, 0.788235)    # #D8D3C9
 const LIGHT := Color(1.0, 1.0, 1.0)                      # #FFFFFF
-const SHADE := Color(0.501961, 0.501961, 0.501961)       # #808080
-const DARK := Color(0.250980, 0.250980, 0.250980)        # #404040
-const INK := Color(0.0, 0.0, 0.0)                        # #000000
-const NAVY := Color(0.0, 0.0, 0.501961)                  # #000080
-const NAVY_DEEP := Color(0.0, 0.0, 0.313726)             # #000050
 const WHITE := Color(1.0, 1.0, 1.0)
-const ERROR := Color(0.752941, 0.0, 0.0)                 # #C00000
-const SUCCESS := Color(0.0, 0.439216, 0.0)               # #007000
-const WARN := Color(0.752941, 0.501961, 0.0)             # #C08000
-const ACCENT := Color(0.117647, 0.309804, 1.0)           # #1E4FFF
-const ACCENT_LIGHT := Color(0.498039, 0.698039, 1.0)     # #7FB2FF
-const ACCENT_PALE := Color(0.949020, 0.968627, 1.0)      # #F2F7FF
+const SHADE := Color(0.603922, 0.584314, 0.541176)       # #9A958A
+const DARK := Color(0.172549, 0.164706, 0.149020)        # #2C2A26
+const INK := Color(0.121569, 0.117647, 0.105882)         # #1F1E1B
+
+const NAVY := Color(0.172549, 0.360784, 0.407843)        # #2C5C68 — «navy»-бирюза
+const NAVY_DEEP := Color(0.121569, 0.274510, 0.313726)   # #1F4650
+const ACCENT := Color(0.184314, 0.498039, 0.560784)      # #2F7F8F
+const ACCENT_LIGHT := Color(0.513726, 0.780392, 0.831373) # #83C7D4
+const ACCENT_PALE := Color(0.901961, 0.960784, 0.968627) # #E6F5F7
+
+const ERROR := Color(0.760784, 0.356863, 0.290196)       # #C25B4A
+const SUCCESS := Color(0.247059, 0.560784, 0.368627)     # #3F8F5E
+const WARN := Color(0.772549, 0.541176, 0.180392)        # #C58A2E
+const SHADOW := Color(0.0, 0.0, 0.0, 0.094)              # #00000018
+
+# Совместимость со старыми именами: поверхности теперь бумажные.
+const FACE := PAPER
+const FACE_HI := PAPER_HI
+const FACE_LO := PAPER_LO
+
+# Линии: тонкие, тёплые, с прозрачностью — не «фаски».
+const BORDER := Color(0.254902, 0.239216, 0.203922, 0.22)
+const BORDER_SOFT := Color(0.254902, 0.239216, 0.203922, 0.12)
+const HAIRLINE := Color(0.254902, 0.239216, 0.203922, 0.10)
 
 # --- Кегли ----------------------------------------------------------------
 const FS_MICRO := 10
@@ -34,10 +48,12 @@ const FONT_LOGO := "res://art/fonts/PressStart2P-Regular.ttf"
 
 const H := 24.0            # высота строки дерева / кнопки
 const SCROLLBAR := 14.0    # ширина скроллбара
-const BEVEL := 2.0         # толщина фаски
+const BEVEL := 1.0         # оставлено для совместимости: толщина линии
+const RADIUS := 3          # базовое скругление карточек и кнопок
 
 static var _fonts: Dictionary = {}
 static var _dither: ImageTexture = null
+static var _boxes: Dictionary = {}
 
 
 # --- Шрифты ---------------------------------------------------------------
@@ -92,10 +108,9 @@ static func text_vcenter(ci: CanvasItem, f: Font, rect: Rect2, s: String, size: 
 	text(ci, f, Vector2(x, y), s, size, color, width, align)
 
 
-## Гравировка: светлая тень на +1/+1 под тёмными буквами.
+## Совместимость: раньше «гравировка» с белой тенью. Теперь — спокойный текст.
 static func text_engraved(ci: CanvasItem, f: Font, top_left: Vector2, s: String, size: int,
 		color: Color = SHADE) -> void:
-	text(ci, f, top_left + Vector2(1, 1), s, size, LIGHT)
 	text(ci, f, top_left, s, size, color)
 
 
@@ -149,38 +164,107 @@ static func wrap(f: Font, s: String, size: int, width: float, max_lines: int) ->
 	return out
 
 
-# --- Фаски ----------------------------------------------------------------
+# --- StyleBox -------------------------------------------------------------
 
-## Фаска: светлая сверху-слева, тёмная снизу-справа. pressed — наоборот.
+## Кэшированный StyleBoxFlat: бумажная поверхность, 1 px контур, мягкая тень.
+static func box(bg: Color, border: Color = BORDER, radius: int = RADIUS, border_w: int = 1,
+		shadow: Color = Color(0, 0, 0, 0)) -> StyleBoxFlat:
+	var key := "%s|%s|%d|%d|%s" % [bg.to_html(), border.to_html(), radius, border_w, shadow.to_html()]
+	if _boxes.has(key):
+		return _boxes[key]
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.border_color = border
+	sb.set_border_width_all(border_w)
+	sb.corner_radius_top_left = radius
+	sb.corner_radius_top_right = radius
+	sb.corner_radius_bottom_left = radius
+	sb.corner_radius_bottom_right = radius
+	sb.corner_detail = 4
+	sb.anti_aliasing = true
+	if shadow.a > 0.0:
+		sb.shadow_color = shadow
+		sb.shadow_size = 3
+		sb.shadow_offset = Vector2(0.0, 2.0)
+	_boxes[key] = sb
+	return sb
+
+
+## Спокойная заливка без контура (фоны полос, подложки).
+static func fill_box(bg: Color, radius: int = 0) -> StyleBoxFlat:
+	return box(bg, Color(0, 0, 0, 0), radius, 0)
+
+
+## Мягкая «карточка»: панель, окно, карточка файла.
+static func card_box(bg: Color = PAPER_HI) -> StyleBoxFlat:
+	return box(bg, BORDER, 4, 1, SHADOW)
+
+
+## Верхняя полоса с скруглёнными верхними углами (титлбар окна).
+static func top_box(bg: Color = WHITE, radius: int = 4) -> StyleBoxFlat:
+	var key := "top|%s|%d" % [bg.to_html(), radius]
+	if _boxes.has(key):
+		return _boxes[key]
+	var sb := StyleBoxFlat.new()
+	sb.bg_color = bg
+	sb.corner_radius_top_left = radius
+	sb.corner_radius_top_right = radius
+	sb.corner_detail = 4
+	sb.anti_aliasing = true
+	_boxes[key] = sb
+	return sb
+
+
+## Утопленная поверхность (поля ввода, дорожки, пустые слоты).
+static func well_box(bg: Color = PAPER_HI) -> StyleBoxFlat:
+	return box(bg, BORDER_SOFT, 3, 1)
+
+
+static func accent_line_color() -> Color:
+	return ACCENT
+
+
+# --- Контуры и панели -----------------------------------------------------
+
+## Карточка/кнопка: заливка + 1 px контур + 1 px блик + мягкая тень.
+## pressed — на 1 px темнее и с тонкой внутренней линией сверху.
 static func draw_bevel(ci: CanvasItem, rect: Rect2, pressed: bool = false, thick: float = BEVEL,
 		face: Color = FACE, light: Color = LIGHT, shade: Color = SHADE) -> void:
 	var r := Rect2(rect.position.round(), rect.size.round())
-	ci.draw_rect(r, face)
-	var tl := shade if pressed else light
-	var br := light if pressed else shade
-	ci.draw_rect(Rect2(r.position, Vector2(r.size.x, thick)), tl)
-	ci.draw_rect(Rect2(r.position, Vector2(thick, r.size.y)), tl)
-	ci.draw_rect(Rect2(r.position + Vector2(0, r.size.y - thick), Vector2(r.size.x, thick)), br)
-	ci.draw_rect(Rect2(r.position + Vector2(r.size.x - thick, 0), Vector2(thick, r.size.y)), br)
-
-
-## Дополнительная 1 px внутренняя подсветка — «двойная» фаска больших панелей.
-static func draw_bevel_double(ci: CanvasItem, rect: Rect2, pressed: bool = false) -> void:
-	draw_bevel(ci, rect, pressed)
+	if r.size.x < 2.0 or r.size.y < 2.0:
+		ci.draw_rect(r, face)
+		return
+	var dark_surface := face.get_luminance() < 0.55
+	var border := Color(0, 0, 0, 0.16) if dark_surface else BORDER
 	if pressed:
-		ci.draw_rect(Rect2(rect.position + Vector2(BEVEL, BEVEL), Vector2(rect.size.x - BEVEL * 2.0, 1)), DARK)
-		ci.draw_rect(Rect2(rect.position + Vector2(BEVEL, BEVEL), Vector2(1, rect.size.y - BEVEL * 2.0)), DARK)
-	else:
-		var inner := rect.grow(-BEVEL)
-		ci.draw_rect(Rect2(inner.position, Vector2(inner.size.x, 1)), FACE_HI)
-		ci.draw_rect(Rect2(inner.position, Vector2(1, inner.size.y)), FACE_HI)
+		var sunk := face.darkened(0.045) if not dark_surface else face.darkened(0.10)
+		ci.draw_style_box(box(sunk, border, RADIUS, 1), r)
+		if r.size.y >= 10.0:
+			ci.draw_line(Vector2(r.position.x + 3, r.position.y + 1),
+				Vector2(r.end.x - 3, r.position.y + 1), Color(0, 0, 0, 0.10), 1.0)
+		return
+	ci.draw_style_box(box(face, border, RADIUS, 1, SHADOW), r)
+	if r.size.y >= 16.0 and thick > 0.0:
+		var hi := Color(1, 1, 1, 0.42) if not dark_surface else Color(1, 1, 1, 0.12)
+		ci.draw_line(Vector2(r.position.x + 3, r.position.y + 1),
+			Vector2(r.end.x - 3, r.position.y + 1), hi, 1.0)
 
 
+## Совместимость: двойная фаска больше не нужна — оставляем один контур.
+static func draw_bevel_double(ci: CanvasItem, rect: Rect2, pressed: bool = false) -> void:
+	draw_bevel(ci, rect, pressed, BEVEL, FACE)
+
+
+## Утопленное поле: светлая поверхность, тонкий контур, без объёма.
 static func draw_sunken(ci: CanvasItem, rect: Rect2, thick: float = BEVEL) -> void:
-	draw_bevel(ci, rect, true, thick)
+	var r := Rect2(rect.position.round(), rect.size.round())
+	ci.draw_style_box(well_box(FACE_HI), r)
+	if r.size.y > 8.0:
+		ci.draw_line(Vector2(r.position.x + 3, r.position.y + 1),
+			Vector2(r.end.x - 3, r.position.y + 1), Color(0, 0, 0, 0.055), 1.0)
 
 
-## Вертикальный градиент (для титлбаров и «стеклянных» акцентов).
+## Вертикальный градиент (мягкие акценты, без «стекла 90-х»).
 static func draw_vgrad(ci: CanvasItem, rect: Rect2, top: Color, bottom: Color) -> void:
 	var x0 := rect.position.x
 	var y0 := rect.position.y
@@ -201,7 +285,7 @@ static func draw_dashed_box(ci: CanvasItem, rect: Rect2, color: Color = SHADE, d
 	ci.draw_dashed_line(Vector2(r.position.x, r.end.y - 1), r.position, color, thick, dash)
 
 
-## Классическая «сетка» выделения/дизейбла поверх области.
+## Очень мягкая «сетка» для заблокированных областей.
 static func draw_hatch(ci: CanvasItem, rect: Rect2, color: Color, step: float = 4.0) -> void:
 	var r := Rect2(rect.position.round(), rect.size.round())
 	var x := r.position.x - r.size.y
@@ -213,86 +297,101 @@ static func draw_hatch(ci: CanvasItem, rect: Rect2, color: Color, step: float = 
 		x += step
 
 
+## Тонкий индикатор/шкала: дорожка + заливка, скруглённые.
+static func draw_meter(ci: CanvasItem, rect: Rect2, ratio: float, color: Color,
+		track: Color = PAPER_LO) -> void:
+	var r := Rect2(rect.position.round(), rect.size.round())
+	var rad := int(maxf(1.0, floorf(r.size.y * 0.5)))
+	ci.draw_style_box(fill_box(track, rad), r)
+	var w := floorf(r.size.x * clampf(ratio, 0.0, 1.0))
+	if w >= 2.0:
+		ci.draw_style_box(fill_box(color, rad), Rect2(r.position, Vector2(w, r.size.y)))
+
+
 # --- Пиксельные иконки ----------------------------------------------------
 
-## Страница документа с глифом типа: text / sound / photo / video.
+## Документ с цветным глифом типа: text / sound / photo / video.
 static func draw_doc_icon(ci: CanvasItem, rect: Rect2, kind: String, color: Color) -> void:
-	var w := 14.0
-	var h := 18.0
-	var x := roundf(rect.position.x + (rect.size.x - w) * 0.5)
-	var y := roundf(rect.position.y + (rect.size.y - h) * 0.5)
-	ci.draw_rect(Rect2(x, y, w, h), WHITE)
-	ci.draw_rect(Rect2(x, y, w, h), color, false, 1.0)
+	var s := minf(rect.size.x, rect.size.y)
+	var tile := Rect2(rect.position.round() + Vector2(roundf((rect.size.x - s) * 0.5),
+		roundf((rect.size.y - s) * 0.5)), Vector2(s, s))
+	var rad := int(clampf(s * 0.24, 4.0, 7.0))
+	ci.draw_style_box(fill_box(Color(color.r, color.g, color.b, 0.13), rad), tile)
+	var w := clampf(roundf(s * 0.44), 9.0, 15.0)
+	var h := clampf(roundf(s * 0.60), 12.0, 20.0)
+	var x := roundf(tile.get_center().x - w * 0.5)
+	var y := roundf(tile.get_center().y - h * 0.5)
+	var page := Rect2(x, y, w, h)
+	ci.draw_style_box(box(WHITE, Color(color.r, color.g, color.b, 0.45), 1, 1), page)
 	# загнутый уголок
-	ci.draw_rect(Rect2(x + w - 4, y + 1, 3, 3), FACE)
-	ci.draw_line(Vector2(x + w - 4, y + 3), Vector2(x + w - 2, y + 1), color, 1.0)
-	ci.draw_rect(Rect2(x + w - 4, y + 1, 1, 1), FACE)
-	var gx := x + 3
-	var gy := y + 7
+	ci.draw_colored_polygon(PackedVector2Array([
+		Vector2(x + w - 4, y + 1), Vector2(x + w - 1, y + 4), Vector2(x + w - 4, y + 4)]),
+		Color(color.r, color.g, color.b, 0.22))
+	var gx := x + 3.0
+	var gy := y + h * 0.42
 	match kind:
 		"text":
 			for i in 3:
-				ci.draw_rect(Rect2(gx, gy + i * 3, 8 - i, 1), color)
+				var lw := (w - 6.0) - (i if i == 2 else 0)
+				ci.draw_rect(Rect2(gx, gy + i * 2.6, lw, 1.0), color)
 		"sound":
-			ci.draw_rect(Rect2(gx + 1, gy + 6, 3, 3), color)
-			ci.draw_rect(Rect2(gx + 4, gy, 1, 8), color)
-			ci.draw_rect(Rect2(gx + 5, gy, 2, 1), color)
-			ci.draw_rect(Rect2(gx + 6, gy + 1, 1, 2), color)
+			ci.draw_rect(Rect2(gx, gy + 2.0, 2.4, 2.4), color)
+			ci.draw_rect(Rect2(gx + 2.0, gy - 1.0, 1.0, 5.4), color)
+			ci.draw_rect(Rect2(gx + 3.0, gy - 1.0, 2.0, 1.0), color)
 		"photo":
-			ci.draw_rect(Rect2(gx, gy + 1, 9, 7), color, false, 1.0)
+			ci.draw_rect(Rect2(gx - 1.0, gy - 1.0, w - 4.0, 4.6), color, false, 1.0)
 			ci.draw_colored_polygon(PackedVector2Array([
-				Vector2(gx + 1, gy + 7), Vector2(gx + 4, gy + 3), Vector2(gx + 7, gy + 7)]), color)
-			ci.draw_rect(Rect2(gx + 6, gy + 2, 2, 2), color)
+				Vector2(gx - 0.5, gy + 3.2), Vector2(gx + 2.0, gy + 0.6),
+				Vector2(gx + 4.5, gy + 3.2)]), color)
+			ci.draw_circle(Vector2(gx + w - 4.5, gy - 0.2), 0.9, color)
 		"video":
 			ci.draw_colored_polygon(PackedVector2Array([
-				Vector2(gx + 1, gy + 1), Vector2(gx + 9, gy + 5), Vector2(gx + 1, gy + 9)]), color)
+				Vector2(gx - 0.5, gy - 1.5), Vector2(gx + 4.5, gy + 1.0),
+				Vector2(gx - 0.5, gy + 3.5)]), color)
 		_:
 			for i in 3:
-				ci.draw_rect(Rect2(gx, gy + i * 3, 8, 1), color)
+				ci.draw_rect(Rect2(gx, gy + i * 2.6, w - 6.0, 1.0), color)
 
 
-## Папка 14×11.
+## Папка 14×11: мягкая цветная форма, без «дырки» и фаски.
 static func draw_folder_icon(ci: CanvasItem, pos: Vector2, color: Color = WARN, open: bool = false) -> void:
 	var x := roundf(pos.x)
 	var y := roundf(pos.y)
-	ci.draw_rect(Rect2(x, y, 6, 2), color)
-	ci.draw_rect(Rect2(x, y + 2, 13, 8), color)
-	ci.draw_rect(Rect2(x + 1, y + 3, 11, 6), WHITE)
+	ci.draw_style_box(fill_box(color, 2), Rect2(x + 1, y + 2, 12, 8))
+	ci.draw_style_box(fill_box(color.lightened(0.18), 1), Rect2(x, y, 6, 4))
 	if open:
-		ci.draw_rect(Rect2(x + 1, y + 7, 11, 2), color)
+		ci.draw_rect(Rect2(x + 2, y + 5, 10, 2), Color(1, 1, 1, 0.34))
 	else:
-		ci.draw_rect(Rect2(x + 1, y + 5, 11, 1), FACE_HI)
+		ci.draw_line(Vector2(x + 3, y + 6), Vector2(x + 11, y + 6), Color(1, 1, 1, 0.45), 1.0)
 
 
 ## Диск/секция: 12×9.
 static func draw_drive_icon(ci: CanvasItem, pos: Vector2, color: Color = NAVY) -> void:
 	var x := roundf(pos.x)
 	var y := roundf(pos.y)
-	ci.draw_rect(Rect2(x, y, 12, 9), color)
-	ci.draw_rect(Rect2(x + 1, y + 1, 10, 4), WHITE)
-	ci.draw_rect(Rect2(x + 2, y + 6, 3, 1), WHITE)
-	ci.draw_rect(Rect2(x + 7, y + 6, 3, 1), WHITE)
+	ci.draw_style_box(fill_box(color, 2), Rect2(x, y, 12, 9))
+	ci.draw_rect(Rect2(x + 1, y + 1, 10, 2), Color(1, 1, 1, 0.28))
+	ci.draw_circle(Vector2(x + 3, y + 7), 1.0, Color(1, 1, 1, 0.75))
+	ci.draw_circle(Vector2(x + 6, y + 7), 1.0, Color(1, 1, 1, 0.45))
 
 
-## Замок 9×10.
+## Замок 9×10: тонкая дужка + мягкий корпус.
 static func draw_lock_icon(ci: CanvasItem, pos: Vector2, color: Color = DARK) -> void:
 	var x := roundf(pos.x)
 	var y := roundf(pos.y)
-	ci.draw_rect(Rect2(x + 2, y, 5, 1), color)
-	ci.draw_rect(Rect2(x + 1, y + 1, 1, 3), color)
-	ci.draw_rect(Rect2(x + 7, y + 1, 1, 3), color)
-	ci.draw_rect(Rect2(x, y + 4, 9, 6), color)
-	ci.draw_rect(Rect2(x + 4, y + 6, 1, 2), FACE)
+	ci.draw_arc(Vector2(x + 4.5, y + 3.5), 2.6, PI, TAU, 10, color, 1.2)
+	ci.draw_style_box(fill_box(color, 2), Rect2(x, y + 4, 9, 6))
+	ci.draw_circle(Vector2(x + 4.5, y + 7), 1.0, Color(1, 1, 1, 0.65))
 
 
 ## Конверт/пакет 14×10.
-static func draw_packet_icon(ci: CanvasItem, pos: Vector2, color: Color = NAVY) -> void:
+static func draw_packet_icon(ci: CanvasItem, pos: Vector2, color: Color = ACCENT) -> void:
 	var x := roundf(pos.x)
 	var y := roundf(pos.y)
-	ci.draw_rect(Rect2(x, y, 14, 10), WHITE)
-	ci.draw_rect(Rect2(x, y, 14, 10), color, false, 1.0)
-	ci.draw_line(Vector2(x + 1, y + 1), Vector2(x + 6, y + 5), color, 1.0)
-	ci.draw_line(Vector2(x + 12, y + 1), Vector2(x + 7, y + 5), color, 1.0)
+	ci.draw_style_box(box(WHITE, Color(color.r, color.g, color.b, 0.55), 2, 1),
+		Rect2(x, y, 14, 10))
+	ci.draw_line(Vector2(x + 2, y + 2), Vector2(x + 7, y + 5.6), color, 1.0)
+	ci.draw_line(Vector2(x + 12, y + 2), Vector2(x + 7, y + 5.6), color, 1.0)
 
 
 ## Стрелка в квадрате: dir 0 вверх, 1 вниз, 2 вправо, 3 влево.
@@ -312,11 +411,39 @@ static func draw_arrow(ci: CanvasItem, rect: Rect2, dir: int, color: Color) -> v
 	ci.draw_colored_polygon(pts, color)
 
 
+## Тонкий шеврон — для скроллбара и строк дерева.
+static func draw_chevron(ci: CanvasItem, center: Vector2, dir: int, color: Color,
+		size: float = 3.5, thick: float = 1.4) -> void:
+	var c := center.round()
+	match dir:
+		0:
+			ci.draw_line(c + Vector2(-size, size * 0.5), c + Vector2(0, -size * 0.5), color, thick)
+			ci.draw_line(c + Vector2(0, -size * 0.5), c + Vector2(size, size * 0.5), color, thick)
+		1:
+			ci.draw_line(c + Vector2(-size, -size * 0.5), c + Vector2(0, size * 0.5), color, thick)
+			ci.draw_line(c + Vector2(0, size * 0.5), c + Vector2(size, -size * 0.5), color, thick)
+		2:
+			ci.draw_line(c + Vector2(-size * 0.5, -size), c + Vector2(size * 0.5, 0), color, thick)
+			ci.draw_line(c + Vector2(size * 0.5, 0), c + Vector2(-size * 0.5, size), color, thick)
+		_:
+			ci.draw_line(c + Vector2(size * 0.5, -size), c + Vector2(-size * 0.5, 0), color, thick)
+			ci.draw_line(c + Vector2(-size * 0.5, 0), c + Vector2(size * 0.5, size), color, thick)
+
+
 ## Крестик.
-static func draw_x(ci: CanvasItem, rect: Rect2, color: Color, thick: float = 1.0) -> void:
+static func draw_x(ci: CanvasItem, rect: Rect2, color: Color, thick: float = 1.2) -> void:
 	var r := rect.grow(-3.0)
 	ci.draw_line(Vector2(r.position.x, r.position.y), Vector2(r.end.x - 1, r.end.y - 1), color, thick)
 	ci.draw_line(Vector2(r.end.x - 1, r.position.y), Vector2(r.position.x, r.end.y - 1), color, thick)
+
+
+## Галочка в круге (attached-бейджи).
+static func draw_check_badge(ci: CanvasItem, center: Vector2, radius: float = 6.5,
+		color: Color = SUCCESS, mark: Color = WHITE) -> void:
+	ci.draw_circle(center, radius, color)
+	var k := radius / 6.5
+	ci.draw_line(center + Vector2(-3.0, 0.2) * k, center + Vector2(-0.8, 2.4) * k, mark, 1.6 * k)
+	ci.draw_line(center + Vector2(-0.8, 2.4) * k, center + Vector2(3.2, -2.2) * k, mark, 1.6 * k)
 
 
 ## Засечки-«решётка» для заблокированных превью.
@@ -330,28 +457,39 @@ static func draw_scanlines(ci: CanvasItem, rect: Rect2, color: Color, step: floa
 
 # --- Текстура фона --------------------------------------------------------
 
-## Слабый «дизеринг» 4×4 для рабочего стола (эпоха 8-битных обоев).
+## Тёплая бумага: бесшовный тайл с очень слабыми пастельными пятнами и зерном.
 static func dither_texture() -> ImageTexture:
 	if _dither != null:
 		return _dither
-	var img := Image.create(4, 4, false, Image.FORMAT_RGB8)
-	var a := Color(0.729412, 0.729412, 0.729412)
-	var b := Color(0.752941, 0.752941, 0.752941)
-	for yy in 4:
-		for xx in 4:
-			img.set_pixel(xx, yy, a if ((xx + yy) % 4 == 0) else b)
+	const S := 48
+	var img := Image.create(S, S, false, Image.FORMAT_RGB8)
+	var teal := Color(0.835, 0.925, 0.925)
+	var peach := Color(0.980, 0.925, 0.895)
+	var base := PAPER
+	for yy in S:
+		for xx in S:
+			var u := TAU * float(xx) / float(S)
+			var v := TAU * float(yy) / float(S)
+			var a := 0.5 + 0.5 * sin(u * 2.0 + 0.4) * cos(v)
+			var b := 0.5 + 0.5 * sin(v * 2.0 + 1.1) * cos(u * 3.0)
+			var c := base
+			c = c.lerp(teal, 0.055 * a)
+			c = c.lerp(peach, 0.045 * b)
+			var grain := float((xx * 73 + yy * 151 + 17) % 13) / 13.0 - 0.5
+			c = c.lerp(Color(0.42, 0.40, 0.34), 0.012 * absf(grain))
+			img.set_pixel(xx, yy, c)
 	_dither = ImageTexture.create_from_image(img)
 	return _dither
 
 
-# --- Фаска для произвольного Control --------------------------------------
+# --- Слой для произвольного Control --------------------------------------
 
-## Слой-фаска, который живёт поверх Control и рисует только рамку.
+## Слой, который рисует только мягкий контур поверх Control.
 class BevelLayer:
 	extends Control
 	var pressed := false
-	var thick := 2.0
-	var face := Color(0.752941, 0.752941, 0.752941)
+	var thick := 1.0
+	var face := Color(0.913725, 0.901961, 0.866667)
 	var sunken_background := false
 
 	func _init(p_pressed: bool = false) -> void:
@@ -363,21 +501,17 @@ class BevelLayer:
 		if sunken_background:
 			Theme90.draw_bevel(self, Rect2(Vector2.ZERO, size), pressed, thick, face)
 		else:
-			var r := Rect2(Vector2.ZERO, size)
-			var tl := Theme90.SHADE if pressed else Theme90.LIGHT
-			var br := Theme90.LIGHT if pressed else Theme90.SHADE
-			draw_rect(Rect2(r.position, Vector2(r.size.x, thick)), tl)
-			draw_rect(Rect2(r.position, Vector2(thick, r.size.y)), tl)
-			draw_rect(Rect2(r.position + Vector2(0, r.size.y - thick), Vector2(r.size.x, thick)), br)
-			draw_rect(Rect2(r.position + Vector2(r.size.x - thick, 0), Vector2(thick, r.size.y)), br)
+			draw_style_box(Theme90.box(Color(0, 0, 0, 0), Theme90.BORDER, 3, 1),
+				Rect2(Vector2.ZERO, size))
 
 
-## Добавляет фаску к любому Control (не меняя его собственный _draw).
-static func apply_bevel(control: Control, pressed: bool = false, thick: float = 2.0,
+## Добавляет контур к любому Control (не меняя его собственный _draw).
+static func apply_bevel(control: Control, pressed: bool = false, thick: float = 1.0,
 		sunken_background: bool = false) -> BevelLayer:
 	var layer := BevelLayer.new(pressed)
 	layer.thick = thick
 	layer.sunken_background = sunken_background
+	layer.face = FACE
 	control.add_child(layer)
 	layer.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	layer.mouse_filter = Control.MOUSE_FILTER_IGNORE
@@ -387,29 +521,22 @@ static func apply_bevel(control: Control, pressed: bool = false, thick: float = 
 # --- Тема (используется art/fonts/ui_theme.tres) --------------------------
 
 static func popup_panel_box() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = FACE
-	sb.border_color = DARK
-	sb.set_border_width_all(1)
-	sb.set_content_margin_all(3)
-	sb.shadow_color = Color(0, 0, 0, 0.35)
-	sb.shadow_size = 4
-	sb.shadow_offset = Vector2(3, 3)
+	var sb := box(FACE_HI, BORDER, 4, 1, Color(0, 0, 0, 0.16))
+	sb.shadow_size = 6
+	sb.shadow_offset = Vector2(0, 3)
+	sb.set_content_margin_all(5)
 	return sb
 
 
 static func popup_hover_box() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = NAVY
+	var sb := box(ACCENT_PALE, Color(0, 0, 0, 0), 3, 0)
 	sb.set_content_margin_all(2)
 	return sb
 
 
 static func sunken_box() -> StyleBoxFlat:
-	var sb := StyleBoxFlat.new()
-	sb.bg_color = FACE
-	sb.border_color = SHADE
-	sb.set_border_width_all(2)
+	var sb := well_box(WHITE)
+	sb.set_content_margin_all(2)
 	return sb
 
 
@@ -428,28 +555,30 @@ static func build_theme() -> Theme:
 	t.set_font("font", "Button", f)
 	t.set_font_size("font_size", "Button", FS_BODY)
 	t.set_color("font_color", "Button", INK)
-	t.set_color("font_hover_color", "Button", INK)
-	t.set_color("font_pressed_color", "Button", INK)
+	t.set_color("font_hover_color", "Button", NAVY)
+	t.set_color("font_pressed_color", "Button", NAVY_DEEP)
 	t.set_color("font_disabled_color", "Button", SHADE)
-	t.set_stylebox("normal", "Button", sunken_box())
-	t.set_stylebox("hover", "Button", sunken_box())
-	t.set_stylebox("pressed", "Button", sunken_box())
-	t.set_stylebox("disabled", "Button", sunken_box())
-	t.set_stylebox("focus", "Button", sunken_box())
+	var b_normal := box(PAPER_HI, BORDER, 3, 1, SHADOW)
+	var b_hover := box(WHITE, Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.55), 3, 1, SHADOW)
+	var b_pressed := box(PAPER_LO, BORDER, 3, 1)
+	t.set_stylebox("normal", "Button", b_normal)
+	t.set_stylebox("hover", "Button", b_hover)
+	t.set_stylebox("pressed", "Button", b_pressed)
+	t.set_stylebox("disabled", "Button", box(PAPER, BORDER_SOFT, 3, 1))
+	t.set_stylebox("focus", "Button", box(Color(0, 0, 0, 0), Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.7), 3, 1))
 
-	# PopupMenu — меню 90-х
+	# PopupMenu — светлое меню
 	t.set_font("font", "PopupMenu", f)
 	t.set_font_size("font_size", "PopupMenu", FS_BODY)
 	t.set_color("font_color", "PopupMenu", INK)
-	t.set_color("font_hover_color", "PopupMenu", WHITE)
-	t.set_color("font_pressed_color", "PopupMenu", WHITE)
+	t.set_color("font_hover_color", "PopupMenu", NAVY)
+	t.set_color("font_pressed_color", "PopupMenu", NAVY_DEEP)
 	t.set_color("font_disabled_color", "PopupMenu", SHADE)
-	t.set_color("font_accelerator_color", "PopupMenu", DARK)
-	t.set_color("font_separator_color", "PopupMenu", DARK)
-	t.set_color("font_outline_color", "PopupMenu", LIGHT)
+	t.set_color("font_accelerator_color", "PopupMenu", SHADE)
+	t.set_color("font_separator_color", "PopupMenu", Color(SHADE.r, SHADE.g, SHADE.b, 0.5))
 	t.set_stylebox("panel", "PopupMenu", popup_panel_box())
 	t.set_stylebox("hover", "PopupMenu", popup_hover_box())
-	t.set_constant("v_separation", "PopupMenu", 4)
+	t.set_constant("v_separation", "PopupMenu", 3)
 	t.set_constant("h_separation", "PopupMenu", 6)
 	t.set_constant("item_start_padding", "PopupMenu", 8)
 	t.set_constant("item_end_padding", "PopupMenu", 12)
@@ -461,15 +590,16 @@ static func build_theme() -> Theme:
 	t.set_font_size("font_size", "TooltipLabel", FS_MICRO)
 	t.set_color("font_color", "TooltipLabel", INK)
 
-	# LineEdit — на будущее (поиск/переименование)
+	# LineEdit — поиск/переименование
 	t.set_font("font", "LineEdit", f)
 	t.set_font_size("font_size", "LineEdit", FS_BODY)
 	t.set_color("font_color", "LineEdit", INK)
+	t.set_color("font_placeholder_color", "LineEdit", SHADE)
 	t.set_stylebox("normal", "LineEdit", sunken_box())
-	t.set_stylebox("focus", "LineEdit", sunken_box())
+	t.set_stylebox("focus", "LineEdit", box(WHITE, Color(ACCENT.r, ACCENT.g, ACCENT.b, 0.6), 3, 1))
 
 	# Panel
-	t.set_stylebox("panel", "Panel", sunken_box())
+	t.set_stylebox("panel", "Panel", box(FACE_HI, BORDER, 4, 1, SHADOW))
 
 	# Вариации под кегли 10/12/16/24 — единая шкала для разметки.
 	t.set_type_variation("MicroLabel", "Label")
@@ -503,28 +633,27 @@ class DragGhost:
 		kind = p_kind
 		tint = p_tint
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
-		modulate.a = 0.7
-		var w := 168.0
-		size = Vector2(w, 30)
+		modulate.a = 0.78
+		var w := 172.0
+		size = Vector2(w, 32)
 		custom_minimum_size = size
 		if kind == "packet":
-			tint = Theme90.NAVY
+			tint = Theme90.ACCENT
 		if p_icon == "packet":
 			kind = "packet"
 
 	func _draw() -> void:
 		var r := Rect2(Vector2.ZERO, size)
-		draw_rect(r, Color(1, 1, 1, 0.95))
-		Theme90.draw_bevel(self, r, false, 2.0, Color(1, 1, 1, 0.95))
+		Theme90.draw_bevel(self, r, false, 1.0, Color(1, 1, 1, 0.96))
 		if kind == "packet":
-			Theme90.draw_packet_icon(self, Vector2(6, 10), Theme90.NAVY)
+			Theme90.draw_packet_icon(self, Vector2(8, 11), Theme90.ACCENT)
 		else:
-			Theme90.draw_doc_icon(self, Rect2(3, 3, 24, 24), "text", tint)
+			Theme90.draw_doc_icon(self, Rect2(5, 4, 24, 24), "text", tint)
 		var f := Theme90.ui()
-		Theme90.text(self, f, Vector2(32, 3), Theme90.fit(f, label_text, 12, size.x - 38), 12, Theme90.INK)
+		Theme90.text(self, f, Vector2(36, 4), Theme90.fit(f, label_text, 12, size.x - 42), 12, Theme90.INK)
 		if not sub_text.is_empty():
-			Theme90.text(self, f, Vector2(32, 17), Theme90.fit(f, sub_text, 10, size.x - 38),
-				10, Theme90.DARK)
+			Theme90.text(self, f, Vector2(36, 18), Theme90.fit(f, sub_text, 10, size.x - 42),
+				10, Theme90.SHADE)
 
 
 ## Числовая строка: цифры — Press Start 2P (чистые 0), суффикс — Handjet.

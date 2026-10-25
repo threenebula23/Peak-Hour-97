@@ -14,6 +14,7 @@ const HOUR := preload("res://scripts/ui/hour_result_modal.gd")
 const RUN := preload("res://scripts/ui/run_result_modal.gd")
 const MENU := preload("res://scripts/ui/main_menu.gd")
 const CONFIRM := preload("res://scripts/ui/confirm_modal.gd")
+const MASCOT_PREVIEW := preload("res://scripts/ui/tutorial_mascot_preview.gd")
 
 const W := 1280.0
 const H := 720.0
@@ -26,9 +27,9 @@ const GRID_GAP_X := 14.0
 const GRID_GAP_Y := 18.0
 
 const TABS := ["МАГАЗИН", "ПАУЗА", "НАСТРОЙКИ", "ИТОГИ ЧАСА", "ПОБЕДА", "ПОРАЖЕНИЕ",
-	"МЕНЮ", "ВОПРОС", "СЕТКА"]
+	"МЕНЮ", "ВОПРОС", "МАСКОТ", "СЕТКА"]
 const ARG_NAMES := ["shop", "pause", "settings", "hour", "run_win", "run_lose", "menu",
-	"confirm", "grid"]
+	"confirm", "mascot", "grid"]
 
 var _stage: Control
 var _scrim: ColorRect
@@ -49,6 +50,7 @@ var _run_win
 var _run_lose
 var _menu
 var _confirm
+var _mascot_preview
 
 var _money := 280
 var _levels := {"shop_slot3": 1, "shop_buffer": 1, "shop_timer": 2}
@@ -132,6 +134,10 @@ func _build_modals() -> void:
 	_confirm = CONFIRM.new()
 	_confirm.name = "ConfirmModal"
 	_add_modal(_confirm)
+
+	_mascot_preview = MASCOT_PREVIEW.new()
+	_mascot_preview.name = "MascotPreview"
+	_add_modal(_mascot_preview)
 
 	# фейковые данные
 	_shop.open(_money, _levels)
@@ -291,8 +297,11 @@ func _show_tab(index: int) -> void:
 	if _grid_mode:
 		_overlay.cells.clear()
 		for i in _modals.size():
-			var cell := _grid_cell(i)
 			var m := _modals[i]
+			if m == _mascot_preview:
+				m.visible = false
+				continue
+			var cell := _grid_cell(i)
 			m.visible = true
 			m.scale = Vector2(GRID_SCALE, GRID_SCALE)
 			m.position = cell
@@ -318,7 +327,7 @@ func _grid_cell(i: int) -> Vector2:
 
 func _cell_title(i: int) -> String:
 	var titles := ["МАГАЗИН", "ПАУЗА", "НАСТРОЙКИ", "ИТОГИ ЧАСА", "ЗАБЕГ: ПОБЕДА",
-		"ЗАБЕГ: ПОРАЖЕНИЕ", "ГЛАВНОЕ МЕНЮ", "ПОДТВЕРЖДЕНИЕ"]
+		"ЗАБЕГ: ПОРАЖЕНИЕ", "ГЛАВНОЕ МЕНЮ", "ПОДТВЕРЖДЕНИЕ", "МАСКОТ"]
 	if i < titles.size():
 		return titles[i]
 	return TABS[i]
@@ -399,23 +408,23 @@ class FakeDesk:
 		var f := Theme90.ui()
 		var lf := Theme90.logo()
 
-		# титлбар приложения
-		Theme90.draw_bevel(self, Rect2(0, 0, size.x, 24), false, 2.0, Theme90.FACE)
-		Theme90.draw_vgrad(self, Rect2(2, 2, size.x - 4, 20), Theme90.NAVY, Theme90.NAVY_DEEP)
-		Theme90.text(self, lf, Vector2(8, 6), "PEAK HOUR 97", 10, Theme90.WHITE)
-		Theme90.text(self, f, Vector2(size.x - 120, 6), "03:42", Theme90.FS_MICRO,
-			Theme90.ACCENT_LIGHT)
+		# титлбар приложения — светлая полоса
+		draw_rect(Rect2(0, 0, size.x, 24), Theme90.PAPER_HI)
+		draw_rect(Rect2(0, 23, size.x, 1), Theme90.HAIRLINE)
+		Theme90.text(self, lf, Vector2(10, 7), "PEAK HOUR 97", 9, Theme90.NAVY)
+		Theme90.text(self, f, Vector2(size.x - 74, 7), "03:42", Theme90.FS_MICRO,
+			Theme90.SHADE)
 
 		# строка меню
-		draw_rect(Rect2(0, 24, size.x, 20), Theme90.FACE)
-		draw_rect(Rect2(0, 43, size.x, 1), Theme90.SHADE)
-		Theme90.text(self, f, Vector2(8, 27), "ФАЙЛ   ПРАВКА   ВИД   СПРАВКА",
-			Theme90.FS_MICRO, Theme90.INK)
-		Theme90.text(self, f, Vector2(1078, 27), "МАГАЗИН", Theme90.FS_MICRO, Theme90.INK)
-		Theme90.text(self, f, Vector2(1164, 27), "НАЧАТЬ ЧАС", Theme90.FS_MICRO, Theme90.NAVY)
+		draw_rect(Rect2(0, 24, size.x, 20), Theme90.PAPER)
+		draw_rect(Rect2(0, 43, size.x, 1), Theme90.HAIRLINE)
+		Theme90.text(self, f, Vector2(10, 27), "ФАЙЛ   ПРАВКА   ВИД   СПРАВКА",
+			Theme90.FS_MICRO, Theme90.DARK)
+		Theme90.text(self, f, Vector2(1070, 27), "МАГАЗИН", Theme90.FS_MICRO, Theme90.DARK)
+		Theme90.text(self, f, Vector2(1140, 27), "НАЧАТЬ ЧАС", Theme90.FS_MICRO, Theme90.NAVY)
 
 		# рабочая область
-		Theme90.draw_bevel(self, Rect2(8, 48, 840, 548), true, 2.0, Theme90.FACE)
+		draw_style_box(Theme90.box(Theme90.PAPER, Theme90.BORDER_SOFT, 4, 1), Rect2(8, 48, 840, 548))
 		_draw_window(Rect2(16, 72, 240, 516), "ДИСКИ")
 		_draw_window(Rect2(264, 72, 576, 516), "ФАЙЛЫ · ПРИЁМ")
 		_draw_window(Rect2(856, 48, 416, 264), "ПРИЁМ")
@@ -435,58 +444,59 @@ class FakeDesk:
 			var col := i % 6
 			var row := i / 6
 			var r := Rect2(292 + col * 88, 112 + row * 72, 76, 60)
-			Theme90.draw_bevel(self, r, i == 3, 1.0, Theme90.FACE_HI)
-			Theme90.draw_doc_icon(self, Rect2(r.position + Vector2(26, 8), Vector2(24, 30)),
+			draw_style_box(Theme90.box(Theme90.WHITE, Theme90.BORDER_SOFT, 3, 1), r)
+			Theme90.draw_doc_icon(self, Rect2(r.position + Vector2(26, 6), Vector2(24, 24)),
 				["text", "sound", "photo", "video"][i % 4],
-				[Theme90.NAVY, Theme90.WARN, Theme90.SUCCESS, Theme90.ERROR][i % 4])
-			Theme90.text(self, f, Vector2(r.position.x + 6, r.position.y + 42),
+				[Theme90.ACCENT, Theme90.WARN, Theme90.SUCCESS, Theme90.ERROR][i % 4])
+			Theme90.text(self, f, Vector2(r.position.x + 7, r.position.y + 38),
 				Theme90.fit(f, ["отчёт_смены", "реклама", "скан_пасп", "кадр_4", "договор",
-					"прайс"][i % 6] + ".xls", Theme90.FS_MICRO, 64),
+					"прайс"][i % 6] + ".xls", Theme90.FS_MICRO, 62),
 				Theme90.FS_MICRO, Theme90.DARK)
 
 		# карточки приёма и запросов
 		for i in 4:
 			var y := 80.0 + i * 52.0
 			var card := Rect2(866, y, 396, 44)
-			Theme90.draw_bevel(self, card, true, 1.0, Theme90.FACE)
-			Theme90.draw_packet_icon(self, card.position + Vector2(8, 10), Theme90.NAVY)
-			Theme90.text(self, f, card.position + Vector2(30, 8), "пакет_%02d.wav" % (i + 1),
+			draw_style_box(Theme90.box(Theme90.WHITE, Theme90.BORDER_SOFT, 3, 1), card)
+			Theme90.draw_packet_icon(self, card.position + Vector2(10, 14), Theme90.ACCENT)
+			Theme90.text(self, f, card.position + Vector2(32, 9), "пакет_%02d.wav" % (i + 1),
 				Theme90.FS_MICRO, Theme90.INK)
-			Theme90.text(self, f, card.position + Vector2(30, 24), "1,8 МБ · 00:12",
-				Theme90.FS_MICRO, Theme90.DARK)
+			Theme90.text(self, f, card.position + Vector2(32, 24), "1,8 МБ · 00:12",
+				Theme90.FS_MICRO, Theme90.SHADE)
 
 		for i in 3:
 			var y := 328.0 + i * 64.0
 			var card := Rect2(866, y, 396, 56)
-			Theme90.draw_bevel(self, card, true, 1.0, Theme90.FACE)
-			Theme90.text(self, f, card.position + Vector2(8, 6), "ООО «ВЕКТОР»",
+			draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 3, 1), card)
+			Theme90.text(self, f, card.position + Vector2(10, 7), "ООО «ВЕКТОР»",
 				Theme90.FS_MICRO, Theme90.INK)
-			Theme90.text(self, f, card.position + Vector2(8, 22), "Требуется 2 файла",
-				Theme90.FS_MICRO, Theme90.DARK)
+			Theme90.text(self, f, card.position + Vector2(10, 22), "Требуется 2 файла",
+				Theme90.FS_MICRO, Theme90.SHADE)
 			for j in 2:
-				Theme90.draw_bevel(self, Rect2(card.position + Vector2(270 + j * 58, 12), Vector2(50, 32)),
-					true, 1.0, Theme90.FACE)
+				draw_style_box(Theme90.well_box(Theme90.WHITE),
+					Rect2(card.position + Vector2(270 + j * 58, 12), Vector2(50, 32)))
 
 		# слоты
-		Theme90.draw_bevel(self, Rect2(8, 604, 1264, 52), false, 2.0, Theme90.FACE)
-		Theme90.text(self, f, Vector2(20, 616), "TCP", Theme90.FS_MICRO, Theme90.NAVY)
+		draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 4, 1), Rect2(8, 604, 1264, 52))
+		Theme90.text(self, f, Vector2(20, 620), "TCP", Theme90.FS_MICRO, Theme90.NAVY)
 		for i in 4:
-			Theme90.draw_bevel(self, Rect2(58 + i * 240, 610, 236, 40), true, 1.0, Theme90.FACE)
-			Theme90.text(self, f, Vector2(68 + i * 240, 620), "СЛОТ %d" % (i + 1),
-				Theme90.FS_MICRO, Theme90.DARK)
+			draw_style_box(Theme90.well_box(Theme90.WHITE), Rect2(58 + i * 240, 610, 236, 40))
+			Theme90.text(self, f, Vector2(70 + i * 240, 622), "СЛОТ %d" % (i + 1),
+				Theme90.FS_MICRO, Theme90.SHADE)
 
 		# статус-бар
-		draw_rect(Rect2(0, 660, size.x, 60), Theme90.FACE)
-		draw_rect(Rect2(0, 660, size.x, 1), Theme90.FACE_HI)
-		Theme90.text(self, f, Vector2(16, 672), "УЗЕЛ 7 НА СВЯЗИ · БУФЕР 3/4 · КАНАЛ 45%",
-			Theme90.FS_MICRO, Theme90.DARK)
-		Theme90.text(self, f, Vector2(16, 690), "СМЕНА 3 · 03:42 / 08:00",
-			Theme90.FS_MICRO, Theme90.DARK)
-		Theme90.text(self, lf, Vector2(1040, 676), "$ 1240", 14, Theme90.INK)
+		draw_rect(Rect2(0, 660, size.x, 60), Theme90.PAPER_HI)
+		draw_rect(Rect2(0, 660, size.x, 1), Theme90.HAIRLINE)
+		Theme90.text(self, f, Vector2(18, 672), "УЗЕЛ 7 НА СВЯЗИ · БУФЕР 3/4 · КАНАЛ 45%",
+			Theme90.FS_MICRO, Theme90.SHADE)
+		Theme90.text(self, f, Vector2(18, 693), "СМЕНА 3 · 03:42 / 08:00",
+			Theme90.FS_MICRO, Theme90.SHADE)
+		Theme90.text(self, lf, Vector2(1010, 680), "$ 1240", 12, Theme90.SUCCESS)
 
 	func _draw_window(r: Rect2, title: String) -> void:
-		Theme90.draw_bevel(self, r, false, 2.0, Theme90.FACE)
-		var tr := Rect2(r.position + Vector2(2, 2), Vector2(r.size.x - 4, 20))
-		Theme90.draw_vgrad(self, tr, Theme90.NAVY, Theme90.NAVY_DEEP)
-		Theme90.text_vcenter(self, Theme90.ui(), Rect2(tr.position.x + 6, tr.position.y,
-			tr.size.x - 12, 20), title, Theme90.FS_MICRO, Theme90.WHITE)
+		draw_style_box(Theme90.box(Theme90.WHITE, Theme90.BORDER, 3, 1, Theme90.SHADOW), r)
+		var tr := Rect2(r.position.x + 1, r.position.y + 1, r.size.x - 2, 18)
+		draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 3), tr)
+		draw_rect(Rect2(tr.position.x, tr.end.y, tr.size.x, 1), Theme90.HAIRLINE)
+		Theme90.text_vcenter(self, Theme90.ui(), Rect2(tr.position.x + 8, tr.position.y,
+			tr.size.x - 16, 18), title, Theme90.FS_MICRO, Theme90.NAVY)

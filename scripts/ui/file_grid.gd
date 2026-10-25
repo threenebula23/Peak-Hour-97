@@ -1,7 +1,7 @@
 class_name FileGrid
 extends Control
-## Сетка файлов 4×132 с отступом 8, белое поле, скролл 14 px.
-## Пустая папка — пунктир и «ПУСТО». Принимает файлы/пакеты в текущую папку.
+## Сетка файлов 4×132 с отступом 8: светлое поле, аккуратный путь сверху,
+## спокойный подвал. Пустая папка — мягкий пунктир. Принимает файлы/пакеты.
 
 signal file_selected(id: String)
 signal file_activated(id: String)
@@ -103,10 +103,10 @@ func _relayout() -> void:
 	var vr := _view_rect()
 	_view.position = vr.position
 	_view.size = vr.size
-	_bar.position = Vector2(size.x - 16.0, vr.position.y)
-	_bar.size = Vector2(Theme90.SCROLLBAR, vr.size.y)
+	_bar.position = Vector2(size.x - 16.0, vr.position.y + 4.0)
+	_bar.size = Vector2(Theme90.SCROLLBAR, maxf(8.0, vr.size.y - 8.0))
 	if _check != null:
-		_check.position = Vector2(172, size.y - 18.0)
+		_check.position = Vector2(158, size.y - 18.0)
 		_check.size = Vector2(160, 14)
 	_content_height()
 	queue_redraw()
@@ -141,7 +141,7 @@ func set_files(files: Array) -> void:
 			int(d.get("size_kb", 0)), str(d.get("type", "text")), str(d.get("state", "stored")))
 		var col := i % COLS
 		var row := i / COLS
-		card.position = Vector2(1 + col * (CARD.x + GAP), 1 + row * (CARD.y + GAP))
+		card.position = Vector2(1 + col * (CARD.x + GAP), 4 + row * (CARD.y + GAP))
 		card.size = CARD
 		card.file_selected.connect(_on_card_selected)
 		card.file_activated.connect(func(id: String) -> void: file_activated.emit(id))
@@ -230,51 +230,66 @@ func _draw() -> void:
 	var vr := _view_rect()
 	var fr := _footer_rect()
 
-	# путь — утопленное белое поле
-	draw_rect(pr, Theme90.WHITE)
-	draw_rect(Rect2(pr.position, Vector2(pr.size.x, 1)), Theme90.SHADE)
-	draw_rect(Rect2(pr.position, Vector2(1, pr.size.y)), Theme90.SHADE)
-	draw_rect(Rect2(pr.position.x, pr.end.y - 1, pr.size.x, 1), Theme90.LIGHT)
-	draw_rect(Rect2(pr.end.x - 1, pr.position.y, 1, pr.size.y), Theme90.LIGHT)
-	draw_rect(Rect2(pr.position.x + 4, pr.position.y + 5, 2, 12), Theme90.WARN)
-	draw_rect(Rect2(pr.position.x + 4, pr.position.y + 5, 8, 3), Theme90.WARN)
-	Theme90.text_vcenter(self, f, Rect2(pr.position.x + 16, pr.position.y, pr.size.x - 130, pr.size.y),
-		Theme90.fit(f, path_text, 12, pr.size.x - 140), 12, Theme90.INK)
-	var cw := Theme90.num_width(str(_visible_count()), 8, " ОБЪЕКТОВ", 10)
-	Theme90.num_line(self, Vector2(pr.end.x - cw - 8, pr.position.y + 6), str(_visible_count()), 8,
-		Theme90.DARK, " ОБЪЕКТОВ", 10)
+	# путь — светлая полоса без утопленной рамки
+	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 3, 1), pr)
+	draw_style_box(Theme90.fill_box(Color(Theme90.ACCENT.r, Theme90.ACCENT.g,
+		Theme90.ACCENT.b, 0.14), 2), Rect2(pr.position.x + 7, pr.position.y + 5, 12, 12))
+	Theme90.draw_folder_icon(self, Vector2(pr.position.x + 6, pr.position.y + 6),
+		Theme90.ACCENT, true)
+	Theme90.text_vcenter(self, f, Rect2(pr.position.x + 24, pr.position.y,
+		pr.size.x - 150, pr.size.y), Theme90.fit(f, path_text, 12, pr.size.x - 160),
+		12, Theme90.INK)
+	var cnt := "%d объектов" % _visible_count()
+	var cw := f.get_string_size(cnt, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+	Theme90.text(self, f, Vector2(pr.end.x - cw - 9, pr.position.y + 6), cnt, 10,
+		Theme90.SHADE)
 
 	# поле сетки
-	draw_rect(vr, Theme90.ACCENT_PALE)
-	draw_rect(Rect2(vr.position, Vector2(vr.size.x, 1)), Theme90.SHADE)
-	draw_rect(Rect2(vr.position, Vector2(1, vr.size.y)), Theme90.SHADE)
-	draw_rect(Rect2(vr.position.x, vr.end.y - 1, vr.size.x, 1), Theme90.FACE_HI)
-	draw_rect(Rect2(vr.end.x - 1, vr.position.y, 1, vr.size.y), Theme90.FACE_HI)
+	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 3, 1), vr)
 
 	if _cards.is_empty():
 		var dz := Rect2(vr.position.x + 24, vr.position.y + 24, vr.size.x - 48, vr.size.y - 48)
-		Theme90.draw_dashed_box(self, dz, Theme90.SHADE, 4.0, 1.0)
-		var f2 := Theme90.ui()
+		Theme90.draw_dashed_box(self, dz, Color(Theme90.SHADE.r, Theme90.SHADE.g,
+			Theme90.SHADE.b, 0.45), 5.0, 1.0)
 		var t1 := "ПУСТО"
-		var t2 := "ПАПКА ПУСТА · ПЕРЕТАЩИТЕ СЮДА ПАКЕТ ИЛИ ФАЙЛ"
-		var w1 := f2.get_string_size(t1, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
-		var w2 := f2.get_string_size(t2, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
+		var t2 := "перетащите сюда пакет или файл"
+		var w1 := f.get_string_size(t1, HORIZONTAL_ALIGNMENT_LEFT, -1, 16).x
+		var w2 := f.get_string_size(t2, HORIZONTAL_ALIGNMENT_LEFT, -1, 11).x
 		var cy := vr.get_center().y
-		Theme90.text(self, f2, Vector2(vr.get_center().x - w1 * 0.5, cy - 18), t1, 16, Theme90.SHADE)
-		Theme90.text(self, f2, Vector2(vr.get_center().x - w2 * 0.5, cy + 8), t2, 10, Theme90.SHADE)
+		Theme90.text(self, f, Vector2(vr.get_center().x - w1 * 0.5, cy - 18), t1, 16,
+			Theme90.NAVY)
+		Theme90.text(self, f, Vector2(vr.get_center().x - w2 * 0.5, cy + 6), t2, 11,
+			Theme90.SHADE)
 
 	if _drop_hover:
-		draw_rect(Rect2(vr.position.x + 2, vr.position.y + 2, vr.size.x - 4, 22), Color(0, 0, 0.501961, 0.9))
-		var hint := "ПЕРЕМЕСТИТЬ В «%s»" % folder_name.to_upper()
-		var hw := f.get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-		Theme90.text(self, f, Vector2(vr.get_center().x - hw * 0.5, vr.position.y + 6), hint, 10,
-			Theme90.WHITE)
-		Theme90.draw_dashed_box(self, Rect2(vr.position.x + 1, vr.position.y + 1, vr.size.x - 2, vr.size.y - 2),
-			Theme90.NAVY, 4.0, 2.0)
+		draw_style_box(Theme90.box(Color(Theme90.ACCENT_PALE.r, Theme90.ACCENT_PALE.g,
+			Theme90.ACCENT_PALE.b, 0.55), Theme90.ACCENT, 3, 1), vr.grow(-2.0))
+		var hint := "переместить в «%s»" % folder_name
+		var hw := f.get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 12).x
+		var pill := Rect2(vr.get_center().x - hw * 0.5 - 14, vr.position.y + 8,
+			hw + 28, 24)
+		draw_style_box(Theme90.box(Theme90.WHITE, Theme90.ACCENT_LIGHT, 4, 1,
+			Theme90.SHADOW), pill)
+		Theme90.text_vcenter(self, f, pill, hint, 12, Theme90.NAVY, -1,
+			HORIZONTAL_ALIGNMENT_CENTER)
+		Theme90.draw_dashed_box(self, vr.grow(-1.0), Theme90.ACCENT, 4.0, 1.2)
 
 	# подвал
-	Theme90.num_line(self, Vector2(fr.position.x + 2, fr.position.y), str(_visible_kb()), 8,
-		Theme90.DARK, " КБ · сортировка: имя", 10)
-	var free := "СВОБОДНО 8,5 МБ"
+	Theme90.text(self, f, Vector2(fr.position.x + 2, fr.position.y),
+		"%s КБ · сортировка по имени" % _spaced(_visible_kb()), 10, Theme90.SHADE)
+	var free := "свободно 8,5 МБ"
 	var fw := f.get_string_size(free, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	Theme90.text(self, f, Vector2(fr.end.x - fw - 2, fr.position.y), free, 10, Theme90.DARK)
+	Theme90.text(self, f, Vector2(fr.end.x - fw - 2, fr.position.y), free, 10,
+		Theme90.SHADE)
+
+
+static func _spaced(v: int) -> String:
+	var s := str(v)
+	var out := ""
+	var n := 0
+	for i in range(s.length() - 1, -1, -1):
+		out = s[i] + out
+		n += 1
+		if n % 3 == 0 and i > 0:
+			out = " " + out
+	return out

@@ -1,10 +1,7 @@
 class_name ContextMenu90
 extends PopupMenu
-## Контекстное меню 90-х: серая панель, фаска, тень.
-## Пункты: Новая папка / Переименовать / Удалить / Уничтожить.
-
-var _borders: Array[ColorRect] = []
-
+## Контекстное меню: светлая карточка с тонким контуром и мягкой тенью,
+## hover — pale-teal строка. Пункты: Новая папка / Переименовать / Удалить…
 
 func _ready() -> void:
 	add_theme_font_override("font", Theme90.ui())
@@ -12,38 +9,11 @@ func _ready() -> void:
 	add_theme_constant_override("v_separation", 4)
 	add_theme_constant_override("item_start_padding", 10)
 	add_theme_constant_override("item_end_padding", 14)
-	# фаска поверх служебной рамки попапа
-	for i in 4:
-		var cr := ColorRect.new()
-		cr.mouse_filter = Control.MOUSE_FILTER_IGNORE
-		cr.color = Theme90.LIGHT if i < 2 else Theme90.SHADE
-		add_child(cr)
-		_borders.append(cr)
-	if not size_changed.is_connected(_sync_borders):
-		size_changed.connect(_sync_borders)
-	about_to_popup.connect(_on_about)
-	_sync_borders()
-
-
-func _on_about() -> void:
-	_sync_borders()
-	await get_tree().process_frame
-	_sync_borders()
-
-
-func _sync_borders() -> void:
-	if _borders.size() < 4:
-		return
-	var s := Vector2(size)
-	var t := 2.0
-	_borders[0].position = Vector2.ZERO
-	_borders[0].size = Vector2(s.x, t)
-	_borders[1].position = Vector2.ZERO
-	_borders[1].size = Vector2(t, s.y)
-	_borders[2].position = Vector2(0, s.y - t)
-	_borders[2].size = Vector2(s.x, t)
-	_borders[3].position = Vector2(s.x - t, 0)
-	_borders[3].size = Vector2(t, s.y)
+	add_theme_color_override("font_color", Theme90.INK)
+	add_theme_color_override("font_hover_color", Theme90.NAVY)
+	add_theme_color_override("font_disabled_color", Theme90.SHADE)
+	add_theme_stylebox_override("panel", Theme90.popup_panel_box())
+	add_theme_stylebox_override("hover", Theme90.popup_hover_box())
 
 
 ## Показывает меню в глобальной точке. items: [{label, id, disabled, danger} | {sep:true}]

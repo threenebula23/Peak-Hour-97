@@ -1,8 +1,8 @@
 class_name Button90
 extends BaseButton
-## Кнопка 90-х: высота 24 px, фаска 2 px, без скруглений.
-## Нажатая — фаска выворачивается, текст сдвигается на 1 px.
-## flat_style — пункт меню (подсветка синим без фаски).
+## Мягкая кнопка: высота 24, скругление 3, 1 px контур, тень только в покое.
+## hover — бирюзовый контур и тёмный бирюзовый текст; нажатие — на 1 px внутрь.
+## flat_style — пункт меню без рамки; active — мягкая teal-подсветка.
 
 enum Icon { NONE, X, MIN, MAX, PLUS, MINUS, ARROW_UP, ARROW_DOWN, CHECK, LEFT, RIGHT }
 
@@ -37,7 +37,7 @@ enum Icon { NONE, X, MIN, MAX, PLUS, MINUS, ARROW_UP, ARROW_DOWN, CHECK, LEFT, R
 	set(v):
 		active = v
 		queue_redraw()
-@export var pad := 8.0
+@export var pad := 9.0
 
 
 func _ready() -> void:
@@ -62,14 +62,18 @@ func _play_click() -> void:
 ## Справочный размер под текст — раскладка задаёт размеры явно.
 func preferred_size() -> Vector2:
 	if icon != Icon.NONE and caption.is_empty():
-		return Vector2(14, 14)
+		return Vector2(16, 16)
 	var f := Theme90.ui()
 	var w := ceilf(f.get_string_size(caption, HORIZONTAL_ALIGNMENT_LEFT, -1, caption_size).x) + pad * 2.0
-	return Vector2(maxf(w, 14.0), Theme90.H)
+	return Vector2(maxf(w, 16.0), Theme90.H)
 
 
 func set_caption(v: String) -> void:
 	caption = v
+
+
+func _accent_border() -> Color:
+	return Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.55)
 
 
 func _draw() -> void:
@@ -84,51 +88,83 @@ func _draw() -> void:
 	var f := Theme90.ui()
 
 	if flat_style:
-		if is_active or (hover and not dis):
-			draw_rect(r, Theme90.NAVY)
+		var bg := Color(0, 0, 0, 0)
+		if is_active:
+			bg = Theme90.ACCENT_PALE
 		elif hover and not dis:
-			draw_rect(r, Theme90.FACE_HI)
-		var fg := Theme90.WHITE if (is_active or hover) and not dis else Theme90.INK
+			bg = Color(1, 1, 1, 0.5)
+		if bg.a > 0.0:
+			draw_style_box(Theme90.box(bg, Color(0, 0, 0, 0), 3, 0), r)
+		var fg := Theme90.INK
 		if dis:
 			fg = Theme90.SHADE
-		_draw_content(r, f, fg, pressed, false)
+		elif is_active or hover:
+			fg = Theme90.NAVY
+		if is_active:
+			draw_rect(Rect2(r.position.x + 5, r.end.y - 2, maxf(0.0, r.size.x - 10), 2),
+				Theme90.ACCENT)
+		_draw_content(r, f, fg, pressed, dis)
 		return
 
-	var face_color := Theme90.FACE
-	if accent and not dis:
-		face_color = Theme90.NAVY
-		if hover:
-			face_color = Color(0.0, 0.0, 0.627451)
-	elif danger and not dis:
-		face_color = Theme90.FACE
-	Theme90.draw_bevel(self, r, pressed, Theme90.BEVEL, face_color)
-	if dis:
-		face_color = Theme90.FACE
-	# мягкая подсветка наведения
-	if hover and not dis and not accent:
-		draw_rect(Rect2(2, 2, size.x - 4, 1), Theme90.FACE_HI)
-		draw_rect(Rect2(2, 2, 1, size.y - 4), Theme90.FACE_HI)
-		Theme90.draw_bevel(self, r.grow(-2.0), true, 1.0, Theme90.FACE_HI)
-
+	var face := Theme90.PAPER_HI
+	var border := Theme90.BORDER
 	var fg := Theme90.INK
-	if accent and not dis:
-		fg = Theme90.WHITE
-	elif danger and not dis:
-		fg = Theme90.ERROR
-	elif dis:
+	var shadow := Theme90.SHADOW
+	if dis:
+		face = Theme90.PAPER
+		border = Theme90.BORDER_SOFT
 		fg = Theme90.SHADE
-	elif hover:
+		shadow = Color(0, 0, 0, 0)
+	elif accent:
+		face = Theme90.ACCENT.darkened(0.06) if pressed else Theme90.ACCENT
+		border = Theme90.ACCENT.darkened(0.18)
+		fg = Theme90.WHITE
+		if hover:
+			face = Theme90.ACCENT.lightened(0.04)
+	elif danger:
+		face = Theme90.PAPER_HI
+		border = Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.42)
+		fg = Theme90.ERROR
+		if hover:
+			face = Color(1, 1, 1, 1)
+			border = Theme90.ERROR
+	elif is_active:
+		face = Theme90.ACCENT_PALE
+		border = Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.65)
 		fg = Theme90.NAVY
+		if hover:
+			face = Theme90.ACCENT_PALE.lerp(Theme90.WHITE, 0.35)
+	else:
+		if hover:
+			face = Theme90.WHITE
+			border = _accent_border()
+			fg = Theme90.NAVY
 
-	# пунктирный фокус
-	if has_focus() and not dis and not flat_style:
-		_draw_focus(Rect2(3, 3, size.x - 6, size.y - 6))
+	if pressed and not dis:
+		face = face.darkened(0.05) if face.get_luminance() > 0.4 else face.darkened(0.1)
+		shadow = Color(0, 0, 0, 0)
+
+	if not (pressed and not dis):
+		draw_style_box(Theme90.box(face, border, 3, 1, shadow), r)
+	else:
+		draw_style_box(Theme90.box(face, border, 3, 1), r)
+		draw_line(Vector2(3, 1), Vector2(r.size.x - 3, 1), Color(0, 0, 0, 0.10), 1.0)
+
+	# мягкий верхний блик
+	if not pressed and not dis and face.get_luminance() > 0.55 and r.size.y >= 16.0:
+		draw_line(Vector2(4, 1), Vector2(r.size.x - 4, 1), Color(1, 1, 1, 0.55), 1.0)
+
+	# аккуратный фокус — тонкое кольцо внутри
+	if has_focus() and not dis:
+		draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.75), 3, 1),
+			r.grow(-2.0))
 
 	_draw_content(r, f, fg, pressed, dis)
 
 
 func _draw_content(r: Rect2, f: Font, fg: Color, pressed: bool, dis: bool) -> void:
-	var shift := Vector2(1, 1) if pressed and not dis else Vector2.ZERO
+	var shift := Vector2(0, 1) if pressed and not dis else Vector2.ZERO
 	var icon_w := 0.0
 	if icon != Icon.NONE:
 		icon_w = 12.0
@@ -136,7 +172,8 @@ func _draw_content(r: Rect2, f: Font, fg: Color, pressed: bool, dis: bool) -> vo
 	if not caption.is_empty():
 		total = f.get_string_size(caption, HORIZONTAL_ALIGNMENT_LEFT, -1, caption_size).x
 		total += icon_w + (4.0 if icon_w > 0.0 else 0.0)
-	var x := roundf(r.position.x + (r.size.x - total) * 0.5) + shift.x
+	var left := r.position.x + roundf((r.size.x - total) * 0.5) + shift.x
+	var x := left
 	var cy := roundf(r.get_center().y) + shift.y
 	if icon != Icon.NONE:
 		var ir := Rect2(x, cy - 6.0, 12.0, 12.0)
@@ -150,38 +187,26 @@ func _draw_content(r: Rect2, f: Font, fg: Color, pressed: bool, dis: bool) -> vo
 func _draw_icon(ir: Rect2, fg: Color) -> void:
 	match icon:
 		Icon.X:
-			Theme90.draw_x(self, ir, fg, 1.0)
+			Theme90.draw_x(self, ir, fg, 1.2)
 		Icon.MIN:
 			draw_rect(Rect2(ir.position.x + 3, ir.get_center().y, 6, 1), fg)
 		Icon.MAX:
-			draw_rect(Rect2(ir.position.x + 3, ir.position.y + 3, 7, 7), fg, false, 1.0)
+			draw_style_box(Theme90.box(Color(0, 0, 0, 0), fg, 2, 1),
+				Rect2(ir.position.x + 3, ir.position.y + 3, 7, 7))
 			draw_rect(Rect2(ir.position.x + 3, ir.position.y + 3, 7, 2), fg)
 		Icon.PLUS:
-			draw_rect(Rect2(ir.get_center().x - 3, ir.get_center().y - 0.5, 7, 1), fg)
-			draw_rect(Rect2(ir.get_center().x - 0.5, ir.get_center().y - 3, 1, 7), fg)
+			draw_rect(Rect2(ir.get_center().x - 3, ir.get_center().y - 0.5, 7, 1.4), fg)
+			draw_rect(Rect2(ir.get_center().x - 0.5, ir.get_center().y - 3, 1.4, 7), fg)
 		Icon.MINUS:
-			draw_rect(Rect2(ir.get_center().x - 3, ir.get_center().y - 0.5, 7, 1), fg)
+			draw_rect(Rect2(ir.get_center().x - 3, ir.get_center().y - 0.5, 7, 1.4), fg)
 		Icon.ARROW_UP:
-			Theme90.draw_arrow(self, ir, 0, fg)
+			Theme90.draw_chevron(self, ir.get_center(), 0, fg, 3.2, 1.4)
 		Icon.ARROW_DOWN:
-			Theme90.draw_arrow(self, ir, 1, fg)
+			Theme90.draw_chevron(self, ir.get_center(), 1, fg, 3.2, 1.4)
 		Icon.LEFT:
-			Theme90.draw_arrow(self, ir, 3, fg)
+			Theme90.draw_chevron(self, ir.get_center(), 3, fg, 3.2, 1.4)
 		Icon.RIGHT:
-			Theme90.draw_arrow(self, ir, 2, fg)
+			Theme90.draw_chevron(self, ir.get_center(), 2, fg, 3.2, 1.4)
 		Icon.CHECK:
-			draw_line(Vector2(ir.position.x + 2, ir.position.y + 6), Vector2(ir.position.x + 5, ir.position.y + 9), fg, 2.0)
-			draw_line(Vector2(ir.position.x + 5, ir.position.y + 9), Vector2(ir.position.x + 10, ir.position.y + 3), fg, 2.0)
-
-
-func _draw_focus(r: Rect2) -> void:
-	var x := r.position.x
-	var y := r.position.y
-	while x < r.end.x:
-		draw_rect(Rect2(x, y, 1, 1), Theme90.INK)
-		draw_rect(Rect2(x, r.end.y - 1, 1, 1), Theme90.INK)
-		x += 2
-	while y < r.end.y:
-		draw_rect(Rect2(r.position.x, y, 1, 1), Theme90.INK)
-		draw_rect(Rect2(r.end.x - 1, y, 1, 1), Theme90.INK)
-		y += 2
+			draw_line(Vector2(ir.position.x + 2, ir.position.y + 6), Vector2(ir.position.x + 5, ir.position.y + 9), fg, 1.8)
+			draw_line(Vector2(ir.position.x + 5, ir.position.y + 9), Vector2(ir.position.x + 10, ir.position.y + 3), fg, 1.8)

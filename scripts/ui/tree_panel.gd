@@ -1,6 +1,6 @@
 class_name TreePanel
 extends Control
-## Дерево дисков и папок: секции C:/D:/E:, строки 24 px, скролл 14 px,
+## Дерево дисков и папок: светлая поверхность, строки 24 px, скролл 14 px,
 ## кнопка «Новая папка» и контекстное меню по правой кнопке.
 
 signal folder_selected(folder_id: String)
@@ -60,11 +60,11 @@ func _relayout() -> void:
 	var vr := _view_rect()
 	_view.position = vr.position
 	_view.size = vr.size
-	_bar.position = Vector2(size.x - 16.0, vr.position.y)
-	_bar.size = Vector2(Theme90.SCROLLBAR, vr.size.y)
+	_bar.position = Vector2(size.x - 16.0, vr.position.y + 4.0)
+	_bar.size = Vector2(Theme90.SCROLLBAR, maxf(8.0, vr.size.y - 8.0))
 	_bar.set_metrics(vr.size.y, maxf(vr.size.y, _content_height()))
-	_new_btn.position = Vector2(2, size.y - 26.0)
-	_new_btn.size = Vector2(size.x - 4.0, 24.0)
+	_new_btn.position = Vector2(4, size.y - 27.0)
+	_new_btn.size = Vector2(size.x - 8.0, 24.0)
 	_apply_layout()
 	queue_redraw()
 
@@ -203,15 +203,9 @@ func _draw() -> void:
 	var vr := _view_rect()
 	var fr := _footer_rect()
 	var f := Theme90.ui()
-	draw_rect(vr, Theme90.WHITE)
-	draw_rect(Rect2(vr.position, Vector2(vr.size.x, 1)), Theme90.SHADE)
-	draw_rect(Rect2(vr.position, Vector2(1, vr.size.y)), Theme90.SHADE)
-	draw_rect(Rect2(vr.position.x, vr.end.y - 1, vr.size.x, 1), Theme90.FACE_HI)
-	draw_rect(Rect2(vr.end.x - 1, vr.position.y, 1, vr.size.y), Theme90.FACE_HI)
+	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 3, 1), vr)
 
-	# подвал списка: счётчики
-	draw_rect(Rect2(fr.position.x, fr.position.y - 2, fr.size.x, 1), Theme90.SHADE)
-	draw_rect(Rect2(fr.position.x, fr.position.y - 1, fr.size.x, 1), Theme90.LIGHT)
+	# подвал: одна спокойная строка вместо двух «счётчиков»
 	var folders := 0
 	var objs := 0
 	for e in _rows:
@@ -219,10 +213,9 @@ func _draw() -> void:
 		if not row.is_section:
 			folders += 1
 			objs += row.count
-	var wf := Theme90.num_line(self, Vector2(fr.position.x + 4, fr.position.y), str(folders), 8,
-		Theme90.DARK, " ПАПОК ·", 10)
-	Theme90.num_line(self, Vector2(fr.position.x + 4 + wf + 4, fr.position.y), str(objs), 8,
-		Theme90.DARK, " ОБЪЕКТОВ", 10)
+	Theme90.text(self, f, Vector2(fr.position.x + 6, fr.position.y + 1),
+		"%d папок · %d объектов" % [folders, objs], 10, Theme90.SHADE, fr.size.x - 120)
 	var free := "8,5 МБ"
 	var fw := f.get_string_size(free, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	Theme90.text(self, f, Vector2(fr.end.x - fw - 4, fr.position.y), free, 10, Theme90.SHADE)
+	Theme90.text(self, f, Vector2(fr.end.x - fw - 6, fr.position.y + 1), free, 10,
+		Theme90.SHADE)
