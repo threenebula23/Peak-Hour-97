@@ -100,7 +100,7 @@ python3 -m http.server 8000 --directory build/web
 
 ## Тесты
 
-Полный прогон (18 наборов + parse-check):
+Полный прогон (20 наборов + parse-check):
 
 ```bash
 bash scripts/run_all_tests.sh
@@ -115,8 +115,8 @@ bash scripts/run_all_tests.sh
 "$GODOT" --headless --path . --script scripts/ui/ui_smoke.gd
 ```
 
-Фактический итог: **5 453 проверки, 0 провалов**; `run_all_tests.sh` —
-**19/19 PASS** (18 наборов + parse-check). Подробности — в
+Фактический итог: **5 498 проверок, 0 провалов**; `run_all_tests.sh` —
+**21/21 PASS** (20 наборов + parse-check). Подробности — в
 [AI_REPORT](AI_REPORT.md).
 
 ## Структура

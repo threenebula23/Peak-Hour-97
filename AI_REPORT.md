@@ -24,9 +24,9 @@ MR-ревью — агент **oracle** (`opencode-go/deepseek-v4.1-flash`): dry
   маскот **БАЙТ** и туториал.
 - **Баланс и мета:** SLA 128/200, штрафы по типам, 10 апгрейдов, grace
   таймеров, канал, прогрессивные открытия после 3/5/9 часов.
-- **Аудит-фиксы:** спокойный фон — плоская бумага, Esc на итогах → меню,
-  реальное уничтожение папки (−5 SLA), прогрессивная мета `run_meta_awards`,
-  час 1 без атак.
+- **Аудит-фиксы:** calm-фон, Esc на итогах → меню, уничтожение папки
+  (−5 SLA), мета `run_meta_awards`, час 1 без атак, стабильные тосты и
+  fullscreen.
 - **Тесты:** unit, fuzz, интеграция, полный забег, UI-смоук.
 - **Документация:** `docs/`, `README.md`, `ASSETS.md`, `strings_ru.json`.
 - **Звук:** `audio/generate_sfx.py` — 18 SFX и `hum.wav` на Python.
@@ -66,21 +66,20 @@ coeff = {text: 1.0, sound: 2.0, photo: 3.0, video: 4.0}
 
 ## 6. Проверки и ограничения
 
-Headless:
-
 - `run_tests.gd` — **543**; `test_hour` — **133**; `test_shop` — **116**;
   `test_minigame` — **51**; `test_slots` — **34**; `test_audio` — **37**.
 - `test_fuzz` — **3249**; `test_integration` — **231**; `test_attacks` —
   **173**; `test_controller` — **143**.
 - `test_full_playthrough` — **294** на сидах `1/42/777`: 3/3 victory,
   9/9 часов, SLA 200;
-  `test_main_*` — **317**; `ui_smoke` — **132**.
-- Итого **5 453** проверки, **0 провалов**; `run_all_tests.sh` — **19/19
+  `test_main_*` — **317**, `test_toast` — **14**, `test_main_fullscreen` —
+  **31**; `ui_smoke` — **132**.
+- Итого **5 498** проверок, **0 провалов**; `run_all_tests.sh` — **21/21
   PASS**.
 - `godot --headless --path . --quit` — exit 0; Web-экспорт — exit 0;
   браузерный смоук Chromium: 1600×900, меню → «Новый забег» → подготовка,
   JS-ошибок нет.
 
 Ограничения: туториал — маскот и подсказки, без пошагового сценария;
-web-save зависит от IndexedDB; ручной плейтест, громкость и масштаб — за
+web-save зависит от IndexedDB; плейтест, громкость и масштаб — за
 человеком; remote push ещё не выполнен.
