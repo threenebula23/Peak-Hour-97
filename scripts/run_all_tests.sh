@@ -46,6 +46,7 @@ TESTS=(
   "res://tests/test_shop.gd"
   "res://tests/test_minigame.gd"
   "res://tests/test_audio.gd"
+  "res://tests/test_ambient.gd"
   "res://tests/test_fuzz.gd"
   "res://tests/test_integration.gd"
   "res://tests/test_attacks.gd"

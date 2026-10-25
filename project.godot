@@ -20,6 +20,7 @@ Game="*res://scripts/autoload/game.gd"
 Data="*res://scripts/autoload/data.gd"
 Audio="*res://scripts/autoload/audio.gd"
 Rng="*res://scripts/autoload/rng.gd"
+Ambient="*res://scripts/autoload/ambient.gd"
 
 [display]
 
