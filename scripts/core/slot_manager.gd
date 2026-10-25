@@ -1,6 +1,6 @@
 class_name SlotManager
 extends RefCounted
-## Слоты соединений. Всего 2 + slot_level, но не больше 4 (D13/D16).
+## Слоты соединений v2. Всего 1 + slot_level, но не больше 5.
 ##
 ## Слоты общие для приёма и отправки; направление хранится для UI и канала.
 ## manager не тикает сам: прогресс обновляет HourDirector.
@@ -8,8 +8,8 @@ extends RefCounted
 signal changed
 
 const SLOT_SCRIPT := preload("res://scripts/entities/slot.gd")
-const BASE_SLOTS := 2
-const MAX_SLOTS := 4
+const BASE_SLOTS := 1
+const MAX_SLOTS := 5
 
 var slots: Array = []
 var _fallback_level: int = 0
@@ -192,11 +192,11 @@ func _slot_level() -> int:
 	if game == null:
 		return _fallback_level
 	var upgrades: Dictionary = game.upgrades if game.upgrades is Dictionary else {}
-	# Сначала агрегированный уровень, который пишет Shop.
-	for key in ["slot_level", "connection_slots", "slots"]:
+	# v2: агрегированный уровень, который пишет Shop/Game (lot_slots → slot_level).
+	for key in ["slot_level", "connection_slots", "lot_slots"]:
 		if upgrades.has(key):
 			return int(upgrades[key])
-	# Совместимость с покупками по id (Game.buy_upgrade старого образца).
+	# Совместимость с v1-покупками по id (если такие остались в старом сейве).
 	var level := 0
 	for key in ["shop_slot3", "shop_slot4"]:
 		level += int(upgrades.get(key, 0))

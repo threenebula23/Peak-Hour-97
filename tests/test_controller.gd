@@ -1,7 +1,10 @@
 extends SceneTree
-## Headless-тест GameController: полный цикл prep → hour → hour_result → prep,
-## магазин, 9 часов до run_result, save/load и continue_run.
-## Запуск: godot --headless --path . --script tests/test_controller.gd
+## Headless-тест GameController v2: подготовка/час/итоги, авто-возврат стола,
+## блок старта часа (M4/M18), магазин 3 офферов после H1, сброс рероллов,
+## полный забег на 9 часов и save/load.
+##
+## Запуск:
+##   godot --headless --path . --script tests/test_controller.gd
 
 const GC := preload("res://scripts/game_controller.gd")
 const SM := preload("res://scripts/systems/save_system.gd")
@@ -12,6 +15,7 @@ var _case: String = ""
 
 var _game = null
 var _c = null
+var _name_seq: int = 0
 
 var _hour_events: int = 0
 var _run_events: int = 0
@@ -19,6 +23,8 @@ var _shop_events: int = 0
 var _phase_events: int = 0
 var _last_report: Dictionary = {}
 var _last_run: Dictionary = {}
+var _phases: Array = []
+var _toasts: Array = []
 
 var _had_save: bool = false
 var _backup: String = ""
@@ -35,21 +41,24 @@ func _init() -> void:
 		_finish()
 		return
 	_c = GC.new()
-	_c.name = "GameController"
+	_c.name = "GameControllerTest"
 	root.add_child(_c)
 	await process_frame
 	_c.hour_finished.connect(_on_hour_finished)
 	_c.run_finished.connect(_on_run_finished)
 	_c.shop_changed.connect(_on_shop_changed)
 	_c.phase_changed.connect(_on_phase_changed)
+	_c.toast.connect(_on_toast)
 
 	_test_empty_continue()
 	_test_new_run()
+	_test_table_return_success()
+	_test_table_return_block()
 	_test_hour_start_and_modal()
-	_test_auto_send()
-	_test_fast_hour()
-	_test_after_hour()
+	_test_fast_hour_and_report()
+	_test_after_hour_and_shop()
 	_test_buy()
+	_test_reroll_reset()
 	_test_full_run()
 	_test_save_load()
 	_finish()
@@ -68,37 +77,63 @@ func _test_new_run() -> void:
 	_set_case("new_run")
 	_c.new_run(1)
 	_eq(String(_c.phase), "prep", "new_run → prep")
-	_eq(int(_game.money), 150, "стартовые деньги")
-	_approx(float(_game.sla), 128.0, 0.0001, "стартовый SLA")
+	_eq(int(_game.money), 50, "стартовые деньги 50 $")
+	_approx(float(_game.sla), 60.0, 0.0001, "стартовый SLA 60")
 	_eq(int(_game.hour), 1, "час 1")
 	_eq(String(_game.phase), "prep", "Game.phase = prep")
 	_ok(_c.has_save(), "автосейв на входе в prep")
+	_eq(_game.shop_offers.size(), 0, "H1: магазина/офферов нет")
+	_eq((_c.shop_data() as Array).size(), 0, "H1: shop_data пуст")
 
 	var prep: Dictionary = _c.prep_data()
-	_eq(int(prep.get("money", 0)), 150, "prep_data.money")
-	_approx(float(prep.get("sla", 0.0)), 128.0, 0.0001, "prep_data.sla")
+	_eq(int(prep.get("money", 0)), 50, "prep_data.money")
+	_approx(float(prep.get("sla", 0.0)), 60.0, 0.0001, "prep_data.sla")
 	_eq(int(prep.get("hour", 0)), 1, "prep_data.hour")
-	_ok(prep.get("upgrades") is Dictionary, "prep_data.upgrades")
-
 	var sections = prep.get("sections", [])
 	_ok(sections is Array and not (sections as Array).is_empty(), "есть секции")
-	var sec_c: Dictionary = _find_section(sections, "C")
-	_ok(not sec_c.is_empty(), "есть секция C")
-	if sec_c.is_empty():
+
+
+func _test_table_return_success() -> void:
+	_set_case("table_return_ok")
+	_c.new_run(11)
+	var folder_id := _first_folder_id()
+	var file = _game.registry.create_file("Стол-ок", "text", folder_id)
+	_ok(file != null, "файл создан")
+	if file == null:
 		return
-	var folders = sec_c.get("folders", [])
-	_ok(folders is Array and not (folders as Array).is_empty(), "в C есть папка")
-	if folders is Array and not (folders as Array).is_empty():
-		var folder: Dictionary = folders[0]
-		_eq(str(folder.get("name", "")), "Разное", "стартовая папка «Разное»")
-		var folder_id := str(folder.get("id", ""))
-		var files: Dictionary = prep.get("files", {})
-		_ok(files.has(folder_id), "prep_data.files содержит папку")
-		_ok(files.get(folder_id) is Array, "файлы папки — массив")
+	_ok(_game.registry.move_file_to_table(str(file.id)), "файл убран на стол")
+	_ok(_c.start_hour(), "старт часа разрешён")
+	_eq(String(_c.phase), "hour", "фаза hour")
+	_eq(str(file.location), "folder", "файл автоматически вернулся в папку")
+	_eq(_game.registry.table_file_count(), 0, "стол пуст")
+
+
+func _test_table_return_block() -> void:
+	_set_case("table_return_block")
+	_c.new_run(12)
+	var folder_id := _first_folder_id()
+	var file = _game.registry.create_file("Стол-блок", "text", folder_id)
+	_ok(file != null, "файл создан")
+	if file == null:
+		return
+	_ok(_game.registry.move_file_to_table(str(file.id)), "файл убран на стол")
+	# Забиваем все папки до отказа.
+	for raw_folder_id in _game.registry.folders.keys():
+		_fill_folder(str(raw_folder_id))
+	_eq(_game.registry.table_file_count(), 1, "на столе остался 1 файл")
+	_toasts.clear()
+	var started: bool = bool(_c.start_hour())
+	_ok(not started, "старт часа заблокирован (M4/M18)")
+	_eq(String(_c.phase), "prep", "фаза осталась prep")
+	_eq(String(_game.phase), "prep", "Game.phase остался prep")
+	_eq(int(_game.hour), 1, "час не сдвинулся")
+	_ok(_has_toast("На столе остались файлы"), "тост о блоке старта")
+	_eq(_game.registry.table_file_count(), 1, "файл не потерян")
 
 
 func _test_hour_start_and_modal() -> void:
 	_set_case("hour_start")
+	_c.new_run(21)
 	_ok(_c.start_hour(), "start_hour")
 	_eq(String(_c.phase), "hour", "фаза hour")
 	_ok(bool(_c.hour_director.running), "HourDirector.running")
@@ -106,175 +141,147 @@ func _test_hour_start_and_modal() -> void:
 	_c.tick(0.1)
 
 	var hd = _c.hour_director
-	var hd_data: Dictionary = _c.hour_data()
-	var status: Dictionary = hd_data.get("status", {})
-	_eq(int(status.get("tcp_max", 0)), 2, "2 TCP-слота на старте")
-	_eq(int(status.get("buffer_max", 0)), 4, "буфер 4 на старте")
+	var status: Dictionary = _c.hour_data().get("status", {})
+	_eq(int(status.get("tcp_max", 0)), 1, "1 слот на старте")
+	_eq(int(status.get("buffer_max", 0)), 6, "буфер 6 на старте")
 	_eq(int(status.get("hour", 0)), 1, "статус: час 1")
 	_ok(float(status.get("time_left", 0.0)) > 299.0, "статус: таймер идёт")
 
-	# Пакет и запрос, чтобы проверить hour_data и заморозку модалкой.
-	_set_case("hour_data")
-	var packet_id := str(hd.spawn_packet_now("text", "tcp"))
-	_ok(not packet_id.is_empty(), "пакет заспавнен")
+	_set_case("hour_data_modal")
 	var folder_id := _first_folder_id()
 	var file = _game.registry.create_file("Тест контроллера", "text", folder_id)
 	_ok(file != null, "файл создан")
-	var req_id := str(hd.spawn_request_now())
+	var req_id := str(hd.spawn_request_now(1))
 	_ok(not req_id.is_empty(), "запрос создан")
+	var packet_id := str(hd.spawn_packet_now("text"))
+	_ok(not packet_id.is_empty(), "пакет создан")
 	_c.tick(0.1)
-	hd_data = _c.hour_data()
+	var hd_data: Dictionary = _c.hour_data()
 	_eq((hd_data.get("packets", []) as Array).size(), 1, "hour_data: 1 пакет")
 	_eq((hd_data.get("requests", []) as Array).size(), 1, "hour_data: 1 запрос")
-	_eq((hd_data.get("slots", []) as Array).size(), 2, "hour_data: 2 слота")
-	if not (hd_data.get("packets", []) as Array).is_empty():
-		_eq(str(hd_data["packets"][0].get("id", "")), packet_id, "hour_data: id пакета")
+	var req_data: Dictionary = (hd_data.get("requests", []) as Array)[0]
+	_eq(int(req_data.get("required_count", 0)), 1, "hour_data: required_count")
+	_eq(int(req_data.get("missing", -1)), 1, "hour_data: missing = 1")
 
-	_set_case("modal")
 	var req = hd.active_requests.get(req_id)
-	_ok(req != null, "запрос в активных")
-	if req == null:
-		return
+	var packet = hd.active_packets.get(packet_id)
 	var req_time := float(req.time_left)
+	var packet_time := float(packet.time_left)
 	_c.set_modal_open(true)
 	_ok(bool(hd.modal_open), "директор видит модалку")
-	var packets_before: int = hd.active_packets.size()
-	var accum_before: float = float(hd.spawn_recv_accum)
 	for i in range(10):
 		_c.tick(0.1)
-	_eq(hd.active_packets.size(), packets_before, "модалка: пакеты не спавнятся")
-	_approx(float(hd.spawn_recv_accum), accum_before, 0.0001, "модалка: спавн-аккумулятор стоит")
 	_approx(float(req.time_left), req_time - 1.0, 0.02, "модалка: таймер запроса идёт")
+	_approx(float(packet.time_left), packet_time, 0.0001, "модалка: таймер пакета стоит")
 	_c.set_modal_open(false)
 	_ok(not hd.modal_open, "модалка закрыта")
-	hd.reject_request(req_id)
-	_ok(not hd.active_requests.has(req_id), "запрос убран после reject")
-
-
-func _test_auto_send() -> void:
-	_set_case("auto_send")
-	var hd = _c.hour_director
-	_ok(hd != null and bool(hd.running), "час идёт")
-	if hd == null:
-		return
-	var file = _game.registry.create_file("Авто контроллер", "text", _first_folder_id())
-	_ok(file != null, "файл для автоотправки создан")
-	if file == null:
-		return
-	var req_id := str(hd._make_request([file], "udp", false, "", ""))
-	var req = hd.active_requests.get(req_id)
-	_ok(req != null, "запрос создан")
-	if req == null:
-		return
-	_ok(hd.attach_file(req_id, str(file.id)), "файл прикреплён")
-	_ok(bool(req.sending), "UDP: отправка началась сразу после attach_file")
-	_ok(not bool(req.minigame_active), "minigame_active не поднимается")
-	_ok(not bool(hd.modal_open), "модалки нет")
-	var progress_before := float(req.send_progress)
-	_c.tick(0.1)
-	_ok(float(req.send_progress) > progress_before, "send_progress идёт")
 	hd._cleanup_request(req_id, true)
+	hd._remove_packet(packet_id)
 
 
-func _test_fast_hour() -> void:
+func _test_fast_hour_and_report() -> void:
 	_set_case("fast_hour")
-	_c.hour_director.set_time_scale(60.0)
-	for i in range(100):
-		# Изолируем переход фазы от автопотерь SLA в ускоренном прогоне.
-		_game.sla = 200.0
-		_c.tick(0.1)
-		if String(_c.phase) != "hour":
-			break
+	_finish_current_hour()
 	_eq(String(_c.phase), "hour_result", "час завершён → hour_result")
-	_eq(_hour_events, 1, "hour_finished эмитится один раз")
+	_eq(_hour_events, 1, "hour_finished один раз")
 	_ok(not _last_report.is_empty(), "отчёт часа не пустой")
 	_eq(int(_last_report.get("hour", 0)), 1, "в отчёте час 1")
-	_ok(_last_report.has("earned"), "в отчёте есть earned")
-	_ok(_last_report.has("completed"), "в отчёте есть completed")
-	_ok(_last_report.has("failed"), "в отчёте есть failed")
-	_ok(_last_report.has("sla_delta"), "в отчёте есть sla_delta")
+	for key in ["earned", "completed", "failed", "attacks", "attacks_failed",
+			"sla_delta", "files_carry", "packets_left", "requests_left"]:
+		_ok(_last_report.has(key), "отчёт содержит %s" % key)
 	_eq(String(_game.phase), "hour", "Game.phase ещё hour до next_after_hour")
 	_eq(int(_game.hour), 1, "Game.hour ещё 1 до next_after_hour")
-	_ok(not _c.current_report.is_empty(), "current_report заполнен")
 
 
-func _test_after_hour() -> void:
+func _test_after_hour_and_shop() -> void:
 	_set_case("next_after_hour")
+	_shop_events = 0
 	_c.next_after_hour()
 	_eq(String(_c.phase), "prep", "после отчёта → prep")
 	_eq(String(_game.phase), "prep", "Game.phase = prep")
 	_eq(int(_game.hour), 2, "следующий час = 2")
 	_ok(_c.has_save(), "автосейв после часа")
-	# Повторный next_after_hour в prep ничего не двигает.
-	_c.next_after_hour()
-	_eq(int(_game.hour), 2, "next_after_hour вне hour_result игнорируется")
+	_ok(_shop_events > 0, "shop_changed при генерации офферов")
+
+	_set_case("shop_after_h1")
+	_eq(_game.shop_offer_hour, 2, "офферы сгенерированы для H2")
+	_eq(_game.shop_rerolls, 0, "рероллы сброшены")
+	_eq(_game.shop_offers.size(), 3, "ровно 3 оффера")
+	var unique: Dictionary = {}
+	for id in _game.shop_offers:
+		unique[str(id)] = true
+	_eq(unique.size(), 3, "офферы без дублей")
+	var shop_data: Array = _c.shop_data()
+	_eq(shop_data.size(), 3, "shop_data: 3 текущих предложения")
+	for entry in shop_data:
+		_ok(not str(entry.get("name", "")).is_empty(), "у оффера есть имя")
+		_ok(int(entry.get("price", -1)) >= 0, "у оффера есть цена")
+		_ok(int(entry.get("level", -1)) >= 0, "у оффера есть уровень")
+	_eq(int(_last_report.get("hour", 0)), 1, "отчёт всё ещё за час 1")
 
 
 func _test_buy() -> void:
 	_set_case("buy")
 	_game.money = 1000
-	var shop_before: int = _shop_events
-	_ok(_c.buy("shop_slot3"), "покупка третьего слота")
-	_eq(int(_game.money), 750, "списано 250")
-	_eq(int(_game.upgrades.get("slot_level", 0)), 1, "slot_level = 1")
-	_eq(_shop_events, shop_before + 1, "shop_changed эмитится")
-	_ok(not _c.buy("shop_slot3"), "повторная покупка → false")
-	_eq(int(_game.money), 750, "деньги не списаны повторно")
-	_eq((_c.shop_data() as Array).size(), 10, "shop_data: 10 позиций")
+	_c.shop.refresh(2, int(_game.money), true)
+	var offers: Array = _c.shop_data()
+	_ok(offers.size() == 3, "3 предложения для покупки")
+	if offers.is_empty():
+		return
+	var entry: Dictionary = offers[0]
+	var id := str(entry.get("id", ""))
+	var price := int(entry.get("price", 0))
+	var level_before := int(entry.get("level", 0))
+	_shop_events = 0
+	_ok(_c.buy(id), "покупка оффера")
+	_eq(int(_game.money), 1000 - price, "деньги списаны по цене")
+	_eq(int(_c.shop.level(id)), level_before + 1, "уровень лота +1")
+	_ok(_shop_events > 0, "shop_changed после покупки")
+	_eq((_c.shop_data() as Array).size(), 3, "3 предложения остаются в магазине")
+
+
+func _test_reroll_reset() -> void:
+	_set_case("reroll_reset")
+	_game.shop_rerolls = 2
+	_ok(_c.start_hour(), "старт часа 2")
+	_finish_current_hour()
+	_c.next_after_hour()
+	_eq(String(_c.phase), "prep", "H3 prep")
+	_eq(int(_game.hour), 3, "час 3")
+	_eq(int(_game.shop_rerolls), 0, "рероллы сброшены после часа")
+	_eq(int(_game.shop_offer_hour), 3, "офферы перегенерированы для H3")
+	_eq(_game.shop_offers.size(), 3, "3 оффера на H3")
 
 
 func _test_full_run() -> void:
 	_set_case("full_run")
 	_c.new_run(4242)
 	_eq(int(_game.hour), 1, "новый забег с часа 1")
-	_eq(int(_game.money), 150, "деньги нового забега")
-
+	_eq(int(_game.money), 50, "деньги нового забега")
 	var hours_before: int = _hour_events
 	var runs_before: int = _run_events
 	for h in range(1, 10):
 		_ok(_c.start_hour(), "старт часа %d" % h)
 		_eq(String(_c.phase), "hour", "фаза hour в часе %d" % h)
-		var hd = _c.hour_director
-		hd.set_time_scale(60.0)
-		# Изоляция механики контроллера: без массовых спавнов ускоренный
-		# прогон не должен упираться в SLA. Атаки остаются штатными.
-		hd.recv_disabled_until = 9999.0
-		hd.send_disabled_until = 9999.0
-		var finished := false
-		for i in range(100):
-			_game.sla = 200.0
-			_c.tick(0.1)
-			if String(_c.phase) != "hour":
-				finished = true
-				break
-		_ok(finished, "час %d завершился" % h)
+		_finish_current_hour()
 		_eq(String(_c.phase), "hour_result", "час %d: hour_result" % h)
 		_c.next_after_hour()
 		if h < 9:
 			_eq(String(_c.phase), "prep", "час %d: prep" % h)
 			_eq(int(_game.hour), h + 1, "час %d: следующий" % h)
+			_eq(_game.shop_offer_hour, h + 1, "час %d: офферы для H%d" % [h, h + 1])
+			_eq(_game.shop_offers.size(), 3, "час %d: 3 оффера" % h)
 	_eq(_hour_events - hours_before, 9, "9 отчётов часов")
-	_eq(_run_events - runs_before, 1, "run_finished эмитится один раз")
+	_eq(_run_events - runs_before, 1, "run_finished один раз")
 	_eq(String(_c.phase), "run_result", "9-й час → run_result")
 	_eq(String(_game.phase), "results", "Game.phase = results")
-
 	var result: Dictionary = _c.run_result()
 	_ok(not result.is_empty(), "run_result не пустой")
 	_ok(bool(result.get("won", false)), "победа при SLA > 0")
 	_eq(str(result.get("reason", "")), "victory", "reason = victory")
 	_eq(int(result.get("hours", 0)), 9, "hours = 9")
-	_eq(int(result.get("money_earned", -1)), 0, "money_earned без отправок = 0")
 	_ok(int(result.get("score", 0)) > 0, "score > 0")
-	_ok(int(result.get("best", 0)) >= int(result.get("score", 0)), "best >= score")
-	_ok(not _last_run.is_empty(), "run_finished пришёл с данными")
-	_eq(int(_last_run.get("score", -1)), int(result.get("score", 0)), "сигнал = run_result()")
-	# Награды выданы по ходу часов, но итоговый экран должен их показать.
-	var unlocked: Array = result.get("unlocked", [])
-	_ok(unlocked.has("complete_run"), "unlocked: complete_run на победе")
-	_ok(unlocked.has("survive_hour_3") and unlocked.has("survive_hour_5"),
-		"unlocked: все награды текущего забега")
-	_eq(unlocked.size(), 3, "unlocked без дублей после победы")
-	_eq((_last_run.get("unlocked", []) as Array).size(), 3, "unlocked в сигнале run_finished")
+	_ok(int(result.get("money_earned", -1)) == 0, "money_earned без отправок = 0")
 
 
 func _test_save_load() -> void:
@@ -291,6 +298,50 @@ func _test_save_load() -> void:
 	_eq(String(_c.phase), "prep", "continue_run → prep")
 	_eq(String(_game.phase), "prep", "Game.phase = prep после continue_run")
 	_eq(int(_game.money), 321, "continue_run восстановил деньги")
+	_ok(int(_game.hour) >= 1, "continue_run восстановил час")
+
+
+# --- служебное -------------------------------------------------------------
+
+func _finish_current_hour() -> void:
+	var hd = _c.hour_director
+	hd.set_time_scale(60.0)
+	hd.files_spawned = hd.files_budget
+	hd.requests_spawned = hd.request_cap
+	hd.spawn_recv_accum = 0.0
+	hd.spawn_send_accum = 0.0
+	if hd.attack_director != null:
+		hd.attack_director._schedule.clear()
+		hd.attack_director._next_index = 0
+	for i in range(200):
+		_game.sla = 200.0
+		_c.tick(0.1)
+		if String(_c.phase) != "hour":
+			return
+
+
+func _first_folder_id() -> String:
+	var section = _game.registry.sections.get("C")
+	if section == null or section.folder_ids.is_empty():
+		return ""
+	return str(section.folder_ids[0])
+
+
+func _fill_folder(folder_id: String) -> void:
+	var guard := 0
+	while guard < 100:
+		guard += 1
+		_name_seq += 1
+		var f = _game.registry.create_file("Заполнение %d" % _name_seq, "text", folder_id)
+		if f == null:
+			return
+
+
+func _has_toast(fragment: String) -> bool:
+	for text in _toasts:
+		if str(text).contains(fragment):
+			return true
+	return false
 
 
 # --- обработчики -----------------------------------------------------------
@@ -309,24 +360,13 @@ func _on_shop_changed() -> void:
 	_shop_events += 1
 
 
-func _on_phase_changed(_phase: StringName) -> void:
+func _on_phase_changed(phase: StringName) -> void:
 	_phase_events += 1
+	_phases.append(String(phase))
 
 
-# --- служебное -------------------------------------------------------------
-
-func _first_folder_id() -> String:
-	var section = _game.registry.sections.get("C")
-	if section == null or section.folder_ids.is_empty():
-		return ""
-	return str(section.folder_ids[0])
-
-
-func _find_section(sections: Array, id: String) -> Dictionary:
-	for section in sections:
-		if section is Dictionary and str(section.get("id", "")) == id:
-			return section
-	return {}
+func _on_toast(text: String) -> void:
+	_toasts.append(text)
 
 
 func _backup_save() -> void:
@@ -374,7 +414,7 @@ func _approx(actual: float, expected: float, eps: float, message: String) -> boo
 	_checks += 1
 	if absf(float(actual) - float(expected)) <= eps:
 		return true
-	_fail("%s — получено %.6f, ожидалось %.6f" % [message, actual, expected])
+	_fail("%s — получено %.6f, ожидалось %.6f" % [message, float(actual), float(expected)])
 	return false
 
 

@@ -1,12 +1,11 @@
 extends SceneTree
-## Headless-тест атак часа на экране Main.tscn.
+## Headless-тест атак v2: только модальная мини-игра, без карточек/оверлеев.
 ##
-## Проверяет UI-интеграцию AttackDirector:
-##   • junk: карточка в приёме → drop на ShieldDrop → +5 $ / +1 SLA;
-##   • DDoS: плашка в ПРИЁМЕ и удержание щита 1.5 с → +30 $ / +2 SLA;
-##   • phishing: приглушённый RequestCard → отклонение → +20 $ / +2 SLA;
-##   • ransomware: карточка .exe → щит-карантин → +25 $ / +2 SLA;
-##   • обычный пакет на щите: −2 SLA, пакет остаётся.
+## Проверяет:
+##   • controller.show_attack_minigame открывает модалку в modal_root;
+##   • час встаёт на паузу на время мини-игры и продолжается после;
+##   • успех/провал применяют деньги/SLA;
+##   • в ПРИЁМЕ/ОТПРАВКЕ нет сущностей-атак, щит-удержание удалено.
 ##
 ## Запуск:
 ##   godot --headless --path . --script tests/test_main_attacks.gd
@@ -15,14 +14,17 @@ const MAIN_SCENE := "res://scenes/Main.tscn"
 
 var _checks := 0
 var _fails := 0
+var _finished := false
 var _main: Node = null
 var _controller = null
 var _director = null
 var _game = null
-var _folder_id := ""
+var _show_attack_signals := 0
 
 
 func _init() -> void:
+	var watchdog := create_timer(90.0)
+	watchdog.timeout.connect(_on_timeout)
 	await process_frame
 	var packed := load(MAIN_SCENE) as PackedScene
 	if packed == null:
@@ -48,208 +50,156 @@ func _init() -> void:
 	if _director == null:
 		_finish()
 		return
-
-	# Атаки открываются прогрессией: junk/ddos — час 2, phishing — 3,
-	# ransomware — 4. Ставим час 4, чтобы проверить все виды.
-	_game.hour = 4
-	_ok(_game.feature_unlocked("attack_junk"), "junk-атаки открыты (час 2)")
-	_ok(_game.feature_unlocked("attack_ddos"), "DDoS-атаки открыты (час 2)")
-	_ok(_game.feature_unlocked("attack_phishing"), "phishing-атаки открыты (час 3)")
-	_ok(_game.feature_unlocked("attack_ransomware"), "ransomware-атаки открыты (час 4)")
-
-	_ok(_main._shield_receive != null and _main._shield_send != null, "щиты ПРИЁМ/ОТПРАВКА созданы")
-
-	_folder_id = _first_folder_id()
-	_ok(not _folder_id.is_empty(), "в реестре есть папка")
-	for i in 4:
-		_ok(_game.registry.create_file("атака_%d" % i, "text", _folder_id) != null,
-			"создан файл атака_%d" % i)
+	_controller.show_attack_minigame.connect(_on_show_attack_minigame)
 
 	_main._on_start_hour()
 	await process_frame
 	_eq(_controller.phase, &"hour", "фаза контроллера — hour")
 	_ok(_director.attack_director != null, "attack_director доступен")
 
-	await _test_junk()
-	await _test_ddos()
-	await _test_phishing()
-	await _test_ransomware()
-	await _test_regular_packet()
+	# Старый UI атак удалён.
+	_ok(_main.get("_shield_receive") == null, "щита ПРИЁМ больше нет")
+	_ok(_main.get("_shield_send") == null, "щита ОТПРАВКА больше нет")
+	_ok(_main.get("_ddos_overlay") == null, "оверлея DDoS больше нет")
+	_ok(not _main.has_method("_on_quarantine_drop"), "карантин-drop удалён")
+	_ok(not _main.has_method("_on_shield_press"), "удержание щита удалено")
+	_ok(not _main.has_method("_refresh_attacks"), "карточки атак удалены")
+	_ok(not _director.hold_shield(1.5), "hold_shield больше не работает")
 
-	await process_frame
+	var packets_before: int = _main.packets.size()
+	var requests_before: int = _main.requests.size()
+
+	await _run_attack("junk", 1.0, true)
+	await _run_attack("ddos", 1.0, true)
+	await _run_attack("phishing", 0.0, false)
+	await _run_attack("ransomware", 1.0, true)
+
+	_eq(_show_attack_signals, 4, "controller.show_attack_minigame эмитился 4 раза")
+	_ok(_main._modal_game == null, "после всех атак модалки нет")
+	_ok(not bool(_controller.modal_open), "controller.modal_open сброшен")
+	_ok(not bool(_director.is_attack_paused()), "час не остался на паузе")
+	_eq(_main.packets.size(), packets_before, "атаки не добавляют карточки в ПРИЁМ")
+	_eq(_main.requests.size(), requests_before, "атаки не добавляют карточки в ОТПРАВКУ")
+	for card in _main.packets:
+		_ok(card.get("is_attack") == null, "в PacketCard нет ветки атаки")
+	for card in _main.requests:
+		_ok(card.get("is_attack") == null, "в RequestCard нет ветки атаки")
+
 	print("")
 	print("Проверок: %d, провалов: %d" % [_checks, _fails])
 	_finish()
 
 
-# --- сценарии ---------------------------------------------------------------
+## Одна атака: модалка + пауза, затем результат.
+func _run_attack(kind: String, quality: float, expect_success: bool) -> void:
+	var before_money := int(_game.money)
+	_game.sla = 30.0 if expect_success else 50.0
+	var before_sla := float(_game.sla)
+	var packets_before: int = _main.packets.size()
+	var requests_before: int = _main.requests.size()
 
-func _test_junk() -> void:
-	var aid: String = _director.spawn_attack_now("junk")
-	_ok(not aid.is_empty(), "junk-атака создана")
+	var aid: String = _director.spawn_attack_now(kind)
+	_ok(not aid.is_empty(), "%s: атака создана" % kind)
 	if aid.is_empty():
 		return
-	_main._refresh_hour()
-	await process_frame
+	var ad = _director.attack_director
+	var attack: Dictionary = ad.active_attacks.get(aid, {})
+	_eq(str(attack.get("state", "")), "minigame", "%s: атака в состоянии minigame" % kind)
+	_ok(ad.is_minigame_active(), "%s: мини-игра активна" % kind)
 
-	var card = _find_packet_attack("junk")
-	_ok(card != null, "junk-карточка в приёме")
-	if card == null:
+	# Модалка показана через controller.show_attack_minigame.
+	_ok(_main._modal_game != null, "%s: модалка атаки показана" % kind)
+	if _main._modal_game != null:
+		_ok(_main._modal_game.get_parent() == _main.modal_root,
+			"%s: модалка лежит в modal_root" % kind)
+		_ok(_main._modal_game.has_signal("finished"),
+			"%s: у модалки есть сигнал finished" % kind)
+	_ok(bool(_controller.modal_open), "%s: controller.modal_open = true" % kind)
+
+	# Час на паузе: время не идёт.
+	_ok(bool(_director.paused), "%s: час помечен paused" % kind)
+	_ok(bool(_director.is_attack_paused()), "%s: is_attack_paused = true" % kind)
+	var time_before := float(_director.time_left)
+	_controller.tick(1.0)
+	_approx(float(_director.time_left), time_before, 0.001,
+		"%s: время часа стоит на паузе" % kind)
+
+	# Атак нет в списках пакетов/запросов.
+	_eq(_main.packets.size(), packets_before, "%s: ПРИЁМ не изменился" % kind)
+	_eq(_main.requests.size(), requests_before, "%s: ОТПРАВКА не изменилась" % kind)
+
+	# Завершаем мини-игру напрямую (как сделал бы игрок).
+	ad._on_minigame_finished(quality)
+	await process_frame
+	await process_frame
+	_ok(not ad.active_attacks.has(aid), "%s: атака снята" % kind)
+	_ok(not ad.is_minigame_active(), "%s: мини-игра закрыта" % kind)
+	_eq(_main._modal_game, null, "%s: модалка снята" % kind)
+	_ok(not bool(_controller.modal_open), "%s: modal_open сброшен" % kind)
+	_ok(not bool(_director.is_attack_paused()), "%s: пауза снята" % kind)
+	_ok(float(_director.time_left) > 0.0, "%s: час продолжает идти" % kind)
+
+	if expect_success:
+		_ok(int(_game.money) > before_money,
+			"%s: успех повышает деньги (%d → %d)" % [kind, before_money, int(_game.money)])
+		_ok(float(_game.sla) > before_sla,
+			"%s: успех повышает SLA (%.1f → %.1f)" % [kind, before_sla, float(_game.sla)])
+	else:
+		_ok(int(_game.money) < before_money,
+			"%s: провал снижает деньги (%d → %d)" % [kind, before_money, int(_game.money)])
+		_ok(float(_game.sla) < before_sla,
+			"%s: провал снижает SLA (%.1f → %.1f)" % [kind, before_sla, float(_game.sla)])
+
+
+func _on_show_attack_minigame(_game_node, _kind: String) -> void:
+	_show_attack_signals += 1
+
+
+func _on_timeout() -> void:
+	if _finished:
 		return
-	var pid: String = str(card.id)
-	var payload := {
-		"kind": "packet", "id": pid, "name": "?",
-		"is_attack": true, "attack_kind": "junk", "attack_id": aid,
-	}
-	var shield = _main._shield_receive
-	_ok(shield._can_drop_data(Vector2.ZERO, payload), "щит принимает junk-карточку")
-	_ok(not shield._can_drop_data(Vector2.ZERO, {"kind": "packet", "id": pid}),
-		"обычный пакет щит не принимает")
-
-	_game.sla = 150.0
-	var money0 := int(_game.money)
-	shield._drop_data(Vector2.ZERO, payload)
-	await process_frame
-	_eq(int(_game.money), money0 + 5, "junk: +5 $")
-	_ok(absf(float(_game.sla) - 151.0) < 0.01, "junk: +1 SLA (%.1f)" % float(_game.sla))
-	_ok(not _director.active_packets.has(pid), "junk-пакет удалён")
-	_ok(not _director.attack_director.active_attacks.has(aid), "junk-атака снята")
-	_ok(_find_packet_attack("junk") == null, "junk-карточка убрана из приёма")
-
-
-func _test_ddos() -> void:
-	var aid: String = _director.spawn_attack_now("ddos")
-	_ok(not aid.is_empty(), "DDoS-атака создана")
-	if aid.is_empty():
-		return
-	_main._refresh_hour()
-	await process_frame
-
-	_ok(_main._ddos_overlay != null, "DDoS-плашка показана в ПРИЁМЕ")
-	_ok(float(_main._packet_shift) > 0.0, "карточки приёма сдвинуты под плашкой")
-
-	_game.sla = 150.0
-	var money0 := int(_game.money)
-	var held = _director.hold_shield(1.6)
-	_ok(held, "щит удерживается при активном DDoS")
-	_eq(int(_game.money), money0 + 30, "DDoS: +30 $")
-	_ok(absf(float(_game.sla) - 152.0) < 0.01, "DDoS: +2 SLA (%.1f)" % float(_game.sla))
-	_ok(not _director.attack_director.active_attacks.has(aid), "DDoS-атака отражена")
-
-	_main._refresh_hour()
-	await process_frame
-	_ok(_main._ddos_overlay == null, "DDoS-плашка убрана после отражения")
-
-
-func _test_phishing() -> void:
-	var aid: String = _director.spawn_attack_now("phishing")
-	_ok(not aid.is_empty(), "phishing-атака создана")
-	if aid.is_empty():
-		return
-	_main._refresh_hour()
-	await process_frame
-
-	var attack: Dictionary = _director.attack_director.active_attacks.get(aid, {})
-	var rid := str(attack.get("request_id", ""))
-	_ok(not rid.is_empty(), "у фишинга есть request_id")
-	var card = _find_request(rid)
-	_ok(card != null, "RequestCard фишинга в ОТПРАВКЕ")
-	if card == null:
-		return
-	_ok(card.avatar_muted, "аватар фишинга приглушён")
-	_ok(card.attack_kind == "phishing", "карточка помечена как phishing")
-
-	_game.sla = 150.0
-	var money0 := int(_game.money)
-	_main._on_request_reject(rid)
-	await process_frame
-	_eq(int(_game.money), money0 + 20, "phishing: +20 $")
-	_ok(absf(float(_game.sla) - 152.0) < 0.01, "phishing: +2 SLA (%.1f)" % float(_game.sla))
-	_ok(not _director.active_requests.has(rid), "фишинг-запрос закрыт")
-	_ok(not _director.attack_director.active_attacks.has(aid), "фишинг-атака снята")
-
-
-func _test_ransomware() -> void:
-	var aid: String = _director.spawn_attack_now("ransomware")
-	_ok(not aid.is_empty(), "ransomware-атака создана")
-	if aid.is_empty():
-		return
-	_main._refresh_hour()
-	await process_frame
-
-	var card = _find_packet_attack("ransomware")
-	_ok(card != null, "ransomware-карточка в приёме")
-	if card == null:
-		return
-	_ok(str(card.file_name).to_lower().ends_with(".exe"), "шифровальщик показан как .exe")
-	var pid: String = str(card.id)
-
-	_game.sla = 150.0
-	var money0 := int(_game.money)
-	var ok: bool = _main._on_quarantine_drop({
-		"kind": "packet", "id": pid,
-		"is_attack": true, "attack_kind": "ransomware", "attack_id": aid,
-	})
-	_ok(ok, "ransomware обезврежен через щит")
-	await process_frame
-	_eq(int(_game.money), money0 + 25, "ransomware: +25 $")
-	_ok(absf(float(_game.sla) - 152.0) < 0.01, "ransomware: +2 SLA (%.1f)" % float(_game.sla))
-	_ok(not _director.active_packets.has(pid), "ransomware-пакет удалён")
-	_ok(not _director.attack_director.active_attacks.has(aid), "ransomware-атака снята")
-
-
-func _test_regular_packet() -> void:
-	var pid: String = _director.spawn_packet_now("text", "udp")
-	_ok(not pid.is_empty(), "обычный UDP-пакет заспавнен")
-	if pid.is_empty():
-		return
-	# UDP-потеря (20 %) — для теста возвращаем карточку сразу.
-	if str(_director.active_packets[pid].state) == "lost":
-		_director.active_packets[pid].state = "waiting"
-	_main._refresh_hour()
-	await process_frame
-
-	_game.sla = 150.0
-	var ok: bool = _main._on_quarantine_drop({
-		"kind": "packet", "id": pid, "name": "обычный",
-		"protocol": "UDP", "type": "text",
-	})
-	_ok(not ok, "обычный пакет не считается угрозой")
-	_ok(absf(float(_game.sla) - 148.0) < 0.01, "обычный пакет: −2 SLA (%.1f)" % float(_game.sla))
-	_ok(_director.active_packets.has(pid), "обычный пакет остался в приёме")
-
-
-# --- хелперы ----------------------------------------------------------------
-
-func _find_packet_attack(kind: String):
-	for c in _main.packets:
-		if is_instance_valid(c) and c.is_attack and str(c.attack_kind) == kind:
-			return c
-	return null
-
-
-func _find_request(req_id: String):
-	for c in _main.requests:
-		if is_instance_valid(c) and str(c.id) == req_id:
-			return c
-	return null
-
-
-func _first_folder_id() -> String:
-	if _game == null or _game.registry == null:
-		return ""
-	for section in _game.registry.sections.values():
-		if not section.folder_ids.is_empty():
-			return str(section.folder_ids[0])
-	return ""
+	print("FAIL: тест превысил 90 секунд")
+	_finished = true
+	quit(1)
 
 
 func _finish() -> void:
+	if _finished:
+		return
+	_finished = true
+	if _main != null and is_instance_valid(_main):
+		_main.queue_free()
+	_stop_audio()
+	await process_frame
+	await process_frame
+	await process_frame
+	var audio = root.get_node_or_null("Audio")
+	if audio != null:
+		audio.queue_free()
+	await process_frame
+	await create_timer(0.1).timeout
 	if _fails == 0:
 		print("PASS")
 	else:
 		print("FAIL")
 	quit(0 if _fails == 0 else 1)
+
+
+func _stop_audio() -> void:
+	var audio = root.get_node_or_null("Audio")
+	if audio == null:
+		return
+	if audio.has_method("stop_music"):
+		audio.call("stop_music")
+	for child in audio.get_children():
+		if child is AudioStreamPlayer:
+			var player := child as AudioStreamPlayer
+			player.stop()
+			player.stream = null
+	if audio.get("_sfx_streams") is Dictionary:
+		(audio.get("_sfx_streams") as Dictionary).clear()
+	if audio.get("_music_streams") is Dictionary:
+		(audio.get("_music_streams") as Dictionary).clear()
 
 
 func _ok(condition: bool, message: String) -> void:
@@ -266,6 +216,14 @@ func _eq(actual, expected, message: String) -> void:
 		return
 	_fails += 1
 	print("FAIL: %s — получено %s, ожидалось %s" % [message, actual, expected])
+
+
+func _approx(actual: float, expected: float, eps: float, message: String) -> void:
+	_checks += 1
+	if absf(float(actual) - float(expected)) <= eps:
+		return
+	_fails += 1
+	print("FAIL: %s — получено %.6f, ожидалось %.6f" % [message, actual, expected])
 
 
 func _fail(message: String) -> void:

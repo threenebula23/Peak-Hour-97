@@ -1,13 +1,13 @@
 extends SceneTree
-## Fuzz/инварианты реестра + точечные проверки cooldown и отмены запросов
-## по failed-файлу.
+## Fuzz/инварианты реестра v2 + точечные проверки расхода файлов и отмены.
 ##
 ## Запуск:
 ##   godot --headless --path . --script tests/test_fuzz.gd
 ##
 ## Все шаги детерминированы (фиксированный seed). Виртуальное время
-## передаётся в lock/cooldown/tick явно, поэтому тест не зависит от
-## системных часов и порядка выполнения.
+## передаётся в lock/tick явно, поэтому тест не зависит от системных часов.
+## v2: cooldown после отправки удалён — файл расходуется при успехе и
+## сохраняется при отмене/таймауте.
 
 const FR := preload("res://scripts/core/file_registry.gd")
 const HD := preload("res://scripts/core/hour_director.gd")
@@ -35,10 +35,10 @@ func _init() -> void:
 		_finish()
 		return
 	_fuzz_registry()
-	_cooldown_case()
+	_consumption_case()
 	_attach_once_case()
-	_failed_cancels_all_requests()
-	_send_cooldown_case()
+	_failed_file_detaches()
+	_send_consumes_case()
 	_finish()
 
 
@@ -69,7 +69,7 @@ func _fuzz_registry() -> void:
 			13: _op_destroy_malicious()
 			14: _op_lock()
 			15: _op_unlock()
-			16: _op_reserve_or_release()
+			16: _op_table()
 			17: _op_tick()
 		_check_invariants("шаг %d" % step)
 
@@ -117,10 +117,10 @@ func _op_delete_folder() -> void:
 		return
 	var folder_id := _pick_key(_reg.folders)
 	var folder = _reg.folders[folder_id]
-	var expected: bool = folder.count() == 0 and int(folder.reserved) == 0
+	var expected: bool = folder.count() == 0 and folder.reserved.is_empty()
 	if expected:
 		for f in _reg.files.values():
-			if str(f.folder_id) == folder_id:
+			if str(f.folder_id) == folder_id and str(f.location) != "table":
 				expected = false
 				break
 	_ok(_reg.delete_folder(folder_id) == expected, "delete_folder")
@@ -132,19 +132,11 @@ func _op_create_file() -> void:
 	_seq += 1
 	var types: Array[String] = ["text", "sound", "photo", "video"]
 	var file_type := types[_rng.randi_range(0, types.size() - 1)]
-	var use_folder: bool = _rng.randf() < 0.65 and not _reg.folders.is_empty()
-	if use_folder:
-		var folder_id := _pick_key(_reg.folders)
-		var folder = _reg.folders[folder_id]
-		var has_room: bool = folder.has_free_slot(FR.MAX_FILES_PER_FOLDER)
-		var file = _reg.create_file("fz_%d" % _seq, file_type, folder_id, &"folder")
-		if has_room:
-			_ok(file != null, "create_file в папку при наличии места")
-		else:
-			_ok(file == null, "create_file: отказ при переполнении папки")
-	else:
-		var file = _reg.create_file("fz_%d" % _seq, file_type, "", &"registry")
-		_ok(file != null, "create_file в registry")
+	# v2: создаём в registry (без места в папке), затем двигаем move-операцией.
+	var file = _reg.create_file("fz_%d" % _seq, file_type, "", &"registry")
+	_ok(file != null, "create_file в registry")
+	if file != null:
+		_eq(str(file.location), "registry", "create_file: location registry")
 
 
 func _op_move_file() -> void:
@@ -154,23 +146,23 @@ func _op_move_file() -> void:
 	var target_id := _pick_key(_reg.folders)
 	var file = _reg.files[file_id]
 	var target = _reg.folders[target_id]
-	var expected := true
-	if str(file.location) != "folder" and str(file.location) != "registry":
-		expected = false
-	elif not str(file.attached_request).is_empty():
-		expected = false
-	elif file.folder_id == target_id and str(file.location) == "folder":
-		expected = true
-	else:
-		var occupied: int = target.count()
-		if file.folder_id == target_id:
-			occupied -= 1
-		expected = occupied + int(target.reserved) < FR.MAX_FILES_PER_FOLDER
+	var loc := str(file.location)
+	if not str(file.attached_request).is_empty():
+		_ok(not _reg.move_file(file_id, target_id), "move_file: attached запрещён")
+		return
+	if loc != "folder" and loc != "registry" and loc != "table":
+		_ok(not _reg.move_file(file_id, target_id), "move_file: %s запрещён" % loc)
+		return
+	# Перемещение в ту же папку не проверяем: first-fit видит собственные клетки.
+	if loc == "folder" and str(file.folder_id) == target_id:
+		return
+	var expected: bool = not _reg._find_fit(target, str(file.shape_id), int(file.rotation)).is_empty()
 	var result: bool = _reg.move_file(file_id, target_id)
 	_ok(result == expected, "move_file")
 	if result:
-		_ok(str(file.location) == "folder" and file.folder_id == target_id, "move_file: состояние файла")
-		_ok(target.file_ids.count(file_id) == 1, "move_file: ровно одна запись в папке")
+		_eq(str(file.location), "folder", "move_file: location folder")
+		_eq(str(file.folder_id), target_id, "move_file: folder_id")
+		_eq(target.file_ids.count(file_id), 1, "move_file: ровно одна запись в папке")
 
 
 func _op_attach() -> void:
@@ -183,7 +175,8 @@ func _op_attach() -> void:
 	var result: bool = _reg.attach_file(file_id, req_id, _now)
 	_ok(result == expected, "attach_file")
 	if expected:
-		_ok(str(file.location) == "attached" and str(file.attached_request) == req_id, "attach: состояние")
+		_ok(str(file.location) == "attached" and str(file.attached_request) == req_id,
+			"attach: состояние")
 
 
 func _op_detach() -> void:
@@ -203,10 +196,14 @@ func _op_mark_failed() -> void:
 		return
 	var file_id := _pick_key(_reg.files)
 	var file = _reg.files[file_id]
+	# Стол не участвует в failed/malicious-сценариях игры.
+	if str(file.location) == "table":
+		return
 	_ok(_reg.mark_failed(file_id), "mark_failed")
 	_ok(str(file.location) == "failed", "mark_failed: location")
 	_ok(str(file.attached_request).is_empty(), "mark_failed: откреплён")
-	_ok(float(file.lock_until) <= 0.0 and float(file.cooldown_until) <= 0.0, "mark_failed: таймеры сброшены")
+	_ok(float(file.lock_until) <= 0.0 and float(file.cooldown_until) <= 0.0,
+		"mark_failed: таймеры сброшены")
 	_ok(not _reg.attach_file(file_id, "rX", _now), "failed не attach")
 
 
@@ -215,6 +212,8 @@ func _op_mark_malicious() -> void:
 		return
 	var file_id := _pick_key(_reg.files)
 	var file = _reg.files[file_id]
+	if str(file.location) == "table":
+		return
 	_ok(_reg.mark_malicious(file_id, "test"), "mark_malicious")
 	_ok(str(file.location) == "malicious", "mark_malicious: location")
 	_ok(str(file.malicious_kind) == "test", "mark_malicious: kind")
@@ -226,6 +225,8 @@ func _op_remove() -> void:
 		return
 	var file_id := _pick_key(_reg.files)
 	var file = _reg.files[file_id]
+	if str(file.location) == "table":
+		return
 	var expected: bool = str(file.location) == "malicious" or str(file.location) == "failed"
 	var result: bool = _reg.remove_file(file_id)
 	_ok(result == expected, "remove_file")
@@ -247,6 +248,10 @@ func _op_lock() -> void:
 		return
 	var file_id := _pick_key(_reg.files)
 	var file = _reg.files[file_id]
+	# Атака блокирует только доступные файлы (не стол/не прикреплённые).
+	if str(file.location) == "table" or str(file.location) == "attached" \
+			or not str(file.attached_request).is_empty():
+		return
 	var expected: bool = str(file.location) != "failed" and str(file.location) != "malicious"
 	var result: bool = _reg.lock_file(file_id, 5.0, _now)
 	_ok(result == expected, "lock_file")
@@ -266,27 +271,45 @@ func _op_unlock() -> void:
 	var result: bool = _reg.unlock_file(file_id)
 	_ok(result == expected, "unlock_file")
 	if expected:
-		_ok(str(file.location) == "folder" or str(file.location) == "registry", "unlock: location")
+		var loc := str(file.location)
+		_ok(loc == "folder" or loc == "registry" or loc == "table", "unlock: location")
 		_ok(float(file.lock_until) <= 0.0, "unlock: lock_until = 0")
 
 
-func _op_reserve_or_release() -> void:
-	if _reg.folders.is_empty():
-		return
-	var folder_id := _pick_key(_reg.folders)
-	var folder = _reg.folders[folder_id]
+## Стол сортировки: файл можно унести на стол и вернуть в папку.
+func _op_table() -> void:
 	if _rng.randf() < 0.5:
-		var expected: bool = folder.count() + int(folder.reserved) < FR.MAX_FILES_PER_FOLDER
-		var before: int = int(folder.reserved)
-		_ok(_reg.reserve_slot(folder_id) == expected, "reserve_slot")
-		if expected:
-			_ok(int(folder.reserved) == before + 1, "reserve_slot: +1")
+		if _reg.files.is_empty():
+			return
+		var file_id := _pick_key(_reg.files)
+		var file = _reg.files[file_id]
+		var loc := str(file.location)
+		if loc == "table":
+			return
+		if loc != "folder" and loc != "registry":
+			return
+		if not str(file.attached_request).is_empty():
+			return
+		var fit_ok: bool = not _reg._find_table_fit(str(file.shape_id), int(file.rotation)).is_empty()
+		var result: bool = _reg.move_file_to_table(file_id)
+		_ok(result == fit_ok, "move_file_to_table")
+		if result:
+			_eq(str(file.location), "table", "table: location")
+			_ok(_reg.is_table_file(file_id), "table: is_table_file")
 	else:
-		var expected: bool = int(folder.reserved) > 0
-		var before: int = int(folder.reserved)
-		_ok(_reg.release_slot(folder_id) == expected, "release_slot")
-		if expected:
-			_ok(int(folder.reserved) == before - 1, "release_slot: -1")
+		var table_ids := []
+		for id in _reg.files.keys():
+			if str(_reg.files[id].location) == "table":
+				table_ids.append(id)
+		if table_ids.is_empty():
+			return
+		var file_id := str(table_ids[_rng.randi_range(0, table_ids.size() - 1)])
+		var file = _reg.files[file_id]
+		var has_target: bool = not _reg._first_folder_id_with_space(file).is_empty()
+		var result: bool = _reg.move_from_table(file_id)
+		_ok(result == has_target, "move_from_table")
+		if result:
+			_eq(str(file.location), "folder", "table: вернулся в папку")
 
 
 func _op_tick() -> void:
@@ -301,10 +324,9 @@ func _check_invariants(tag: String) -> void:
 	errors.append_array(_reg.validate())
 
 	var membership := {}
-	var folder_owner := {}
 	for folder in _reg.folders.values():
-		if folder.count() + int(folder.reserved) > FR.MAX_FILES_PER_FOLDER:
-			errors.append("capacity папки %s > %d" % [folder.id, FR.MAX_FILES_PER_FOLDER])
+		if folder.cells.size() > folder.total_cells():
+			errors.append("клеток в папке %s больше %d" % [folder.id, folder.total_cells()])
 		var seen := {}
 		for file_id in folder.file_ids:
 			var fid := str(file_id)
@@ -313,11 +335,9 @@ func _check_invariants(tag: String) -> void:
 				continue
 			seen[fid] = int(seen.get(fid, 0)) + 1
 			membership[fid] = int(membership.get(fid, 0)) + 1
-			if folder_owner.has(fid):
-				errors.append("файл %s в папках %s и %s" % [fid, folder_owner[fid], folder.id])
-			folder_owner[fid] = folder.id
 			if str(_reg.files[fid].folder_id) != str(folder.id):
-				errors.append("файл %s лежит в %s, но folder_id=%s" % [fid, folder.id, _reg.files[fid].folder_id])
+				errors.append("файл %s лежит в %s, но folder_id=%s" % [
+					fid, folder.id, _reg.files[fid].folder_id])
 		for fid in seen.keys():
 			if int(seen[fid]) > 1:
 				errors.append("файл %s дважды в папке %s" % [fid, folder.id])
@@ -328,16 +348,23 @@ func _check_invariants(tag: String) -> void:
 		var count := int(membership.get(fid, 0))
 		if count > 1:
 			errors.append("файл %s в двух папках" % fid)
-		if str(file.folder_id).is_empty() and count != 0:
-			errors.append("файл %s без папки, но в folder.file_ids" % fid)
-		if not str(file.folder_id).is_empty() and count != 1:
-			errors.append("файл %s должен быть ровно в одной папке" % fid)
+		if loc == "table":
+			if count != 0:
+				errors.append("файл %s на столе, но в folder.file_ids" % fid)
+			if not _reg.is_table_file(fid):
+				errors.append("файл %s имеет location=table, но не в _table_cells" % fid)
+		elif str(file.folder_id).is_empty():
+			if count != 0:
+				errors.append("файл %s без папки, но в folder.file_ids" % fid)
+		elif count != 1:
+			errors.append("файл %s должен быть ровно в одной папке (location=%s)" % [fid, loc])
 		if loc == "attached":
 			if str(file.attached_request).is_empty():
 				errors.append("attached-файл %s без запроса" % fid)
 		elif not str(file.attached_request).is_empty():
 			errors.append("файл %s прикреплён, но location=%s" % [fid, loc])
-		if (loc == "failed" or loc == "locked" or loc == "malicious") and not str(file.attached_request).is_empty():
+		if (loc == "failed" or loc == "locked" or loc == "malicious") \
+				and not str(file.attached_request).is_empty():
 			errors.append("%s-файл %s прикреплён" % [loc, fid])
 		if not FR.FILE_ITEM_SCRIPT.LOCATIONS.has(loc):
 			errors.append("неверный location %s" % loc)
@@ -350,7 +377,8 @@ func _check_invariants(tag: String) -> void:
 		for folder_id in section.folder_ids:
 			section_folders += 1
 			if not _reg.folders.has(str(folder_id)):
-				errors.append("секция %s ссылается на несуществующую папку %s" % [section.id, folder_id])
+				errors.append("секция %s ссылается на несуществующую папку %s" % [
+					section.id, folder_id])
 			if seen_folders.has(str(folder_id)):
 				errors.append("папка %s дважды в секции %s" % [folder_id, section.id])
 			seen_folders[str(folder_id)] = true
@@ -380,22 +408,29 @@ func _check_invariants(tag: String) -> void:
 
 # --- точечные сценарии -----------------------------------------------------
 
-func _cooldown_case() -> void:
-	_set_case("cooldown")
+## v2: файл расходуется при успешной отправке и исчезает из папки.
+func _consumption_case() -> void:
+	_set_case("consumption")
 	_reg = FR.new()
 	_reg.setup_new_run()
 	var folder_id := _first_folder(_reg)
-	var file = _reg.create_file("cooldown.txt", "text", folder_id)
-	_ok(file != null, "cooldown: файл создан")
+	var folder = _reg.folders[folder_id]
+	var file = _reg.create_file("consume.txt", "text", folder_id)
+	_ok(file != null, "consumption: файл создан")
 	if file == null:
 		return
+	var fid := str(file.id)
 	var base: float = 50000.0
-	_ok(_reg.set_cooldown(str(file.id), 20.0, base), "cooldown: установлен на 20 с")
-	_ok(not _reg.attach_file(str(file.id), "req_a", base), "cooldown: сразу после отправки attach=false")
-	_approx(float(file.cooldown_until), base + 20.0, 0.0001, "cooldown_until = now + 20")
-	# Через 21 секунду tick снимает cooldown.
-	_eq(_reg.tick(base + 21.0), 1, "tick(now+21) снял cooldown")
-	_ok(_reg.attach_file(str(file.id), "req_a", base + 21.0), "cooldown: после tick attach=true")
+	_ok(_reg.attach_file(fid, "req_a", base), "consumption: прикреплён")
+	_ok(_reg.detach_file(fid), "consumption: отмена возвращает файл")
+	_ok(_reg.attach_file(fid, "req_b", base), "consumption: снова прикреплён")
+	_eq(str(file.location), "attached", "consumption: location attached")
+	var free_before: int = folder.free_cell_count()
+	_ok(_reg.consume_file(fid), "consumption: файл израсходован")
+	_ok(not _reg.files.has(fid), "consumption: файла нет в реестре")
+	_ok(folder.free_cell_count() > free_before, "consumption: клетки освобождены")
+	_ok(not _reg.attach_file(fid, "req_c", base), "consumption: израсходованный не attach")
+	_ok(_reg.validate().is_empty(), "consumption: реестр валиден")
 
 
 func _attach_once_case() -> void:
@@ -408,72 +443,99 @@ func _attach_once_case() -> void:
 	if file == null:
 		return
 	_ok(_reg.attach_file(str(file.id), "req_1", 1000.0), "attach_once: первое прикрепление")
-	_ok(not _reg.attach_file(str(file.id), "req_2", 1000.0), "attach_once: второе прикрепление запрещено")
+	_ok(not _reg.attach_file(str(file.id), "req_2", 1000.0),
+		"attach_once: второе прикрепление запрещено")
 	_ok(str(file.attached_request) == "req_1", "attach_once: запрос не перезаписан")
 	_ok(_reg.detach_file(str(file.id)), "attach_once: открепление")
-	_ok(_reg.attach_file(str(file.id), "req_2", 1000.0), "attach_once: после detach можно прикрепить к другому")
+	_ok(_reg.attach_file(str(file.id), "req_2", 1000.0),
+		"attach_once: после detach можно прикрепить к другому")
 
 
-func _failed_cancels_all_requests() -> void:
-	_set_case("failed_cancels_all")
+## v2: провал файла только открепляет его; запросы не отменяются и не штрафуются.
+func _failed_file_detaches() -> void:
+	_set_case("failed_file_detaches")
 	_game.start_new_run(4242)
 	var hd = HD.new()
 	hd.start_hour(1)
-	hd._recv_interval_current = 9999.0
-	hd.spawn_recv_accum = 0.0
+	hd.set_time_scale(1.0)
+	hd._next_spawn_at = 9999.0
 	var folder_id := _first_folder(_game.registry)
-	var file = _game.registry.create_file("failed_cancel.txt", "text", folder_id)
-	_ok(file != null, "failed_cancels_all: файл создан")
+	var file = _game.registry.create_file("failed_detach.txt", "text", folder_id)
+	_ok(file != null, "failed_file: файл создан")
 	if file == null:
 		hd.free()
 		return
+	var fid := str(file.id)
 	var req_a := str(hd._make_request([file], "udp", false, "", ""))
 	var req_b := str(hd._make_request([file], "udp", false, "", ""))
-	_ok(not req_a.is_empty() and not req_b.is_empty(), "failed_cancels_all: два запроса с одним required")
-	_ok(hd.attach_file(req_a, str(file.id)), "failed_cancels_all: файл прикреплён к первому")
+	_ok(not req_a.is_empty() and not req_b.is_empty(), "failed_file: два запроса созданы")
+	_ok(hd.attach_file(req_a, fid), "failed_file: файл прикреплён к запросу A")
 	_game.money = 1000
 	_game.sla = 150.0
-	_game.registry.mark_failed(str(file.id))
+	_game.registry.mark_failed(fid)
 	hd.tick(0.1)
-	_ok(not hd.active_requests.has(req_a), "failed_cancels_all: запрос A отменён")
-	_ok(not hd.active_requests.has(req_b), "failed_cancels_all: запрос B отменён")
-	_eq(_game.money, 970, "failed_cancels_all: два штрафа по −15 $")
-	_approx(_game.sla, 130.0, 0.001, "failed_cancels_all: два штрафа по −10 SLA")
-	_eq(int(hd._failed), 2, "failed_cancels_all: оба провала учтены")
-	_ok(_game.registry.validate().is_empty(), "failed_cancels_all: реестр валиден")
+	_ok(hd.active_requests.has(req_a), "failed_file: запрос A остался")
+	_ok(hd.active_requests.has(req_b), "failed_file: запрос B остался")
+	var req = hd.active_requests.get(req_a)
+	_ok(req != null and req.attached.is_empty(), "failed_file: файл откреплён от запроса")
+	_eq(_game.money, 1000, "failed_file: штрафа за отмену нет")
+	_approx(_game.sla, 150.0, 0.0001, "failed_file: штрафа SLA нет")
+	_ok(hd.reject_request(req_a), "failed_file: запрос A можно отклонить")
+	_ok(_game.registry.validate().is_empty(), "failed_file: реестр валиден")
 	hd.free()
 
 
-func _send_cooldown_case() -> void:
-	_set_case("send_cooldown")
+## v2: успешная отправка расходует файлы; отмена сохраняет; cooldown отсутствует.
+func _send_consumes_case() -> void:
+	_set_case("send_consumes")
 	_game.start_new_run(5151)
 	var hd = HD.new()
+	hd.send_game_factory = func(_id, _tier, _seed, _ctx):
+		return StubGame.new()
 	hd.start_hour(1)
 	hd.set_time_scale(1.0)
-	hd._recv_interval_current = 9999.0
-	hd.spawn_recv_accum = 0.0
+	hd._next_spawn_at = 9999.0
 	var folder_id := _first_folder(_game.registry)
-	var file = _game.registry.create_file("send_cd.txt", "text", folder_id)
-	_ok(file != null, "send_cooldown: файл создан")
+	var file = _game.registry.create_file("send_ok.txt", "text", folder_id)
+	_ok(file != null, "send_consumes: файл создан")
 	if file == null:
 		hd.free()
 		return
+	var fid := str(file.id)
 	var req_id := str(hd._make_request([file], "tcp", false, "", ""))
-	_ok(hd.attach_file(req_id, str(file.id)), "send_cooldown: файл прикреплён")
+	_ok(hd.attach_file(req_id, fid), "send_consumes: файл прикреплён")
+	var money_before := int(_game.money)
+	_ok(hd.start_send(req_id), "send_consumes: мини-игра открыта")
+	_ok(hd.is_minigame_active(), "send_consumes: мини-игра активна")
+	hd._on_send_minigame_finished(0.8)
 	var req = hd.active_requests.get(req_id)
-	req.connected = true
-	_ok(hd.start_send(req_id), "send_cooldown: отправка началась")
-	_ok(req.sending, "send_cooldown: отправка началась")
+	_ok(req != null and (req.sending or hd.is_request_queued(req_id)),
+		"send_consumes: отправка/очередь после мини-игры")
 	for i in range(300):
 		hd.tick(0.1)
 		if not hd.active_requests.has(req_id):
 			break
-	_ok(not hd.active_requests.has(req_id), "send_cooldown: запрос завершён")
-	_ok(float(file.cooldown_until) > 0.0, "send_cooldown: cooldown выставлен")
-	_ok(not _game.registry.attach_file(str(file.id), "after_send"), "send_cooldown: сразу после отправки attach=false")
-	var now := Time.get_unix_time_from_system()
-	_eq(_game.registry.tick(now + 21.0), 1, "send_cooldown: tick(now+21) снял cooldown")
-	_ok(_game.registry.attach_file(str(file.id), "after_send"), "send_cooldown: после tick attach=true")
+	_ok(not hd.active_requests.has(req_id), "send_consumes: запрос завершён")
+	_ok(not _game.registry.files.has(fid), "send_consumes: файл израсходован")
+	_ok(int(_game.money) > money_before, "send_consumes: деньги выросли")
+	_eq(float(file.cooldown_until), 0.0, "send_consumes: cooldown не выставляется")
+
+	# Отмена мини-игры: файл остаётся прикреплённым и не расходуется.
+	var file2 = _game.registry.create_file("send_cancel.txt", "text", folder_id)
+	_ok(file2 != null, "send_consumes: второй файл создан")
+	if file2 == null:
+		hd.free()
+		return
+	var fid2 := str(file2.id)
+	var req2 := str(hd._make_request([file2], "udp", false, "", ""))
+	_ok(hd.attach_file(req2, fid2), "send_consumes: второй файл прикреплён")
+	_ok(hd.start_send(req2), "send_consumes: вторая мини-игра открыта")
+	hd.force_close_send_minigame()
+	_ok(_game.registry.files.has(fid2), "send_consumes: отмена сохранила файл")
+	_eq(str(_game.registry.files[fid2].location), "attached",
+		"send_consumes: файл остался прикреплён")
+	_ok(hd.reject_request(req2), "send_consumes: запрос отклоняется после отмены")
+	_ok(_game.registry.files.has(fid2), "send_consumes: отказ не расходует файл")
 	hd.free()
 
 
@@ -527,6 +589,34 @@ func _fail(message: String) -> void:
 
 
 func _finish() -> void:
+	_stop_audio()
 	print("test_fuzz: проверок %d, провалов %d, known bug %d" % [_checks, _fails, _known])
 	print("PASS test_fuzz" if _fails == 0 else "FAIL test_fuzz")
 	quit(0 if _fails == 0 else 1)
+
+
+func _stop_audio() -> void:
+	var audio = root.get_node_or_null("Audio")
+	if audio == null:
+		return
+	if audio.has_method("stop_music"):
+		audio.call("stop_music")
+	for child in audio.get_children():
+		if child is AudioStreamPlayer:
+			var player := child as AudioStreamPlayer
+			player.stop()
+			player.stream = null
+	if audio.get("_sfx_streams") is Dictionary:
+		(audio.get("_sfx_streams") as Dictionary).clear()
+	if audio.get("_music_streams") is Dictionary:
+		(audio.get("_music_streams") as Dictionary).clear()
+
+
+## Мини-игра-заглушка: сигнал finished, но игра сама не идёт.
+class StubGame:
+	extends Node
+
+	signal finished(quality: float)
+
+	var running := true
+	var id := "stub"

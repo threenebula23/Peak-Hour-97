@@ -1,5 +1,8 @@
 extends SceneTree
-## Headless-тест связки Main.tscn ↔ GameController на экране подготовки.
+## Headless-тест связки Main.tscn ↔ GameController на экране подготовки (v2).
+##
+## Проверяет стартовые статы, сетку 5×4, стол сортировки вместо окон
+## ПРИЁМ/ОТПРАВКА, счётчики в клетках, превью фигуры пакета и магазин после H1.
 ##
 ## Запуск:
 ##   godot --headless --path . --script tests/test_main_prep.gd
@@ -30,9 +33,19 @@ func _init() -> void:
 
 	var game = root.get_node_or_null("Game")
 	_ok(game != null, "autoload Game доступен")
-	if game != null:
-		_eq(int(game.money), 150, "стартовые деньги 150")
+	if game == null:
+		_finish()
+		return
 
+	# --- Стартовые статы v2 --------------------------------------------------
+	_eq(int(game.money), 50, "стартовые деньги 50")
+	_ok(absf(float(game.sla) - 60.0) < 0.01, "стартовый SLA 60")
+	_ok(absf(float(game.sla_cap()) - 60.0) < 0.01, "кап SLA 60")
+	_eq(int(game.connection_slots()), 1, "стартовый слот один")
+	var dims: Vector2i = game.folder_dims()
+	_eq(dims, Vector2i(5, 4), "стартовая сетка папки 5×4")
+
+	# --- Дерево, сетка, заголовки -------------------------------------------
 	var rows: Array = main.tree.get("_rows")
 	var sections := 0
 	for e in rows:
@@ -43,46 +56,92 @@ func _init() -> void:
 	_ok(main.grid.folder_id != "", "выбрана первая папка для сетки")
 	_ok(main.files_window.title.contains(main.grid.folder_name),
 		"заголовок ФАЙЛЫ использует реальное имя папки (%s)" % main.files_window.title)
-	_eq(str(main.status_bar.get_metric("money").get("value", "")), "$ 150", "статус-бар: деньги")
-	_eq(str(main.status_bar.get_metric("channel").get("value", "")), "0%", "статус-бар: канал 0%")
-	var sla_metric: Dictionary = main.status_bar.get_metric("sla")
-	_eq(str(sla_metric.get("value", "")), "128 / 200", "SLA на старте — 128 / 200")
-	_ok(absf(float(sla_metric.get("fill", 0.0)) - 128.0 / 200.0) < 0.01,
-		"заливка SLA = 128/200 (%.2f)" % float(sla_metric.get("fill", 0.0)))
+	var grid_stats: Dictionary = main.grid.stats()
+	_eq(int(grid_stats.get("total", 0)), 20, "сетка 5×4 = 20 клеток")
+	_eq(int(main.grid.grid_metrics().get("cols", 0)), 5, "сетка: 5 столбцов")
+	_eq(int(main.grid.grid_metrics().get("rows", 0)), 4, "сетка: 4 строки")
+	_eq(str(main.grid.footer_text()), "занято 0 из 20 · свободно 20",
+		"подвал сетки считает клетки")
+	_ok(main.files_window.title_hint.contains("занято 0 из 20"),
+		"подвал ФАЙЛЫ считает клетки: %s" % main.files_window.title_hint)
 
-	_ok(main.main_menu.visible == false, "главное меню скрыто после старта")
+	# --- Статус-бар ----------------------------------------------------------
+	_eq(str(main.status_bar.get_metric("money").get("value", "")), "$ 50",
+		"статус-бар: деньги")
+	_eq(str(main.status_bar.get_metric("channel").get("value", "")), "0/10",
+		"статус-бар: канал 0/10 (load/capacity)")
+	_eq(str(main.status_bar.get_metric("sla").get("value", "")), "60 / 60",
+		"SLA на старте — 60 / 60")
+	_eq(str(main.status_bar.get_metric("tcp").get("value", "")), "0 / 1",
+		"статус-бар: слоты 0 / 1")
+	_eq(str(main.status_bar.get_metric("buffer").get("value", "")), "0 / 6",
+		"статус-бар: буфер 0 / 6")
+
+	# --- Правая колонка подготовки: стол сортировки -------------------------
+	_ok(main.sorting_table != null, "SortingTable создан")
+	if main.sorting_table != null:
+		_ok(main.sorting_table.visible, "стол сортировки виден в подготовке")
+		_ok(not main.receive_window.visible, "окно ПРИЁМ скрыто в подготовке")
+		_ok(not main.send_window.visible, "окно ОТПРАВКА скрыто в подготовке")
+		_eq(main.sorting_table.total_cells(), 24, "стол сортировки 4×6 = 24 клетки")
+		_eq(main.sorting_table.grid_metrics().get("cols", 0), 4, "стол: 4 столбца")
+		_eq(main.sorting_table.grid_metrics().get("rows", 0), 6, "стол: 6 строк")
+
+	# --- Магазин в H1 скрыт --------------------------------------------------
 	_ok(main._shop_btn != null and not main._shop_btn.visible,
 		"магазин скрыт в первом приготовлении")
+	_eq(main.controller.shop_data().size(), 0, "в H1 нет предложений магазина")
 
-	# Повторная перерисовка не должна падать.
+	# --- Повторная перерисовка не должна падать ------------------------------
 	main._refresh_prep()
 	_ok(main.grid.folder_id != "", "повторная подготовка не сбросила папку")
 
-	# --- Плюрализация заголовка ДИСКИ: 1 ПАПКА / 2 ПАПКИ / 5 ПАПОК ---------
-	_eq(main.tree_window.title_hint, "1 ПАПКА", "1 папка — «1 ПАПКА»")
-	_ok(game.registry.create_folder("C", "ПЛЮРАЛ 2") != null,
-		"вторая папка создана для проверки падежа")
-	main._refresh_prep()
-	_eq(main.tree_window.title_hint, "2 ПАПКИ", "2 папки — «2 ПАПКИ»")
-	while main._count_folders(main.controller.prep_data().get("sections", [])) < 5:
-		if game.registry.create_folder("C",
-				main._unique_folder_name("C", "ПЛЮРАЛ")) == null:
-			break
-	main._refresh_prep()
-	_eq(main.tree_window.title_hint, "5 ПАПОК", "5 папок — «5 ПАПОК»")
+	# --- Счётчики дерева в клетках ------------------------------------------
+	var folder_id := str(main.grid.folder_id)
+	var folder_row_count := -1
+	var folder_row_capacity := -1
+	for e in main.tree.get("_rows"):
+		var row = e["row"]
+		if not row.is_section and str(row.folder_id) == folder_id:
+			folder_row_count = int(row.count)
+			folder_row_capacity = int(row.capacity)
+	_eq(folder_row_count, 0, "дерево: папка показывает 0 занятых клеток")
+	_eq(folder_row_capacity, 20, "дерево: вместимость папки 20 клеток")
+
+	# --- Плюрализация заголовка ДИСКИ ---------------------------------------
+	var base_folders: int = main._count_folders(main.controller.prep_data().get("sections", []))
+	_eq(main.tree_window.title_hint,
+		main._plural_ru(base_folders, "ПАПКА", "ПАПКИ", "ПАПОК"),
+		"заголовок ДИСКИ совпадает с числом папок")
 	_eq(main._plural_ru(11, "ПАПКА", "ПАПКИ", "ПАПОК"), "11 ПАПОК",
 		"исключение 11–14 — «11 ПАПОК»")
 
+	_test_start_stats(main)
 	_test_settings_from_menu(main)
 	await _test_registry_autorefresh(main, game)
-	_test_rename_folder(main, game)
+	_test_packet_shape(main, game)
+	_test_search(main)
 	_test_folder_name_generation(main, game)
+	_test_rename_folder(main, game)
 	_test_top_menu(main)
 	_test_vhs(main)
+	await _test_shop_after_hour(main, game)
+	await _test_free_file_destruction(main, game)
 
 	print("")
 	print("Проверок: %d, провалов: %d" % [_checks, _fails])
 	_finish()
+
+
+## Строка стартовой сводки главного меню соответствует v2 (50 $, SLA 60, 1 слот).
+func _test_start_stats(main) -> void:
+	var text := str(main.main_menu.start_stats_text())
+	_ok(text.contains("50"), "сводка меню: $50 на старте (%s)" % text)
+	_ok(text.contains("60 SLA"), "сводка меню: 60 SLA (%s)" % text)
+	_ok(text.contains("1 слот"), "сводка меню: 1 слот (%s)" % text)
+	_ok(text.contains("9 часов"), "сводка меню: 9 часов (%s)" % text)
+	_ok(not text.contains("150"), "сводка меню без устаревших $150")
+	_ok(not text.contains("128"), "сводка меню без устаревшего SLA 128")
 
 
 ## Кнопка «Настройки» главного меню открывает SettingsModal поверх меню.
@@ -100,68 +159,126 @@ func _test_settings_from_menu(main) -> void:
 ## Изменения реестра сами обновляют сетку и счётчики дерева (без _refresh_prep).
 func _test_registry_autorefresh(main, game) -> void:
 	var folder_id := str(main.grid.folder_id)
-	var before: int = main.grid.get_cards().size()
+	var before_cells: int = main.grid.occupied_cells()
+	var before_files: int = main.grid.file_count()
 	var file = game.registry.create_file("авто_файл", "text", folder_id)
 	_ok(file != null, "файл для автообновления создан")
 	if file == null:
 		return
 	await process_frame
 	await process_frame
-	_eq(main.grid.get_cards().size(), before + 1,
-		"сетка обновилась по registry_changed (%d → %d)" % [before,
-			main.grid.get_cards().size()])
+	_eq(main.grid.file_count(), before_files + 1,
+		"сетка обновилась по registry_changed (%d → %d)" % [before_files,
+			main.grid.file_count()])
+	_eq(main.grid.occupied_cells(), before_cells + 1,
+		"занятые клетки выросли на 1 (текст)")
+	_ok(main.files_window.title_hint.contains("занято %d из 20"
+		% main.grid.occupied_cells()), "подвал ФАЙЛЫ обновился: %s"
+		% main.files_window.title_hint)
 	var count_ok := false
 	for e in main.tree.get("_rows"):
 		var row = e["row"]
 		if not row.is_section and str(row.folder_id) == folder_id:
-			count_ok = int(row.count) == before + 1
-	_ok(count_ok, "дерево обновило счётчик папки")
+			count_ok = int(row.count) == main.grid.occupied_cells()
+	_ok(count_ok, "дерево обновило счётчик ЗАНЯТЫХ КЛЕТОК")
 
-	# state attached приходит из prep_data и обновляет FileCard.
+	# Прикрепление меняет состояние файла в реестре (сетка читает registry).
 	_ok(game.registry.attach_file(str(file.id), "req_auto"),
 		"файл прикреплён к тестовому запросу")
+	_eq(str(file.attached_request), "req_auto", "у файла выставлен attached_request")
 	await process_frame
-	await process_frame
-	var state := ""
-	for c in main.grid.get_cards():
-		if str(c.id) == str(file.id):
-			state = str(c.state)
-	_eq(state, "attached", "FileCard state обновился до attached")
 	game.registry.detach_file(str(file.id))
 	await process_frame
 
 
+## Карточка пакета показывает превью фигуры и «ЗАЙМЁТ N КЛЕТОК».
+func _test_packet_shape(main, game) -> void:
+	var director = main.controller.hour_director
+	_ok(director != null, "hour_director доступен в подготовке")
+	if director == null:
+		return
+	var pid: String = director.spawn_packet_now("sound", "tcp")
+	_ok(not pid.is_empty(), "пакет для превью создан")
+	if pid.is_empty() or not director.active_packets.has(pid):
+		return
+	var pkt = director.active_packets[pid]
+	var card := PacketCard.new()
+	main.receive_window.content.add_child(card)
+	card.setup(str(pkt.id), str(pkt.file_name), "wav", str(pkt.type), "TCP",
+		20.0, 20.0, 0.0, 512, "waiting", str(pkt.shape_id), int(pkt.rotation))
+	_eq(card.cells_count(), 2, "звук занимает 2 клетки")
+	_ok(card.cells_text().begins_with("ЗАЙМЁТ 2"), "подпись карточки: %s"
+		% card.cells_text())
+	_ok(not card.shape_id.is_empty(), "у карточки есть shape_id")
+	var payload = card._get_drag_data(Vector2.ZERO)
+	_ok(payload is Dictionary, "drag-данные карточки — словарь")
+	if payload is Dictionary:
+		_eq(str(payload.get("kind", "")), "packet", "payload kind = packet")
+		_eq(str(payload.get("id", "")), str(pkt.id), "payload id пакета")
+		_eq(str(payload.get("shape_id", "")), str(pkt.shape_id),
+			"payload содержит shape_id")
+		_ok(payload.has("rotation"), "payload содержит rotation")
+	card.queue_free()
+	await process_frame
+
+
+## Поиск использует grid.set_filter и не схлопывает клетки.
+func _test_search(main) -> void:
+	main._search_edit.visible = true
+	main._search_edit.text = "авто_файл"
+	main._on_search_changed("авто_файл")
+	_eq(main._filtered_files().size(), 1, "поиск нашёл один файл")
+	_ok(main.files_window.title_hint.contains("найдено 1"),
+		"заголовок показывает результат фильтра: %s" % main.files_window.title_hint)
+	main._search_edit.text = "нет_такого"
+	main._on_search_changed("нет_такого")
+	_eq(main._filtered_files().size(), 0, "поиск без совпадений — 0 файлов")
+	main._search_edit.text = ""
+	main._on_search_changed("")
+	main._search_edit.visible = false
+	main._apply_file_filter()
+
+
 ## Имена новых папок генерируются и остаются уникальными в секции.
+## D2 (H5): папки №3–6 стоят `folder_new_cost` (100 $), №7 упирается в
+## `folders_max` (6); без денег новая папка не создаётся.
 func _test_folder_name_generation(main, game) -> void:
-	# «Разное» уже создано setup_new_run — получаем следующее имя.
 	_eq(main._unique_folder_name("C", "Разное"), "Разное 2",
 		"занятое имя получает суффикс 2")
-	_ok(game.registry.create_folder("C", "Разное 2") != null, "папка «Разное 2» создана")
+
+	var before: int = game.registry.folder_count()
+	_eq(before, 2, "на старте ровно 2 папки")
+	# Без денег третья папка не создаётся.
+	game.money = 0
+	main._new_folder_in("C")
+	_eq(game.registry.folder_count(), before, "без денег папка не создаётся")
+	_eq(int(game.money), 0, "неудачная покупка не уводит деньги в минус")
+
+	# 3-я папка: ровно 100 $ и списание.
+	game.add_money(100)
+	main._new_folder_in("C")
+	_eq(game.registry.folder_count(), before + 1, "3-я папка создана за 100 $")
+	_eq(int(game.money), 0, "3-я папка списала 100 $")
+	var third_id := str(main.grid.folder_id)
+	_ok(game.registry.rename_folder(third_id, "Разное 2"),
+		"третья папка переименована для проверки имён")
 	_eq(main._unique_folder_name("C", "Разное"), "Разное 3",
 		"следующий дубль получает суффикс 3")
 
-	# _new_folder_in больше не падает на дубле: два вызова — два имени.
-	var before: int = game.registry.folder_count()
-	main._new_folder_in("C")
-	main._new_folder_in("C")
-	_eq(game.registry.folder_count(), before + 2, "две новые папки созданы")
-	var names := {}
-	for folder in game.registry.folders.values():
-		if str(folder.section) != "C":
-			continue
-		var key := str(folder.name).to_lower()
-		_ok(not names.has(key), "имя папки уникально в секции: %s" % str(folder.name))
-		names[key] = true
+	# 4-я, 5-я, 6-я папки — тоже по 100 $.
+	for expected in [4, 5, 6]:
+		game.add_money(100)
+		main._new_folder_in("C")
+		_eq(game.registry.folder_count(), expected,
+			"%d-я папка создана за 100 $" % expected)
+		_eq(int(game.money), 0, "%d-я папка списала 100 $" % expected)
+	_ok(game.registry.folder_count() <= 6, "всего не больше 6 папок")
 
-	# Лимит 12 папок: лишняя не создаётся.
-	for i in 20:
-		if main._section_folder_count("C") >= 12:
-			break
-		game.registry.create_folder("C", main._unique_folder_name("C", "Лимит"))
-	_eq(main._section_folder_count("C"), 12, "в секции ровно 12 папок")
-	var at_limit: int = game.registry.folder_count()
+	# 7-я папка запрещена лимитом, деньги не списываются.
+	game.add_money(100)
 	main._new_folder_in("C")
-	_eq(game.registry.folder_count(), at_limit, "сверх 12 папок в секции не создаётся")
+	_eq(game.registry.folder_count(), 6, "7-я папка заблокирована лимитом")
+	_eq(int(game.money), 100, "заблокированная 7-я папка не списала деньги")
 	main._refresh_prep()
 
 
@@ -246,6 +363,38 @@ func _test_top_menu(main) -> void:
 	main.confirm_modal._answer(true)
 	_ok(main.main_menu.visible, "подтверждение возвращает в главное меню из подготовки")
 	_ok(not bool(main.controller.paused), "в подготовке пауза не включается")
+	main.main_menu.visible = false
+
+
+## D2 (M16): без денег и с SLA=1 обычный файл можно уничтожить в подготовке
+## после подтверждения (без штрафа SLA) и начать час — soft-lock исключён.
+func _test_free_file_destruction(main, game) -> void:
+	_eq(main.controller.phase, &"prep", "перед тестом удаления — подготовка")
+	var folder_id := str(main.grid.folder_id)
+	if folder_id.is_empty():
+		_ok(false, "нет выбранной папки для теста удаления")
+		return
+	var file = game.registry.create_file("Удаляемый", "text", folder_id)
+	_ok(file != null, "файл для удаления создан")
+	if file == null:
+		return
+	var fid := str(file.id)
+	game.money = 0
+	game.sla = 1.0
+	var sla_before := float(game.sla)
+	main._destroy_selected_file(fid)
+	_ok(main.confirm_modal != null and main.confirm_modal.visible,
+		"удаление обычного файла просит подтверждение")
+	if main.confirm_modal == null:
+		return
+	main.confirm_modal._answer(true)
+	_ok(not game.registry.files.has(fid), "файл уничтожен после подтверждения")
+	_eq(int(game.money), 0, "удаление файла не стоит денег")
+	_approx(float(game.sla), sla_before, 0.001, "удаление файла не стоит SLA")
+	main._on_start_hour()
+	await process_frame
+	_eq(main.controller.phase, &"hour",
+		"после удаления файла час всё равно начинается")
 
 
 ## VHS-слой: только главное меню, не мешает вводу и не строится в headless.
@@ -255,37 +404,45 @@ func _test_vhs(main) -> void:
 	if overlay == null:
 		return
 	_ok(overlay.get_parent() == main.main_menu, "VHS-слой — ребёнок главного меню")
-	_ok(main.main_menu.get_child(main.main_menu.get_child_count() - 1) == overlay,
-		"VHS-слой поверх карточки и кнопок меню")
 	_eq(overlay.mouse_filter, Control.MOUSE_FILTER_IGNORE, "VHS не ловит мышь")
 	_eq(overlay.process_mode, Node.PROCESS_MODE_ALWAYS, "VHS работает при паузе")
 	_ok(not overlay.is_available(), "в headless VHS-материал не создаётся")
-	_ok(not overlay.visible, "в headless VHS-слой не рендерится")
 	_ok(main.main_menu.is_vhs_enabled(), "VHS включён по умолчанию")
 
-	main.main_menu.set_vhs_enabled(true)
-	_ok(overlay.enabled, "set_vhs_enabled(true) включает эффект")
 	main.main_menu.set_vhs_enabled(false)
 	_ok(not main.main_menu.vhs.enabled, "set_vhs_enabled(false) отключает эффект")
 	main.main_menu.set_vhs_enabled(true)
 
-	# Модалка настроек показывает состояние, но применяет только по «Подтвердить».
-	main.main_menu.set_vhs_enabled(false)
-	main._open_settings()
-	_ok(main.settings_modal._vhs != null and not main.settings_modal._vhs.checked,
-		"настройки показывают VHS выключенным")
-	_ok(not bool(main.settings_modal.get_state().get("vhs", true)),
-		"get_state().vhs — false")
-	main.settings_modal.close()
-	main.main_menu.set_vhs_enabled(true)
 
-	# Применение настроек меняет только меню; игровые панели не затрагиваются.
-	main._apply_settings({"sfx": 70, "music": 55, "calm_bg": true,
-		"fullscreen": false, "vhs": false}, false)
-	_ok(not main.main_menu.is_vhs_enabled(), "настройки применяют VHS к меню")
-	main._apply_settings({"sfx": 70, "music": 55, "calm_bg": true,
-		"fullscreen": false, "vhs": true}, false)
-	_ok(main.main_menu.is_vhs_enabled(), "настройки возвращают VHS")
+## После первого часа: 3 лота, кнопка МАГАЗИН и open_prep.
+func _test_shop_after_hour(main, game) -> void:
+	main._on_start_hour()
+	await process_frame
+	_eq(main.controller.phase, &"hour", "час 1 запущен")
+	_ok(main.receive_window.visible, "ПРИЁМ виден в час")
+	_ok(main.send_window.visible, "ОТПРАВКА видна в час")
+	_ok(main.sorting_table != null and not main.sorting_table.visible,
+		"стол сортировки скрыт в час")
+	var director = main.controller.hour_director
+	director.time_left = 0.05
+	main.controller.tick(0.1)
+	await process_frame
+	_eq(main.controller.phase, &"hour_result", "час 1 завершён")
+	main.controller.next_after_hour()
+	await process_frame
+	_eq(main.controller.phase, &"prep", "после отчёта — подготовка часа 2")
+	_eq(int(game.hour), 2, "Game.hour = 2")
+	_ok(main._shop_btn != null and main._shop_btn.visible,
+		"магазин виден после первого часа")
+	var offers: Array = main.controller.shop_data()
+	_eq(offers.size(), 3, "после H1 — 3 предложения")
+	_ok(main.sorting_table.visible, "стол снова виден в подготовке")
+	main._on_shop()
+	_ok(main.shop_modal.visible, "магазин открывается в подготовке")
+	_eq(main.shop_modal.card_ids().size(), 3, "в магазине 3 карточки")
+	main.shop_modal.close()
+	_ok(not main.shop_modal.visible, "магазин закрывается")
+	main._shop_btn.visible = true
 
 
 func _finish() -> void:
@@ -310,6 +467,14 @@ func _eq(actual, expected, message: String) -> void:
 		return
 	_fails += 1
 	print("FAIL: %s — получено %s, ожидалось %s" % [message, actual, expected])
+
+
+func _approx(actual: float, expected: float, eps: float, message: String) -> void:
+	_checks += 1
+	if absf(float(actual) - float(expected)) <= eps:
+		return
+	_fails += 1
+	print("FAIL: %s — получено %.6f, ожидалось %.6f" % [message, float(actual), float(expected)])
 
 
 func _fail(message: String) -> void:

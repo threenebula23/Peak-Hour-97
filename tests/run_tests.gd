@@ -3,12 +3,22 @@ extends SceneTree
 ##
 ## Запуск:
 ##   godot --headless --path . --script tests/run_tests.gd
+##
+## Часть модулей v2 — самостоятельные SceneTree-скрипты (`_init` + `quit`).
+## Их нельзя вызывать через `run(t)` в этом же процессе: они сами управляют
+## SceneTree и завершением. Поэтому такие модули запускаются дочерним
+## процессом Godot через OS.execute, а здесь остаются только RefCounted-
+## модули с `run(t)`. Это убирает ложные FAIL и сохраняет единый exit code.
 
 const MODULES := [
-	["registry", "res://tests/test_registry.gd"],
-	["economy", "res://tests/test_economy.gd"],
-	["save", "res://tests/test_save.gd"],
 	["rng", "res://tests/test_rng.gd"],
+]
+
+## Standalone SceneTree-скрипты: [имя, путь]. Каждый — отдельный процесс.
+const STANDALONE := [
+	["economy", "res://tests/test_economy.gd"],
+	["registry", "res://tests/test_registry.gd"],
+	["save", "res://tests/test_save.gd"],
 ]
 
 var _checks: int = 0
@@ -23,10 +33,14 @@ func _init() -> void:
 	await process_frame
 	print("PEAK HOUR — headless tests")
 	var failed_modules: Array[String] = []
+
 	for entry in MODULES:
 		_module = str(entry[0])
 		_case = ""
 		_module_fails = 0
+		if not ResourceLoader.exists(str(entry[1])):
+			print("\n--- %s --- SKIP (нет файла)" % _module)
+			continue
 		print("\n--- %s ---" % _module)
 		var script = load(str(entry[1]))
 		if script == null:
@@ -45,14 +59,49 @@ func _init() -> void:
 			print("FAIL %s (%d)" % [_module, _module_fails])
 			failed_modules.append(_module)
 
+	for entry in STANDALONE:
+		var name := str(entry[0])
+		var path := str(entry[1])
+		if not ResourceLoader.exists(path):
+			print("\n--- %s (standalone) --- SKIP (нет файла)" % name)
+			continue
+		if not _run_standalone(name, path):
+			failed_modules.append(name)
+
 	print("")
-	print("Проверок: %d, провалов: %d" % [_checks, _fails])
+	print("Проверок в этом процессе: %d, провалов: %d" % [_checks, _fails])
+	print("Standalone-модулей: %d" % STANDALONE.size())
 	if _fails == 0:
 		print("PASS")
 		quit(0)
 	else:
 		print("FAIL: модули %s" % ", ".join(failed_modules))
 		quit(1)
+
+
+## Запустить самостоятельный SceneTree-тест дочерним Godot.
+## Возвращает true, если процесс завершился с кодом 0.
+func _run_standalone(name: String, path: String) -> bool:
+	print("\n--- %s (standalone) ---" % name)
+	var godot := OS.get_executable_path()
+	if godot.is_empty():
+		print("FAIL %s: не удалось определить путь к Godot" % name)
+		return false
+	var project_dir := ProjectSettings.globalize_path("res://")
+	var args := PackedStringArray([
+		"--headless",
+		"--path", project_dir,
+		"--script", path,
+	])
+	var output: Array = []
+	var code := OS.execute(godot, args, output, true)
+	for line in output:
+		print(str(line).trim_suffix("\n").trim_suffix("\r"))
+	if code == 0:
+		print("PASS %s" % name)
+		return true
+	print("FAIL %s (exit %d)" % [name, code])
+	return false
 
 
 # --- assert-хелперы --------------------------------------------------------

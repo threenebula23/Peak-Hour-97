@@ -1,35 +1,66 @@
 class_name MiniGame
 extends Control
-## Заглушка мини-игры запроса (D17).
+## Базовая мини-игра v2: без таймера, локальный сид, quality 0..1.
 ##
-## Окно 640×360, заголовок по типу файла, полоса заполняется за 2 с,
-## кнопки «Отправить» / «Переделать». quality всегда 1.0; «Переделать»
-## лишь перезапускает полосу и не меняет качество. Esc — no-op (D10).
-## Рисуется кодом, без UI-компонентов.
+## Окно 640×360. Общая шапка, кнопка «ПРОПУСТИТЬ» с двухкликовым
+## подтверждением и экран результата. Конкретные игры наследуются от этого
+## класса и переопределяют _setup(), _draw_game(), обработчики ввода.
+##
+## Важно: здесь нет узлов-таймеров и нет поражения по времени. Игра
+## завершается только действием игрока (конечная цель) или пропуском.
 
 signal finished(quality: float)
 
 const WINDOW_SIZE := Vector2(640.0, 360.0)
-const DURATION := 2.0
-const QUALITY_STUB := 1.0
+const HEADER_H := 30.0
+const FOOTER_Y := 320.0
+const CONTENT_RECT := Rect2(18.0, 40.0, 604.0, 270.0)
+const ACTION_RECT := Rect2(466.0, 320.0, 156.0, 28.0)
+const SKIP_RECT := Rect2(18.0, 320.0, 148.0, 28.0)
+const CONTINUE_RECT := Rect2(245.0, 252.0, 150.0, 32.0)
 
-const SEND_RECT := Rect2(150.0, 282.0, 150.0, 34.0)
-const REDO_RECT := Rect2(340.0, 282.0, 150.0, 34.0)
-const BAR_RECT := Rect2(100.0, 210.0, 440.0, 22.0)
-
-const TYPE_NAMES := {
-	"text": "ТЕКСТ",
-	"sound": "ЗВУК",
-	"photo": "ФОТО",
-	"video": "ВИДЕО",
+const SEND_IDS: Array[String] = [
+	"dots", "sound", "wires", "text", "video", "photo", "maze",
+]
+const GAME_TITLES := {
+	"dots": "ОДНА ЛИНИЯ",
+	"sound": "УРОВНИ",
+	"wires": "ПРОВОДА",
+	"text": "ЧУЖОЕ СЛОВО",
+	"video": "РАСКАДРОВКА",
+	"photo": "КАДР",
+	"maze": "ЛАБИРИНТ",
+}
+const LEGACY_TYPES := {
+	"text": "text",
+	"sound": "sound",
+	"photo": "photo",
+	"video": "video",
+	"connection": "wires",
+	"connect": "wires",
 }
 
-var game_type: String = "text"
-var difficulty: float = 1.0
-var progress: float = 0.0
+## Общие поля контракта.
+var game_id: String = ""
+var tier: int = 1
+var rng := RandomNumberGenerator.new()
+var context: Dictionary = {}
+var quality_value: float = 0.0
 var running: bool = false
+var difficulty: float = 1.0
+var seed_value: int = 0
+## true для мини-игр атак: кнопка отказа — СДАТЬСЯ, Esc взводит/подтверждает
+## сдачу (§5.1/§5.5). Мини-игры отправки оставляют ПРОПУСТИТЬ и Esc — no-op.
+var is_attack: bool = false
 
-var _emitted: bool = false
+var _finished: bool = false
+var _skip_armed: bool = false
+var _result_detail: String = ""
+## D2 (§5.5): если true, _finish() только показывает экран результата и НЕ
+## эмитит finished. Сигнал уходит по клику «ПРОДОЛЖИТЬ» (Main включает режим
+## для модальных мини-игр). unit-тесты без Main работают с default=false.
+var defer_finish_signal: bool = false
+var _pending_finish: bool = false
 
 
 func _init() -> void:
@@ -37,154 +68,289 @@ func _init() -> void:
 	size = WINDOW_SIZE
 	custom_minimum_size = WINDOW_SIZE
 	mouse_filter = Control.MOUSE_FILTER_STOP
+	focus_mode = Control.FOCUS_CLICK
 	visible = false
-	set_process(false)
+	set_process(true)
 	set_process_input(true)
 
 
 func _ready() -> void:
 	_center_on_screen()
-	get_viewport().size_changed.connect(_center_on_screen)
+	var viewport := get_viewport()
+	if viewport != null and not viewport.size_changed.is_connected(_center_on_screen):
+		viewport.size_changed.connect(_center_on_screen)
 
 
-func start(type: String, p_difficulty: float = 1.0) -> void:
-	game_type = str(type)
-	if not TYPE_NAMES.has(game_type):
-		game_type = "text"
+## Совместимая сигнатура со старым main/hour_director:
+## start(type_or_id, difficulty, seed, context).
+func start(type_or_id: String, p_difficulty: float = 1.0, p_seed: int = 0,
+		p_context: Dictionary = {}) -> void:
+	var requested := str(type_or_id).to_lower()
+	var resolved := resolve_game_id(requested)
+	if resolved.is_empty():
+		resolved = _own_game_id()
+	if resolved.is_empty():
+		resolved = requested if not requested.is_empty() else "dots"
+
+	game_id = resolved
 	difficulty = maxf(0.0, float(p_difficulty))
-	_emitted = false
+	# Старый вызов передавал 2.5 и т.п.; фабрика передаёт 1..4.
+	tier = clampi(int(round(difficulty)), 1, 4)
+	if difficulty >= 1.0 and difficulty <= 4.0 and is_equal_approx(difficulty, roundf(difficulty)):
+		tier = clampi(int(difficulty), 1, 4)
+	context = p_context.duplicate(true)
+
+	seed_value = p_seed
+	if seed_value == 0:
+		seed_value = int(Time.get_ticks_usec()) ^ int(hash("%s:%d:%d" % [game_id, tier, Time.get_ticks_msec()]))
+	rng = RandomNumberGenerator.new()
+	rng.seed = seed_value
+
+	_emitent_reset()
+	_setup()
 	running = true
-	progress = 0.0
 	visible = true
+	_skip_armed = false
+	_result_detail = ""
 	set_process(true)
 	set_process_input(true)
 	_center_on_screen()
 	queue_redraw()
 
 
+## Сброс состояния при повторном start() на том же узле.
+func _emitent_reset() -> void:
+	_finished = false
+	quality_value = 0.0
+	_skip_armed = false
+	_result_detail = ""
+	_pending_finish = false
+
+
+## Переопределяется наследником: генерация поля/состояния.
+func _setup() -> void:
+	pass
+
+
+## База не анимируется; наследники (sound/photo/maze) переопределяют.
+func _process(_delta: float) -> void:
+	pass
+
+
+## Идентификатор игры самого класса (нужен для прямого new().start()).
+func _own_game_id() -> String:
+	return ""
+
+
+func title() -> String:
+	return str(GAME_TITLES.get(game_id, "МИНИ-ИГРА"))
+
+
+func tier_label() -> String:
+	return "T%d" % tier
+
+
+## Подпись кнопки отказа: атаки сдаются, отправки пропускаются.
+func skip_label() -> String:
+	return "СДАТЬСЯ" if is_attack else "ПРОПУСТИТЬ"
+
+
 func quality() -> float:
-	return QUALITY_STUB
+	return quality_value
 
 
-## Правило выбора типа по среднему коэффициенту (GDD §8.4 / D17).
-static func select_type(types: Array) -> String:
-	var total := 0.0
-	if types.is_empty():
-		return "text"
-	for type in types:
-		total += _coeff(str(type))
-	var difficulty := total / float(types.size())
-	if difficulty < 1.5:
-		return "text"
-	if difficulty < 2.5:
-		return "sound"
-	if difficulty < 3.5:
-		return "photo"
-	return "video"
+func is_finished() -> bool:
+	return _finished
 
 
-static func type_label(type: String) -> String:
-	return str(TYPE_NAMES.get(str(type), "ТЕКСТ"))
+func verdict_for(q: float) -> String:
+	if q >= 0.75:
+		return "ЧИСТО"
+	if q >= 0.45:
+		return "НОРМАЛЬНО"
+	return "СЛАБО"
 
 
-static func _coeff(type: String) -> float:
-	match type:
-		"sound":
-			return 2.0
-		"photo":
-			return 3.0
-		"video":
-			return 4.0
-	return 1.0
+func result_text() -> String:
+	return "КАЧЕСТВО %d%% · %s" % [roundi(quality_value * 100.0),
+		verdict_for(quality_value)]
 
 
-func _process(delta: float) -> void:
-	if not running:
+## Завершение игры. Эмитит ровно один раз, клампит q в 0..1.
+func _finish(q: float) -> void:
+	if _finished:
 		return
-	if progress < DURATION:
-		progress = minf(DURATION, progress + minf(maxf(delta, 0.0), 0.1))
-		queue_redraw()
-
-
-func _input(event: InputEvent) -> void:
-	if not running:
-		return
-	if event is InputEventKey and event.pressed and not event.echo:
-		if event.keycode == KEY_ESCAPE:
-			# D10: Esc в мини-игре — no-op, но событие не отдаём паузе часа.
-			_mark_input_handled()
-			return
-		if event.keycode == KEY_ENTER or event.keycode == KEY_KP_ENTER:
-			_mark_input_handled()
-			_send()
-			return
-	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
-		var local: Vector2 = event.position - global_position
-		if SEND_RECT.has_point(local) and progress >= DURATION:
-			_mark_input_handled()
-			_send()
-		elif REDO_RECT.has_point(local):
-			_mark_input_handled()
-			_restart_bar()
-
-
-func _send() -> void:
-	if _emitted:
-		return
-	_emitted = true
+	quality_value = clampf(float(q), 0.0, 1.0)
+	_finished = true
 	running = false
 	set_process(false)
-	set_process_input(false)
-	_play_sfx(&"minigame_win")
-	finished.emit(QUALITY_STUB)
-	queue_free()
-
-
-func _restart_bar() -> void:
-	# D17: «Переделать» перезапускает заглушку, quality не меняется.
-	progress = 0.0
+	_skip_armed = false
+	if _result_detail.is_empty():
+		_result_detail = _default_result_detail()
+	_play_sfx(&"minigame_win" if quality_value >= 0.45 else &"minigame_fail")
+	if defer_finish_signal:
+		# Экран результата уже нарисован; сигнал ждёт «ПРОДОЛЖИТЬ».
+		_pending_finish = true
+	else:
+		finished.emit(quality_value)
 	queue_redraw()
 
 
+## Эмитит отложенный finished ровно один раз (если _finish уже случился).
+func _emit_finished_once() -> void:
+	if not _pending_finish:
+		return
+	_pending_finish = false
+	finished.emit(quality_value)
+
+
+func _default_result_detail() -> String:
+	var reward := str(context.get("reward_text", ""))
+	var penalty := str(context.get("penalty_text", ""))
+	if not reward.is_empty():
+		return reward
+	return penalty
+
+
+# --- ввод ------------------------------------------------------------------
+
+func _input(event: InputEvent) -> void:
+	if event is InputEventKey:
+		if not event.pressed or event.echo:
+			return
+		if _finished:
+			if event.keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_SPACE, KEY_ESCAPE]:
+				_mark_input_handled()
+				_continue_clicked()
+			return
+		if event.keycode == KEY_ESCAPE:
+			# В мини-играх отправки Esc — no-op (D10), но пауза часа его не ловит.
+			# В мини-играх атак Esc — двухшаговое подтверждение сдачи.
+			_mark_input_handled()
+			if is_attack:
+				_on_skip_clicked()
+			return
+		if _on_key_pressed(event.keycode, event):
+			_mark_input_handled()
+		return
+
+	if event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT:
+		var local: Vector2 = event.position - global_position
+		if _finished:
+			if event.pressed and _result_continue_rect().has_point(local):
+				_mark_input_handled()
+				_continue_clicked()
+			return
+		if event.pressed:
+			if SKIP_RECT.has_point(local):
+				_mark_input_handled()
+				_on_skip_clicked()
+				return
+			if _on_pointer_pressed(local, event):
+				_mark_input_handled()
+		else:
+			_on_pointer_released(local, event)
+		return
+
+	if event is InputEventMouseMotion:
+		if _finished:
+			return
+		var local: Vector2 = event.position - global_position
+		_on_pointer_moved(local, event)
+
+
+func _on_pointer_pressed(_local: Vector2, _event: InputEvent) -> bool:
+	return false
+
+
+func _on_pointer_released(_local: Vector2, _event: InputEvent) -> void:
+	pass
+
+
+func _on_pointer_moved(_local: Vector2, _event: InputEvent) -> void:
+	pass
+
+
+func _on_key_pressed(_keycode: int, _event: InputEvent) -> bool:
+	return false
+
+
+func _on_skip_clicked() -> void:
+	if not _skip_armed:
+		_skip_armed = true
+		_play_sfx(&"tick")
+		queue_redraw()
+		return
+	_finish(0.0)
+
+
+func _continue_clicked() -> void:
+	# Модальный режим: сначала отдаём результат директору, затем освобождаем ноду.
+	_emit_finished_once()
+	queue_free()
+
+
+func _mark_input_handled() -> void:
+	var viewport := get_viewport()
+	if viewport != null:
+		viewport.set_input_as_handled()
+
+
+# --- отрисовка -------------------------------------------------------------
+
 func _draw() -> void:
 	var font := Theme90.ui()
-	var full := Rect2(Vector2.ZERO, WINDOW_SIZE)
+	var full := Rect2(Vector2.ZERO, size)
 	Theme90.draw_bevel(self, full, false, Theme90.BEVEL, Theme90.PAPER)
 
-	# Светлый титлбар с teal-акцентом.
-	var tr := Rect2(1.0, 1.0, WINDOW_SIZE.x - 2.0, 28.0)
+	var tr := Rect2(1.0, 1.0, size.x - 2.0, HEADER_H - 2.0)
 	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 4), tr)
 	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0),
 		Theme90.HAIRLINE)
-	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0, Theme90.ACCENT)
-	var title := "МИНИ-ИГРА: %s" % type_label(game_type)
-	Theme90.text(self, font, Vector2(tr.position.x + 25.0, tr.position.y + 7.0),
-		title, 14, Theme90.NAVY, tr.size.x - 40.0)
+	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0,
+		Theme90.ACCENT)
+	Theme90.text(self, font, Vector2(tr.position.x + 24.0, tr.position.y + 7.0),
+		title(), 16, Theme90.NAVY_DEEP, tr.size.x - 210.0)
 
-	Theme90.text(self, font, Vector2(40.0, 64.0), "ЗАГЛУШКА",
-		20, Theme90.INK)
-	Theme90.text(self, font, Vector2(40.0, 94.0),
-		"Сложность: %.2f · quality = %.1f" % [difficulty, QUALITY_STUB],
-		12, Theme90.SHADE)
-	Theme90.text(self, font, Vector2(40.0, 118.0),
-		"Подготовьте файл к отправке. Esc не закрывает окно.",
-		12, Theme90.DARK)
+	var badge := Rect2(tr.end.x - 196.0, tr.position.y + 7.0, 42.0, 16.0)
+	draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.BORDER_SOFT, 2, 1), badge)
+	Theme90.text_vcenter(self, font, badge, tier_label(), 10, Theme90.NAVY,
+		-1, HORIZONTAL_ALIGNMENT_CENTER)
+	Theme90.text(self, font, Vector2(tr.end.x - 146.0, tr.position.y + 8.0),
+		"БЕЗ ТАЙМЕРА", 10, Theme90.SHADE, 130.0, HORIZONTAL_ALIGNMENT_RIGHT)
 
-	# Полоса 2 с: тонкая дорожка + мягкая заливка.
-	Theme90.text(self, font, Vector2(BAR_RECT.position.x, BAR_RECT.position.y - 20.0),
-		"ОБРАБОТКА  %.1f / %.1f с" % [progress, DURATION], 11, Theme90.SHADE)
-	Theme90.draw_sunken(self, BAR_RECT)
-	var ratio := clampf(progress / DURATION, 0.0, 1.0)
-	Theme90.draw_meter(self, BAR_RECT.grow(-1.0), ratio, Theme90.SUCCESS,
-		Theme90.PAPER_LO)
-
-	# Компактные кнопки в стиле v2.
-	_draw_button(SEND_RECT, "Отправить", ratio >= 1.0, true)
-	_draw_button(REDO_RECT, "Переделать", true, false)
+	_draw_game()
+	_draw_skip_button()
+	_draw_footer_hint()
+	if _finished:
+		_draw_result_overlay()
 
 
-func _draw_button(rect: Rect2, label: String, enabled: bool, primary: bool = false) -> void:
-	var font := Theme90.ui()
+## Переопределяется наследником. Рисовать в CONTENT_RECT.
+func _draw_game() -> void:
+	pass
+
+
+## Необязательная подпись над футером/в футере.
+func _draw_footer_hint() -> void:
+	pass
+
+
+func _draw_skip_button() -> void:
+	var face := Theme90.WARN if _skip_armed else Theme90.PAPER_HI
+	var fg := Theme90.WHITE if _skip_armed else Theme90.DARK
+	var border := Theme90.WARN.darkened(0.18) if _skip_armed else Theme90.BORDER
+	draw_style_box(Theme90.box(face, border, 3, 1,
+		Theme90.SHADOW if not _skip_armed else Color(0, 0, 0, 0)), SKIP_RECT)
+	var label := skip_label()
+	if _skip_armed:
+		label = "ТОЧНО СДАТЬСЯ?" if is_attack else "ТОЧНО ПРОПУСТИТЬ?"
+	Theme90.text_vcenter(self, Theme90.ui(), SKIP_RECT, label, 10, fg,
+		-1, HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_action_button(rect: Rect2, label: String, enabled: bool = true,
+		primary: bool = true) -> void:
 	var face := Theme90.PAPER_HI
 	var fg := Theme90.INK
 	var border := Theme90.BORDER
@@ -198,8 +364,130 @@ func _draw_button(rect: Rect2, label: String, enabled: bool, primary: bool = fal
 		border = Theme90.BORDER_SOFT
 	draw_style_box(Theme90.box(face, border, 3, 1,
 		Theme90.SHADOW if enabled else Color(0, 0, 0, 0)), rect)
-	Theme90.text_vcenter(self, font, rect, label, 12, fg, -1,
+	Theme90.text_vcenter(self, Theme90.ui(), rect, label, 12, fg,
+		-1, HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_secondary_button(rect: Rect2, label: String) -> void:
+	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER, 3, 1), rect)
+	Theme90.text_vcenter(self, Theme90.ui(), rect, label, 10, Theme90.DARK,
+		-1, HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_modal_panel(rect: Rect2, fill: Color = Theme90.PAPER_HI) -> void:
+	draw_style_box(Theme90.box(fill, Theme90.BORDER, 4, 1, Theme90.SHADOW), rect)
+
+
+func _draw_label(text: String, pos: Vector2, size_px: int = 12,
+		color: Color = Theme90.INK, width: float = -1.0,
+		align: int = HORIZONTAL_ALIGNMENT_LEFT) -> void:
+	Theme90.text(self, Theme90.ui(), pos, text, size_px, color, width, align)
+
+
+func _draw_centered(text: String, rect: Rect2, size_px: int = 12,
+		color: Color = Theme90.INK) -> void:
+	Theme90.text_vcenter(self, Theme90.ui(), rect, text, size_px, color,
+		-1, HORIZONTAL_ALIGNMENT_CENTER)
+
+
+func _draw_bar(rect: Rect2, ratio: float, color: Color) -> void:
+	Theme90.draw_sunken(self, rect)
+	Theme90.draw_meter(self, rect.grow(-1.0), clampf(ratio, 0.0, 1.0), color,
+		Theme90.PAPER_LO)
+
+
+func _result_continue_rect() -> Rect2:
+	var panel := _result_panel_rect()
+	return Rect2(panel.position.x + (panel.size.x - CONTINUE_RECT.size.x) * 0.5,
+		panel.position.y + panel.size.y - CONTINUE_RECT.size.y - 16.0,
+		CONTINUE_RECT.size.x, CONTINUE_RECT.size.y)
+
+
+func _result_panel_rect() -> Rect2:
+	return Rect2((size.x - 380.0) * 0.5, (size.y - 196.0) * 0.5, 380.0, 196.0)
+
+
+func _draw_result_overlay() -> void:
+	draw_rect(Rect2(Vector2.ZERO, size), Color(0.08, 0.10, 0.10, 0.58))
+	var panel := _result_panel_rect()
+	_draw_modal_panel(panel)
+	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 18.0),
+		"РЕЗУЛЬТАТ", 16, Theme90.NAVY_DEEP, panel.size.x,
 		HORIZONTAL_ALIGNMENT_CENTER)
+	var q_text := "%d%%" % roundi(quality_value * 100.0)
+	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 50.0),
+		q_text, 24, Theme90.INK, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	var verdict := verdict_for(quality_value)
+	var vcol := Theme90.SUCCESS if quality_value >= 0.75 else (
+		Theme90.WARN if quality_value >= 0.45 else Theme90.ERROR)
+	Theme90.text(self, Theme90.ui(), Vector2(panel.position.x, panel.position.y + 104.0),
+		verdict, 24, vcol, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	if not _result_detail.is_empty():
+		Theme90.text(self, Theme90.ui(), Vector2(panel.position.x + 18.0,
+			panel.position.y + 142.0), Theme90.fit(Theme90.ui(), _result_detail, 10,
+			panel.size.x - 36.0), 10, Theme90.SHADE, panel.size.x - 36.0,
+			HORIZONTAL_ALIGNMENT_CENTER)
+	var cont := _result_continue_rect()
+	_draw_action_button(cont, "ПРОДОЛЖИТЬ", true, true)
+
+
+# --- служебное -------------------------------------------------------------
+
+static func resolve_game_id(value: String) -> String:
+	var v := value.strip_edges().to_lower()
+	if SEND_IDS.has(v):
+		return v
+	return str(LEGACY_TYPES.get(v, ""))
+
+
+## Безопасное чтение data/minigame_def(id) с fallback на balance.json.
+## Возвращает копию словаря; при отсутствии данных — пустой словарь.
+static func data_minigame_def(id: String) -> Dictionary:
+	var loop := Engine.get_main_loop()
+	if not (loop is SceneTree):
+		return {}
+	var root := (loop as SceneTree).root
+	var data = root.get_node_or_null("Data")
+	if data == null:
+		return {}
+	if data.has_method("minigame_def"):
+		var value = data.call("minigame_def", id)
+		if value is Dictionary:
+			return (value as Dictionary).duplicate(true)
+	var balance = data.get("balance")
+	if balance is Dictionary:
+		var minigames = (balance as Dictionary).get("minigames", null)
+		if minigames is Dictionary:
+			var games = (minigames as Dictionary).get("games", null)
+			if games is Dictionary and (games as Dictionary).get(id) is Dictionary:
+				return ((games as Dictionary).get(id) as Dictionary).duplicate(true)
+	return {}
+
+
+## Строка tier из Data.minigame_def(id). Поддерживает tiers как Array
+## (текущий формат balance.json) и как Dictionary (старый/альтернативный).
+static func data_minigame_tier(id: String, p_tier: int) -> Dictionary:
+	var def := data_minigame_def(id)
+	if def.is_empty():
+		return {}
+	var t := clampi(p_tier, 1, 4)
+	var tiers = def.get("tiers", null)
+	var row: Dictionary = {}
+	if tiers is Array:
+		var arr := tiers as Array
+		if t - 1 < arr.size() and arr[t - 1] is Dictionary:
+			row = (arr[t - 1] as Dictionary).duplicate(true)
+	elif tiers is Dictionary:
+		var map := tiers as Dictionary
+		var value = map.get(str(t), map.get(t, null))
+		if value is Dictionary:
+			row = (value as Dictionary).duplicate(true)
+	if row.is_empty():
+		# Плоская схема: параметры прямо в def (без tiers).
+		for key in def.keys():
+			if str(key) != "tiers":
+				row[key] = def[key]
+	return row
 
 
 func _center_on_screen() -> void:
@@ -210,12 +498,6 @@ func _center_on_screen() -> void:
 	position = ((screen - WINDOW_SIZE) * 0.5).floor()
 	position.x = maxf(0.0, position.x)
 	position.y = maxf(0.0, position.y)
-
-
-func _mark_input_handled() -> void:
-	var viewport := get_viewport()
-	if viewport != null:
-		viewport.set_input_as_handled()
 
 
 func _play_sfx(id: StringName) -> void:
@@ -229,3 +511,12 @@ func _autoload(name: String):
 	if loop is SceneTree:
 		return (loop as SceneTree).root.get_node_or_null(name)
 	return null
+
+
+## Удобный static-хелпер для игр, которым нужен общий вердикт.
+static func verdict(q: float) -> String:
+	if q >= 0.75:
+		return "ЧИСТО"
+	if q >= 0.45:
+		return "НОРМАЛЬНО"
+	return "СЛАБО"

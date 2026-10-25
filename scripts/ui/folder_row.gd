@@ -7,19 +7,33 @@ extends Control
 signal folder_selected(folder_id: String)
 signal expansion_toggled(folder_id: String)
 signal file_dropped(folder_id: String, payload: Dictionary)
+signal packet_dropped(folder_id: String, payload: Dictionary)
 signal context_menu_requested(folder_id: String, global_pos: Vector2)
+## Папка раскрыта/открыта наведением во время drag (250 мс).
+signal hover_open_requested(folder_id: String)
 
 const ROW_H := 24.0
 const SECTION_H := 22.0
 
 var folder_id := ""
 var folder_name := ""
+## v2: count — занятые КЛЕТКИ, capacity — всего клеток.
 var count := 0
 var capacity := 16
+## Число файлов (для тултипа «N файлов · X из Y клеток»).
+var files_count := 0
 var free_text := ""
 var depth := 0
 var is_section := false
 var expandable := true
+var hover_open := false:
+	set(v):
+		if hover_open == v:
+			return
+		hover_open = v
+		queue_redraw()
+		if v and not is_section:
+			hover_open_requested.emit(folder_id)
 var expanded := true:
 	set(v):
 		expanded = v
@@ -76,6 +90,10 @@ func _draw() -> void:
 	elif drop_active:
 		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT, 3, 1),
 			Rect2(2, 1, size.x - 4, size.y - 2))
+	elif hover_open:
+		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT_LIGHT, 3, 1),
+			Rect2(2, 1, size.x - 4, size.y - 2))
+		draw_rect(Rect2(2, 5, 2, size.y - 10), Theme90.ACCENT_LIGHT)
 	elif hovered:
 		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2), Color(1, 1, 1, 0.45))
 
@@ -123,7 +141,7 @@ func _draw_section(r: Rect2, f: Font) -> void:
 	Theme90.draw_drive_icon(self, Vector2(sx + 16, 6), Theme90.NAVY)
 	var fg := Theme90.NAVY if selected else Theme90.INK
 	Theme90.text_vcenter(self, f, Rect2(sx + 32, 0, size.x - 80, size.y),
-		Theme90.fit(f, folder_name, 11, size.x - 110), 11, fg)
+		Theme90.fit(f, folder_name, 12, size.x - 110), 12, fg)
 	if not free_text.is_empty():
 		var tw := f.get_string_size(free_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
 		Theme90.text(self, f, Vector2(size.x - tw - 8, 6), free_text, 10, Theme90.SHADE)
@@ -155,16 +173,50 @@ func _can_drop_data(_at_position: Vector2, data: Variant) -> bool:
 	if k != "file" and k != "packet":
 		return false
 	drop_active = true
+	if not is_section:
+		_request_hover_open()
 	return true
 
 
 func _drop_data(_at_position: Vector2, data: Variant) -> void:
 	drop_active = false
-	if is_section:
+	hover_open = false
+	_reset_hover_timer()
+	if is_section or not (data is Dictionary):
 		return
-	file_dropped.emit(folder_id, data)
+	if str(data.get("kind", "")) == "packet":
+		packet_dropped.emit(folder_id, data)
+	else:
+		file_dropped.emit(folder_id, data)
 
 
 func _notification(what: int) -> void:
 	if what == NOTIFICATION_DRAG_END:
 		drop_active = false
+		hover_open = false
+		_reset_hover_timer()
+	elif what == NOTIFICATION_MOUSE_EXIT:
+		if drop_active or hover_open:
+			drop_active = false
+			hover_open = false
+			_reset_hover_timer()
+
+
+func set_hover(on: bool) -> void:
+	hover_open = on
+
+
+func _request_hover_open() -> void:
+	if not is_inside_tree():
+		return
+	var dc := get_tree().get_first_node_in_group("drag_controller")
+	if dc != null and dc.has_method("hover_folder"):
+		dc.call("hover_folder", folder_id)
+
+
+func _reset_hover_timer() -> void:
+	if not is_inside_tree():
+		return
+	var dc := get_tree().get_first_node_in_group("drag_controller")
+	if dc != null and dc.has_method("reset_hover"):
+		dc.call("reset_hover")

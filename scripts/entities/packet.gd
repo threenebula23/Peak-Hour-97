@@ -28,6 +28,12 @@ var is_attack: bool = false
 var attack_kind: String = ""
 var size_kb: int = 0
 
+## Форма, которую пакет займёт в папке. Выбирается при спавне, чтобы показать
+## превью ещё до приёма. `shape_cells` — производное (не сохраняется).
+var shape_id: String = "O1"
+var rotation: int = 0
+var shape_cells: Array = []
+
 ## Служебные поля (не входят в минимальный контракт, но нужны директору).
 var lost_left: float = 0.0
 var loading_duration: float = 0.0
@@ -92,6 +98,8 @@ func to_dict() -> Dictionary:
 		"loading_duration": loading_duration,
 		"order": order,
 		"attack_id": attack_id,
+		"shape_id": shape_id,
+		"rotation": rotation,
 	}
 
 
@@ -115,6 +123,18 @@ static func from_dict(d: Dictionary):
 	p.loading_duration = float(d.get("loading_duration", 0.0))
 	p.order = int(d.get("order", 0))
 	p.attack_id = str(d.get("attack_id", ""))
+	p.shape_id = str(d.get("shape_id", "O1"))
+	if p.shape_id.is_empty():
+		p.shape_id = "O1"
+	p.rotation = posmod(int(d.get("rotation", 0)), 4)
+	p.shape_cells = []
+	var raw_cells = d.get("shape_cells", [])
+	if raw_cells is Array:
+		for cell in raw_cells:
+			if cell is Vector2i:
+				p.shape_cells.append(cell)
+			elif cell is Array and cell.size() >= 2:
+				p.shape_cells.append(Vector2i(int(cell[0]), int(cell[1])))
 	return p
 
 

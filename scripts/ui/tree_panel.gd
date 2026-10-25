@@ -5,8 +5,10 @@ extends Control
 
 signal folder_selected(folder_id: String)
 signal file_dropped(folder_id: String, payload: Dictionary)
+signal packet_dropped(folder_id: String, payload: Dictionary)
 signal context_menu_requested(folder_id: String, global_pos: Vector2)
 signal new_folder_requested
+signal hover_open_requested(folder_id: String)
 
 var _view: Control
 var _content: Control
@@ -14,6 +16,7 @@ var _bar: ScrollBar90
 var _new_btn: Button90
 var _rows: Array[Dictionary] = []
 var _selected := ""
+var _drag: Node = null
 
 
 func _ready() -> void:
@@ -44,6 +47,8 @@ func _ready() -> void:
 
 	resized.connect(_relayout)
 	_relayout()
+	call_deferred("_bind_drag_controller")
+	set_process(true)
 
 
 func _view_rect() -> Rect2:
@@ -79,7 +84,8 @@ func _content_height() -> float:
 	return maxf(y + 2.0, 0.0)
 
 
-## sections: [{id, name, free, folders: [{id, name, count, capacity, locked}]}]
+## sections: [{id, name, free|free_cells, folders: [
+##   {id, name, count|occupied_cells, capacity|total_cells, files, locked}]}]
 func set_data(sections: Array) -> void:
 	for c in _content.get_children():
 		c.queue_free()
@@ -88,7 +94,7 @@ func set_data(sections: Array) -> void:
 		var sid: String = str(sec.get("id", ""))
 		var srow := FolderRow.new()
 		srow.setup(sid, str(sec.get("name", "")), 0, true)
-		srow.free_text = str(sec.get("free", ""))
+		srow.free_text = _section_free_text(sec)
 		srow.custom_minimum_size = Vector2(0, FolderRow.SECTION_H)
 		srow.expanded = true
 		srow.expansion_toggled.connect(_on_toggle)
@@ -100,22 +106,62 @@ func set_data(sections: Array) -> void:
 			var frow := FolderRow.new()
 			var fid: String = str(fol.get("id", ""))
 			frow.setup(fid, str(fol.get("name", "")), 1, false)
-			frow.count = int(fol.get("count", 0))
-			frow.capacity = int(fol.get("capacity", 16))
-			frow.tooltip_text = "Папка заполнена" if frow.count >= frow.capacity \
-				else "%d из %d объектов" % [frow.count, frow.capacity]
+			frow.count = _folder_occupied(fol)
+			frow.capacity = _folder_total(fol)
+			frow.files_count = _folder_files(fol)
+			frow.tooltip_text = _folder_tooltip(frow.files_count, frow.count, frow.capacity)
 			frow.locked = bool(fol.get("locked", false))
 			frow.custom_minimum_size = Vector2(0, FolderRow.ROW_H)
 			frow.folder_selected.connect(_on_folder_clicked)
 			frow.expansion_toggled.connect(_on_toggle)
 			frow.file_dropped.connect(_on_drop)
+			frow.packet_dropped.connect(_on_packet_drop)
 			frow.context_menu_requested.connect(_on_context)
+			frow.hover_open_requested.connect(_on_row_hover_open)
 			_content.add_child(frow)
 			_rows.append({"row": frow, "section": sid, "visible": true})
 	_apply_layout()
 	_relayout()
 	if not _selected.is_empty():
 		select_folder(_selected)
+	call_deferred("_bind_drag_controller")
+
+
+func _section_free_text(sec: Dictionary) -> String:
+	var raw = sec.get("free_text", null)
+	if raw is String:
+		return str(raw)
+	var cells_raw = sec.get("free_cells", sec.get("free", null))
+	if cells_raw is int or cells_raw is float:
+		return "свободно %d клеток" % int(cells_raw)
+	if cells_raw is String:
+		return str(cells_raw)
+	return ""
+
+
+func _folder_occupied(fol: Dictionary) -> int:
+	return _pick_int(fol, ["occupied_cells", "occupied", "count_cells", "count"], 0)
+
+
+func _folder_total(fol: Dictionary) -> int:
+	var total := _pick_int(fol, ["total_cells", "cells_total", "capacity"], 16)
+	return total if total > 0 else 16
+
+
+func _folder_files(fol: Dictionary) -> int:
+	return _pick_int(fol, ["files", "file_count", "count"], 0)
+
+
+func _pick_int(fol: Dictionary, keys: Array, fallback: int) -> int:
+	for key in keys:
+		var value = fol.get(key, null)
+		if value is int or value is float:
+			return int(value)
+	return fallback
+
+
+func _folder_tooltip(files: int, occupied: int, total: int) -> String:
+	return "%d файлов · %d из %d клеток" % [files, occupied, total]
 
 
 func _apply_layout() -> void:
@@ -167,8 +213,36 @@ func update_count(folder_id: String, count: int) -> void:
 	for e in _rows:
 		var row: FolderRow = e["row"]
 		if not row.is_section and row.folder_id == folder_id:
-			row.count = count
+			row.files_count = count
+			row.tooltip_text = _folder_tooltip(row.files_count, row.count, row.capacity)
 			row.queue_redraw()
+			break
+
+
+func update_stats(folder_id: String, files: int, occupied: int, total: int) -> void:
+	for e in _rows:
+		var row: FolderRow = e["row"]
+		if not row.is_section and row.folder_id == folder_id:
+			row.files_count = files
+			row.count = occupied
+			row.capacity = total if total > 0 else row.capacity
+			row.tooltip_text = _folder_tooltip(row.files_count, row.count, row.capacity)
+			row.queue_redraw()
+			queue_redraw()
+			break
+
+
+func footer_text() -> String:
+	var folders := 0
+	var files := 0
+	var occupied := 0
+	for e in _rows:
+		var row: FolderRow = e["row"]
+		if not row.is_section:
+			folders += 1
+			files += row.files_count
+			occupied += row.count
+	return "%d папок · %d файлов · %d клеток занято" % [folders, files, occupied]
 
 
 func _on_toggle(folder_id: String) -> void:
@@ -185,8 +259,77 @@ func _on_drop(folder_id: String, payload: Dictionary) -> void:
 	file_dropped.emit(folder_id, payload)
 
 
+func _on_packet_drop(folder_id: String, payload: Dictionary) -> void:
+	packet_dropped.emit(folder_id, payload)
+
+
 func _on_context(folder_id: String, global_pos: Vector2) -> void:
 	context_menu_requested.emit(folder_id, global_pos)
+
+
+## DragController: 250 мс над папкой истекли — раскрываем секцию и визуал.
+func _bind_drag_controller() -> void:
+	if not is_inside_tree():
+		return
+	var dc := get_tree().get_first_node_in_group("drag_controller")
+	if dc == null or _drag == dc:
+		return
+	_drag = dc
+	if dc.has_signal("hover_open") \
+			and not dc.is_connected("hover_open", Callable(self, "_on_hover_open")):
+		dc.connect("hover_open", Callable(self, "_on_hover_open"))
+
+
+func _process(_delta: float) -> void:
+	if _drag != null and is_instance_valid(_drag):
+		set_process(false)
+		return
+	_drag = null
+	_bind_drag_controller()
+	if _drag != null:
+		set_process(false)
+
+
+func _on_hover_open(folder_id: String) -> void:
+	var row := _row_for(folder_id)
+	if row == null:
+		return
+	row.set_hover(true)
+
+
+## FolderRow.hover_open_requested: открываем папку без повторного set_hover.
+func _on_row_hover_open(folder_id: String) -> void:
+	if _selected != folder_id:
+		select_folder(folder_id)
+	_expand_section_of(folder_id)
+	folder_selected.emit(folder_id)
+	hover_open_requested.emit(folder_id)
+
+
+func _row_for(folder_id: String) -> FolderRow:
+	for e in _rows:
+		var row: FolderRow = e["row"]
+		if not row.is_section and row.folder_id == folder_id:
+			return row
+	return null
+
+
+func _expand_section_of(folder_id: String) -> void:
+	var target_section := ""
+	for e in _rows:
+		var row: FolderRow = e["row"]
+		if not row.is_section and row.folder_id == folder_id:
+			target_section = str(e.get("section", ""))
+			break
+	if target_section.is_empty():
+		return
+	for e in _rows:
+		var row: FolderRow = e["row"]
+		if row.is_section and row.folder_id == target_section and not row.expanded:
+			row.expanded = true
+			_apply_layout()
+			_relayout()
+			return
 
 
 func _gui_input(event: InputEvent) -> void:
@@ -205,17 +348,6 @@ func _draw() -> void:
 	var f := Theme90.ui()
 	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 3, 1), vr)
 
-	# подвал: одна спокойная строка вместо двух «счётчиков»
-	var folders := 0
-	var objs := 0
-	for e in _rows:
-		var row: FolderRow = e["row"]
-		if not row.is_section:
-			folders += 1
-			objs += row.count
+	# подвал: папки · файлы · занятые клетки
 	Theme90.text(self, f, Vector2(fr.position.x + 6, fr.position.y + 1),
-		"%d папок · %d объектов" % [folders, objs], 10, Theme90.SHADE, fr.size.x - 120)
-	var free := "8,5 МБ"
-	var fw := f.get_string_size(free, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	Theme90.text(self, f, Vector2(fr.end.x - fw - 6, fr.position.y + 1), free, 10,
-		Theme90.SHADE)
+		footer_text(), 10, Theme90.SHADE, fr.size.x - 6.0)

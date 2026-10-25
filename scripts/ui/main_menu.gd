@@ -20,6 +20,9 @@ const VHS_OVERLAY := preload("res://scripts/ui/vhs_overlay.gd")
 
 const WIN_RECT := Rect2(120, 80, 1040, 560)
 
+## Стартовая сводка v2: 9 часов, 50 $, SLA 60, 1 слот.
+const START_STATS_TEXT := "9 часов · $50 на старте · 60 SLA · 1 слот"
+
 var has_save := false
 ## Тонкий VHS-слой поверх меню. Игра и модалки не фильтруются.
 var vhs = null
@@ -87,6 +90,11 @@ func _build_vhs() -> void:
 	vhs.name = "VhsOverlay"
 	add_child(vhs)
 	vhs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+
+## Строка стартовой сводки (вынесена для тестов; рисуется в _draw_hero_text).
+func start_stats_text() -> String:
+	return START_STATS_TEXT
 
 
 func _tr(key: String, fallback: String) -> String:
@@ -220,7 +228,7 @@ func _draw_hero_text(w: Rect2) -> void:
 	var strip := Rect2(x, w.position.y + 412, 512, 28)
 	Theme90.text_vcenter(self, f, Rect2(strip.position.x + 26, strip.position.y,
 		strip.size.x - 36, strip.size.y),
-		"9 часов · $150 на старте · 128 SLA · 4 типа файлов", 11, Theme90.DARK)
+		start_stats_text(), 11, Theme90.DARK)
 
 	# нижняя строка — только один тихий кредит
 	Theme90.text(self, f, Vector2(x, w.position.y + w.size.y - 28),

@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-# run_all_tests.sh — прогон всех headless-тестов PEAK HOUR 97.
+# run_all_tests.sh — прогон всех headless-тестов PEAK HOUR 97 (v2).
 #
 # Запуск:
 #   bash scripts/run_all_tests.sh
 #   GODOT_BIN=/path/to/godot bash scripts/run_all_tests.sh
+#   GODOT_BIN="/d/Apps/godot/Godot_v4.7.2-stable_win64_console.exe" bash scripts/run_all_tests.sh
+#
+# GODOT_BIN имеет приоритет. Если он не задан и Linux-путь по умолчанию
+# отсутствует, скрипт пробует `godot4`/`godot` из PATH.
 #
 # Каждый тест — отдельный процесс Godot с таймаутом 180 с. XDG_DATA_HOME
-# выносится во временный каталог, чтобы тесты не трогали пользовательские
-# данные и не мешали параллельным прогонам. В конце — проверка парсинга
-# проекта (`--quit`).
-#
-# Известный безвредный шум Godot при выходе (ObjectDB instances leaked /
-# leaked at exit) не считается провалом: тест, завершившийся с таким
-# предупреждением и без реальных ошибок, помечается PASS.
+# выносится во временный каталог. В конце — проверка парсинга проекта.
+# Отсутствующие файлы тестов пропускаются (SKIP), а не считаются FAIL:
+# волны разработки иногда удаляют модули.
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -22,7 +22,16 @@ GODOT_BIN="${GODOT_BIN:-/home/eq/techlb/tools/godot/Godot_v4.7.2-stable_linux.x8
 TEST_TIMEOUT="${TEST_TIMEOUT:-180}"
 
 if [[ ! -x "$GODOT_BIN" ]]; then
+  for candidate in godot4 godot; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      GODOT_BIN="$(command -v "$candidate")"
+      break
+    fi
+  done
+fi
+if [[ ! -x "$GODOT_BIN" ]]; then
   echo "FAIL: Godot binary is not executable: $GODOT_BIN" >&2
+  echo "Set GODOT_BIN=... explicitly." >&2
   exit 1
 fi
 
@@ -33,18 +42,22 @@ mkdir -p "$XDG_DATA_HOME" "$LOG_DIR"
 export XDG_DATA_HOME
 
 cleanup() {
-  # Осторожная уборка без rm -rf: только внутри созданного mktemp-каталога.
   find "$TMP_BASE" -mindepth 1 -delete 2>/dev/null || true
   rmdir "$TMP_BASE" 2>/dev/null || true
 }
 trap cleanup EXIT
 
+# Aggregator + all standalone v2 suites. New wave-D1 suites are included.
 TESTS=(
   "res://tests/run_tests.gd"
   "res://tests/test_hour.gd"
   "res://tests/test_slots.gd"
   "res://tests/test_shop.gd"
   "res://tests/test_minigame.gd"
+  "res://tests/test_send_games.gd"
+  "res://tests/test_attack_games.gd"
+  "res://tests/test_file_grid.gd"
+  "res://tests/test_shop_modal.gd"
   "res://tests/test_audio.gd"
   "res://tests/test_ambient.gd"
   "res://tests/test_fuzz.gd"
@@ -63,7 +76,17 @@ TESTS=(
   "res://scripts/ui/ui_smoke.gd"
 )
 
-# Какие строки означают настоящую ошибку (а не безвредный leak-шум).
+EXISTING_TESTS=()
+SKIPPED_NAMES=()
+for t in "${TESTS[@]}"; do
+  local_path="${ROOT_DIR}/${t#res://}"
+  if [[ -f "$local_path" ]]; then
+    EXISTING_TESTS+=("$t")
+  else
+    SKIPPED_NAMES+=("$(basename "$t" .gd)")
+  fi
+done
+
 ERROR_RE='SCRIPT ERROR|Parse Error|USER ERROR|Failed to load|Cannot open file|FAIL|SMOKE FAILED'
 LEAK_RE='ObjectDB instances leaked|leaked at exit'
 
@@ -102,7 +125,6 @@ run_one() {
   fi
 
   if [[ "$rc" -eq 0 ]]; then
-    # Godot может вернуть 0, но напечатать SCRIPT ERROR/Parse Error в лог.
     if grep -qE "$ERROR_RE" "$log"; then
       echo "FAIL  $name (exit 0, но в логе есть ошибки)"
       print_log_tail "$log"
@@ -115,7 +137,6 @@ run_one() {
     return 0
   fi
 
-  # Ненулевой код: отличаем реальную ошибку от известного leak-шума.
   if grep -qE "$ERROR_RE" "$log"; then
     echo "FAIL  $name (exit $rc, ${elapsed}s)"
     print_log_tail "$log"
@@ -136,11 +157,14 @@ run_one() {
   FAILED_NAMES+=("$name")
 }
 
-echo "PEAK HOUR 97 — headless tests"
+echo "PEAK HOUR 97 — headless tests (v2)"
 echo "Godot: $GODOT_BIN"
 echo "XDG_DATA_HOME: $XDG_DATA_HOME"
+if [[ ${#SKIPPED_NAMES[@]} -gt 0 ]]; then
+  echo "SKIP (нет файлов): ${SKIPPED_NAMES[*]}"
+fi
 
-for t in "${TESTS[@]}"; do
+for t in "${EXISTING_TESTS[@]}"; do
   run_one "$t"
 done
 
@@ -165,11 +189,10 @@ fi
 
 echo ""
 echo "================================"
-echo "Итог: PASS=$PASSED FAIL=$FAILED"
+echo "Итог: PASS=$PASSED FAIL=$FAILED SKIP=${#SKIPPED_NAMES[@]}"
 if [[ "$FAILED" -ne 0 ]]; then
   echo "Провалены: ${FAILED_NAMES[*]}"
   echo "Логи: $LOG_DIR"
-  # Сохраняем логи провалов рядом с прогоном для разбора в CI.
   if [[ -n "${CI:-}" ]]; then
     mkdir -p "$ROOT_DIR/build/test-logs"
     for n in "${FAILED_NAMES[@]}"; do

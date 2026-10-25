@@ -8,7 +8,7 @@ config_version=5
 
 config/name="PEAK HOUR 97"
 config/description="Час пик. Одна смена. Ни одного свободного места."
-config/version="0.1.0"
+config/version="2.0.0"
 run/main_scene="res://scenes/Main.tscn"
 run/max_fps=60
 config/features=PackedStringArray("4.7", "GL Compatibility")

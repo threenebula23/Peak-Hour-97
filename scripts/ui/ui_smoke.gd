@@ -4,8 +4,8 @@ extends SceneTree
 ## godot --headless --path . --script scripts/ui/ui_smoke.gd
 ##
 ## Сценарий: меню → start_new_run() (подготовка) → _on_start_hour() (час).
-## Проверяет геометрию каркаса, наполнение дерева/сетки/панелей,
-## содержимое статус-бара и появление 4 TCP-слотов.
+## Проверяет геометрию каркаса 1280×720, наполнение дерева/сетки/панелей,
+## сетку папки 5×4, стол сортировки 4×6, 5 ячеек слотов и статус-бар.
 
 const W := 1280.0
 const H := 720.0
@@ -108,9 +108,17 @@ func _check_layout() -> void:
 				_check(not (_nodes[order[i]] as Rect2).intersects(_nodes[order[j]]),
 					"%s и %s не перекрываются" % [order[i], order[j]])
 
-	var grid_w := 4.0 * 132.0 + 3.0 * 8.0
+	var grid: FileGrid = _main.get("grid")
 	var view_w: float = (_nodes["FileGrid"].size.x - 18.0) if _nodes.has("FileGrid") else 0.0
-	_check(grid_w <= view_w, "4×132+3×8=%.0f ≤ ширины поля %.0f" % [grid_w, view_w])
+	if grid != null:
+		var gm: Dictionary = grid.grid_metrics()
+		var cell := float(gm.get("cell", 0.0))
+		var gap := float(gm.get("gap", 6.0))
+		var grid_w := 5.0 * cell + 4.0 * gap
+		_check(int(gm.get("cols", 0)) == 5 and int(gm.get("rows", 0)) == 4,
+			"сетка папки 5×4 (сейчас %s×%s)" % [gm.get("cols", 0), gm.get("rows", 0)])
+		_check(grid_w <= view_w + 0.5,
+			"5×cell+4×gap=%.0f ≤ ширины поля %.0f" % [grid_w, view_w])
 
 
 func _check_menu() -> void:
@@ -176,6 +184,19 @@ func _check_prep() -> void:
 	print("сетка: %d файлов" % cards.size())
 	_check(cards.is_empty(), "в сетке 0 файлов на старте подготовки (сейчас %d)" % cards.size())
 	_check((_main.get("grid") as FileGrid).folder_name.length() > 0, "в сетке выбрана папка")
+	var grid_stats: Dictionary = (_main.get("grid") as FileGrid).stats()
+	_check(int(grid_stats.get("total", 0)) == 20, "сетка 5×4 = 20 клеток")
+	var table = _main.get("sorting_table")
+	_check(table != null and bool(table.visible), "в подготовке виден стол сортировки")
+	if table != null:
+		_check(int(table.total_cells()) == 24, "стол сортировки 4×6 = 24 клетки")
+		var tm: Dictionary = table.grid_metrics()
+		_check(int(tm.get("cols", 0)) == 4 and int(tm.get("rows", 0)) == 6,
+			"стол 4×6 (сейчас %s×%s)" % [tm.get("cols", 0), tm.get("rows", 0)])
+	var recv_hidden: WindowFrame = _main.get_node("ReceiveWindow")
+	var send_hidden: WindowFrame = _main.get_node("SendWindow")
+	_check(not recv_hidden.visible and not send_hidden.visible,
+		"ПРИЁМ/ОТПРАВКА скрыты в подготовке")
 	var files_win: WindowFrame = _main.get("files_window")
 	_check(files_win.title.contains((_main.get("grid") as FileGrid).folder_name),
 		"заголовок ФАЙЛЫ содержит имя папки (%s)" % files_win.title)
@@ -200,8 +221,8 @@ func _check_prep() -> void:
 		str(sb.get_metric("buffer").get("value", "")),
 		str(sb.get_metric("channel").get("value", "")),
 		str(sb.get_metric("hour").get("value", ""))])
-	_check(money.contains("$ 150"), "статус: счёт «$ 150» (сейчас «%s»)" % money)
-	_check(sla.contains("128 / 200"), "статус: SLA «128 / 200» (сейчас «%s»)" % sla)
+	_check(money.contains("$ 50"), "статус: счёт «$ 50» (сейчас «%s»)" % money)
+	_check(sla.contains("60 / 60"), "статус: SLA «60 / 60» (сейчас «%s»)" % sla)
 	var shop_btn = _main.get("_shop_btn")
 	_check(shop_btn != null and not bool(shop_btn.visible),
 		"в первом приготовлении кнопка МАГАЗИН скрыта")
@@ -209,8 +230,8 @@ func _check_prep() -> void:
 		"статус: TCP «0 / N»")
 	_check(str(sb.get_metric("buffer").get("value", "")).begins_with("0 /"),
 		"статус: буфер «0 / N»")
-	_check(str(sb.get_metric("channel").get("value", "")).ends_with("%"),
-		"статус: канал в процентах")
+	_check(str(sb.get_metric("channel").get("value", "")).contains("/"),
+		"статус: канал вида load/capacity")
 
 
 # --------------------------------------------------------------------------
@@ -224,12 +245,12 @@ func _check_hour() -> void:
 
 	var cells: Array = _main.get("slot_cells")
 	print("слоты: %d" % cells.size())
-	_check(cells.size() == 4, "slot_cells = 4 (сейчас %d)" % cells.size())
+	_check(cells.size() == 5, "slot_cells = 5 (сейчас %d)" % cells.size())
 	var strip: Panel90 = _main.get_node("SlotsStrip")
 	var nodes := _find_all(strip, "SlotCell")
-	_check(nodes.size() == 4, "в полосе 4 SlotCell (сейчас %d)" % nodes.size())
+	_check(nodes.size() == 5, "в полосе 5 SlotCell (сейчас %d)" % nodes.size())
 	var strip_rect := Rect2(strip.global_position, strip.size)
-	for i in mini(cells.size(), 4):
+	for i in mini(cells.size(), 5):
 		var cell: SlotCell = cells[i]
 		var r := Rect2(cell.global_position, cell.size)
 		_check(r.size == Vector2(236, 44), "слот %d: 236×44 (сейчас %.0f×%.0f)" % [i, r.size.x, r.size.y])
@@ -249,7 +270,7 @@ func _check_hour() -> void:
 	_check(tcp.begins_with("0 /"), "статус[час]: TCP вида «0 / N» (сейчас «%s»)" % tcp)
 	_check(hour.contains("ЧАС"), "статус[час]: подпись «ЧАС N» (сейчас «%s»)" % hour)
 	_check(money.contains("$"), "статус[час]: счёт в долларах")
-	_check(sla.contains("/ 200"), "статус[час]: SLA из 200")
+	_check(sla.contains("/ 60"), "статус[час]: SLA из 60")
 	var shop_btn = _main.get("_shop_btn")
 	_check(shop_btn != null and not bool(shop_btn.visible),
 		"во время часа кнопка МАГАЗИН скрыта")

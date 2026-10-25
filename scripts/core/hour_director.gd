@@ -1,12 +1,22 @@
 class_name HourDirector
 extends Node
-## Единственный тикер часа (D03/D05/D11/D12).
+## Единственный тикер часа (v2).
 ##
-## Все таймеры (пакеты, запросы, спавны, атаки) двигаются здесь.
-## При открытой модалке спавн приёма и таймеры пакетов стоят, а таймер
-## активного запроса продолжает идти (D03). `delta` всегда ≤ 0.1.
-## Ускорение времени для headless-тестов: PEAKHOUR_TIMESCALE или
-## свойство time_scale.
+## Час — это бюджет файлов, бюджет запросов, окно спавна 75% часа и атаки.
+## Никаких полосок соединения, мусорных/шифровальщицких пакетов и
+## фишинговых запросов: всё это заменено мини-играми атак (§5.7).
+##
+## Важные правила:
+## - приём занимает слот `in` + резервирует клетки фигуры в папке;
+## - отправка занимает слот `out` после мини-игры, иначе запрос встаёт в
+##   очередь «ОЖИДАНИЕ СЛОТА» (M15);
+## - таймер запроса замирает, пока открыта ЕГО мини-игра и пока запрос в
+##   очереди слота; время часа при этом идёт;
+## - файлы расходуются ТОЛЬКО при успешной отправке (§2.8), при отмене/
+##   таймауте/конце часа остаются в папке;
+## - мини-игра отправки не ставит час на паузу (это делает только атака);
+## - если час кончается с открытой мини-игрой отправки — она принудительно
+##   закрывается (B5, вариант b): q=0, файлы открепляются, отправки нет.
 
 signal packet_added(id: String)
 signal packet_changed(id: String)
@@ -20,71 +30,94 @@ signal attack_changed(id: String)
 signal attack_removed(id: String)
 signal toast(text: String)
 signal hour_finished(report: Dictionary)
+## Legacy-сигнал: соединение удалено из игры. Оставлен, чтобы не ломать main.gd.
+## (поле-словарь соединений больше не нужно и удалено)
 signal show_connection(game)
 signal show_minigame(game)
+signal minigame_closed(req_id: String)
+signal minigame_cancelled(req_id: String)
+signal show_attack_minigame(game, kind: String)
+signal attack_resolved(kind: String, success: bool, tier: int)
 signal spawn_frozen(reason: String)
 
 const PACKET_SCRIPT := preload("res://scripts/entities/packet.gd")
 const REQUEST_SCRIPT := preload("res://scripts/entities/request.gd")
 const SLOT_MANAGER_SCRIPT := preload("res://scripts/core/slot_manager.gd")
 const REGISTRY_SCRIPT := preload("res://scripts/core/file_registry.gd")
-const CONNECTION_SCRIPT := preload("res://scripts/minigames/connection_game.gd")
-const MINIGAME_SCRIPT := preload("res://scripts/minigames/minigame_base.gd")
 const ATTACK_SCRIPT := preload("res://scripts/systems/attack_director.gd")
+const FACTORY := preload("res://scripts/minigames/minigame_factory.gd")
 const ECONOMY := preload("res://scripts/core/economy.gd")
 
 const DEFAULT_HOUR_SECONDS := 300.0
 const DEFAULT_RECV_INTERVAL := 12.0
 const DEFAULT_SEND_INTERVAL := 22.0
 const DEFAULT_MAX_REQUESTS := 2
+const MAX_FILES_PER_HOUR := 20
+const SPAWN_WINDOW_RATIO := 0.75
+const SPAWN_JITTER := 0.2
 const MAX_SPAWN_STEPS := 32
-const FILE_COOLDOWN := 20.0
-const FAILED_FILE_FINE_MONEY := -15
-const FAILED_FILE_FINE_SLA := -10.0
 const REJECT_FINE_MONEY := -5
 const REJECT_FINE_SLA := -5.0
-## Fallback, если у обычного пакета нет типа/sla_loss: минимальный штраф.
 const DEFAULT_PACKET_SLA_LOSS := 2.0
-## Пакеты атак (junk/ransomware) не штрафуются повторно: их урон ведёт
-## AttackDirector (fail_sla/auto_unlock_sla), а не потеря карточки.
-const ATTACK_PACKET_SLA_LOSS := 0.0
-const RECV_FEE_SLA := 0.5
-const SEND_SLA := 1.0
+const TYPE_ORDER: Array[String] = ["text", "sound", "photo", "video"]
+const DEFAULT_REQUEST_MIX := {"1": 0.7, "2": 0.3, "3": 0.0}
+const DEFAULT_TYPE_WEIGHTS := {"text": 1.0, "sound": 0.0, "photo": 0.0, "video": 0.0}
 
+## Активные сущности часа.
 var active_packets: Dictionary = {}
 var active_requests: Dictionary = {}
 var slots = null
 var attack_director = null
 
-var spawn_recv_accum: float = 0.0
-var spawn_send_accum: float = 0.0
+## Бюджеты/спавн.
 var hour: int = 1
 var time_left: float = DEFAULT_HOUR_SECONDS
+var hour_elapsed: float = 0.0
+var running: bool = false
 var paused: bool = false
+var modal_open: bool = false
+var time_scale: float = 1.0
+
+var files_budget: int = 0
+var files_spawned: int = 0
+var requests_spawned: int = 0
+var spawned_this_hour: int = 0
+var carry_files: int = 0
+var request_cap: int = DEFAULT_MAX_REQUESTS
+var active_request_limit: int = 1
+var spawn_window: float = DEFAULT_HOUR_SECONDS * SPAWN_WINDOW_RATIO
+var request_mix: Dictionary = DEFAULT_REQUEST_MIX.duplicate()
+var type_weights: Dictionary = DEFAULT_TYPE_WEIGHTS.duplicate()
+
+var spawn_recv_accum: float = 0.0
+var spawn_send_accum: float = 0.0
+var _recv_interval_current: float = DEFAULT_RECV_INTERVAL
+var _send_interval_current: float = DEFAULT_SEND_INTERVAL
+var _next_spawn_at: float = -1.0
+var _spawn_frozen_notified: bool = false
+
+## Состояние/настройки.
+var game = null
+var registry = null
+var rng = null
 var successes_this_hour: int = 0
 var shield_until: float = 0.0
 var recv_disabled_until: float = 0.0
-var channel_debuff_until: float = 0.0
-var rng = null
-
-## Дополнительное состояние/настройки.
-var game = null
-var registry = null
-var modal_open: bool = false
-var time_scale: float = 1.0
-var running: bool = false
-var hour_elapsed: float = 0.0
 var send_disabled_until: float = 0.0
-## Папки, заблокированные шифровальщиком: folder_id → hour_elapsed, до которого блок.
+var channel_debuff_until: float = 0.0
+## Папки, заблокированные мини-игрой «Карантин»: folder_id → hour_elapsed.
 var blocked_folders: Dictionary = {}
+
+## Инъекция фабрики для тестов: Callable(id, tier, seed, context) → Node|null.
+var send_game_factory: Callable = Callable()
 
 var _modal_count: int = 0
 var _next_packet_num: int = 1
 var _next_request_num: int = 1
 var _order_counter: int = 0
-var _recv_interval_current: float = DEFAULT_RECV_INTERVAL
 var _registry_accum: float = 0.0
 var _finish_guard: bool = false
+var _attack_paused: bool = false
 
 var _start_money: int = 0
 var _start_sla: float = 0.0
@@ -94,9 +127,12 @@ var _failed: int = 0
 var _attacks_blocked: int = 0
 var _attacks_failed: int = 0
 
-var _connection_games: Dictionary = {}
 var _minigame = null
 var _minigame_request_id: String = ""
+var _send_queue: Array[String] = []
+var _send_start_time_left: Dictionary = {}
+var _send_start_timer_total: Dictionary = {}
+var _processing_queue: bool = false
 
 
 func _init() -> void:
@@ -107,38 +143,67 @@ func _init() -> void:
 
 func start_hour(p_hour: int) -> void:
 	_bind()
-	hour = clampi(int(p_hour), 1, 24)
 	_clear_entities()
-	_bind()
+	hour = clampi(int(p_hour), 1, 24)
+	var def := _hour_def()
+	var base_files := maxi(0, int(def.get("files", 4)))
+	files_budget = mini(MAX_FILES_PER_HOUR, base_files + maxi(0, carry_files))
+	carry_files = 0
+	files_spawned = 0
+	requests_spawned = 0
+	spawned_this_hour = 0
+	request_cap = maxi(0, int(def.get("request_cap", 2)))
+	active_request_limit = maxi(0, int(def.get("active_requests", 1)))
+	request_mix = _dict_of(def.get("request_mix", DEFAULT_REQUEST_MIX))
+	if request_mix.is_empty():
+		request_mix = DEFAULT_REQUEST_MIX.duplicate()
+	type_weights = _dict_of(def.get("type_weights", DEFAULT_TYPE_WEIGHTS))
+	if type_weights.is_empty():
+		type_weights = _default_type_weights(hour)
+	spawn_window = _hour_seconds() * SPAWN_WINDOW_RATIO
+
 	time_left = _hour_seconds()
 	hour_elapsed = 0.0
 	spawn_recv_accum = 0.0
 	spawn_send_accum = 0.0
-	_recv_interval_current = _recv_interval() * _jitter()
-	paused = false
-	modal_open = false
+	_recv_interval_current = _next_receive_interval()
+	_next_spawn_at = _recv_interval_current
+	_spawn_frozen_notified = false
+	_send_interval_current = _send_interval()
 	_modal_count = 0
+	modal_open = false
+	paused = false
+	_attack_paused = false
 	successes_this_hour = 0
 	shield_until = 0.0
 	recv_disabled_until = 0.0
-	channel_debuff_until = 0.0
 	send_disabled_until = 0.0
+	channel_debuff_until = 0.0
 	blocked_folders.clear()
+	_send_queue.clear()
+	_send_start_time_left.clear()
+	_send_start_timer_total.clear()
 	_running_reset_counters()
+
 	slots = SLOT_MANAGER_SCRIPT.new()
 	slots.changed.connect(_on_slots_changed)
 	_ensure_attack_director()
 	attack_director.reset(hour)
+
 	running = true
 	_finish_guard = false
-	time_scale = _read_time_scale()
 	slot_changed.emit()
+
+
+## Сброс переноса неразобранных файлов. Вызывается на новом забеге/загрузке.
+func reset_carry() -> void:
+	carry_files = 0
 
 
 func tick(delta: float) -> void:
 	if not running or _finish_guard:
 		return
-	if paused:
+	if paused or _attack_paused:
 		return
 	var dt := minf(maxf(delta, 0.0), 0.1) * maxf(0.01, time_scale)
 	if dt <= 0.0:
@@ -146,10 +211,12 @@ func tick(delta: float) -> void:
 	_bind()
 	hour_elapsed += dt
 	time_left = maxf(0.0, time_left - dt)
+
 	_tick_requests(dt)
 	if not modal_open:
 		_tick_packets(dt)
 		_tick_spawns(dt)
+		_tick_request_spawns(dt)
 		_tick_attacks(dt)
 	_tick_registry(dt)
 	_tick_folder_blocks()
@@ -158,12 +225,23 @@ func tick(delta: float) -> void:
 
 
 func set_paused(value: bool) -> void:
-	paused = value
+	paused = bool(value)
 
 
 func set_modal_open(value: bool) -> void:
 	modal_open = bool(value)
 	_modal_count = 1 if modal_open else 0
+
+
+## Полная пауза часа на время мини-игры атаки (H6: ставится ДО показа окна).
+## Дублируется в публичном `paused`, чтобы старый UI/Ambient видели паузу.
+func set_attack_paused(value: bool) -> void:
+	_attack_paused = bool(value)
+	paused = bool(value)
+
+
+func is_attack_paused() -> bool:
+	return _attack_paused
 
 
 func set_time_scale(value: float) -> void:
@@ -213,7 +291,6 @@ func channel_factor() -> float:
 func channel_load() -> float:
 	if slots == null:
 		return 0.0
-	# Слоты не грузят канал: учитываются только активные передачи (_active_weights).
 	return ECONOMY.channel_load(hour, 0, _active_weights(), _upgrades())
 
 
@@ -223,27 +300,43 @@ func max_slots() -> int:
 	return slots.max_slots()
 
 
+func request_required_count(req_id: String) -> int:
+	var req = active_requests.get(req_id)
+	return _required_count(req)
+
+
+## v2-готовность: собраны все слоты, запрос не занят мини-игрой/очередью.
+## Request.is_ready() остался legacy (проверяет TCP-connect) — не используем.
+func is_request_ready(req_id: String) -> bool:
+	var req = active_requests.get(req_id)
+	return _request_ready(req)
+
+
+func is_request_queued(req_id: String) -> bool:
+	return _send_queue.has(str(req_id))
+
+
 # --- приём -----------------------------------------------------------------
 
-## Спавн случайного пакета (используется таймером и тестами).
 func spawn_packet_now(type_override: String = "", protocol_override: String = "") -> String:
 	return _spawn_random_packet(type_override, protocol_override)
 
 
 func _spawn_random_packet(type_override: String = "", protocol_override: String = "") -> String:
-	var file_type := type_override
+	var file_type := str(type_override)
 	if file_type.is_empty():
 		file_type = _pick_type()
-	var protocol := protocol_override
+	if _type_def(file_type).is_empty() and not TYPE_ORDER.has(file_type):
+		file_type = "text"
+	var protocol := str(protocol_override)
 	if protocol.is_empty():
-		var tcp_chance := clampf(0.50 + 0.025 * float(hour - 1), 0.50, 0.70)
-		protocol = "tcp" if _randf() < tcp_chance else "udp"
+		protocol = "tcp"
 	var def := _type_def(file_type)
 	var p = PACKET_SCRIPT.new()
 	p.id = "pkt_%d" % _next_packet_num
 	_next_packet_num += 1
 	p.type = file_type
-	p.protocol = protocol
+	p.protocol = protocol.to_lower()
 	p.file_name = _make_file_name()
 	p.timer_total = ECONOMY.packet_timer(hour, _upgrades())
 	p.time_left = p.timer_total
@@ -251,77 +344,54 @@ func _spawn_random_packet(type_override: String = "", protocol_override: String 
 	p.state = PACKET_SCRIPT.STATE_WAITING
 	p.order = _order_counter
 	_order_counter += 1
-	if protocol == "udp" and _randf() < PACKET_SCRIPT.UDP_LOST_CHANCE:
-		p.state = PACKET_SCRIPT.STATE_LOST
-		p.lost_left = PACKET_SCRIPT.UDP_LOST_SEC
+	p.shape_id = REGISTRY_SCRIPT.shape_for_type(file_type, rng)
+	p.rotation = _randi_range(0, 3)
+	p.shape_cells = REGISTRY_SCRIPT.shape_cells(p.shape_id, p.rotation)
 	if not _add_packet(p):
 		return ""
 	_play_sfx(&"tick")
 	return p.id
 
 
-## Мусорный пакет: карточка в приёме, занимает буфер, без типа и таймера.
-func spawn_junk_packet(attack_id: String) -> String:
-	var p = PACKET_SCRIPT.new()
-	p.id = "pkt_%d" % _next_packet_num
-	_next_packet_num += 1
-	p.type = ""
-	p.protocol = ""
-	p.file_name = "?"
-	p.timer_total = 0.0
-	p.time_left = 0.0
-	p.size_kb = 0
-	p.state = PACKET_SCRIPT.STATE_WAITING
-	p.order = _order_counter
-	_order_counter += 1
-	p.is_attack = true
-	p.attack_kind = "junk"
-	p.attack_id = attack_id
-	if not _add_packet(p):
-		return ""
-	return p.id
-
-
-## Принудительный спавн пакета-атаки (шифровальщик).
-func spawn_ransomware_packet(attack_id: String) -> String:
-	var p = PACKET_SCRIPT.new()
-	p.id = "pkt_%d" % _next_packet_num
-	_next_packet_num += 1
-	p.type = "text"
-	p.protocol = "tcp"
-	p.file_name = "счёт.exe"
-	p.timer_total = ECONOMY.packet_timer(hour, _upgrades())
-	p.time_left = p.timer_total
-	p.size_kb = 0
-	p.state = PACKET_SCRIPT.STATE_WAITING
-	p.order = _order_counter
-	_order_counter += 1
-	p.is_attack = true
-	p.attack_kind = "ransomware"
-	p.attack_id = attack_id
-	if not _add_packet(p, true):
-		return ""
-	_emit_toast("ШИФРОВАЛЬЩИК: пакет .exe в приёме")
-	return p.id
-
-
-func receive_packet(packet_id: String, folder_id: String) -> bool:
+## Приём пакета в папку. origin=(-1,-1) — auto-fit по фигуре.
+func receive_packet(packet_id: String, folder_id: String,
+		origin: Vector2i = Vector2i(-1, -1), rotation: int = -1) -> bool:
 	var packet = active_packets.get(packet_id)
 	if packet == null or not packet.can_receive():
-		return false
-	if str(packet.attack_kind) == "junk":
 		return false
 	if registry == null or not registry.folders.has(folder_id):
 		_emit_toast("Нет такой папки")
 		return false
 	if is_folder_locked(folder_id):
-		_emit_toast("Папка заблокирована шифровальщиком")
+		_emit_toast("Папка заблокирована")
 		return false
-	if not registry.reserve_slot(folder_id):
-		_emit_toast("Папка заполнена — приём отклонён")
+	if hour_elapsed < recv_disabled_until:
+		_emit_toast("Приём временно недоступен")
 		return false
-	var def := _type_def(packet.type)
-	var duration := ECONOMY.recv_time(def, _channel_factor(), _upgrades())
+	if slots == null:
+		return false
+	var slot_index: int = int(slots.reserve("in", packet_id, packet.file_name))
+	if slot_index < 0:
+		_emit_toast("ВСЕ КАНАЛЫ ЗАНЯТЫ")
+		return false
+
+	var use_rotation := int(packet.rotation) if rotation < 0 else posmod(int(rotation), 4)
+	var reserved: Dictionary = {}
+	if origin.x < 0 or origin.y < 0:
+		reserved = registry.auto_reserve_packet(packet_id, folder_id, packet.shape_id, use_rotation)
+	else:
+		if registry.reserve_packet(packet_id, folder_id, packet.shape_id, use_rotation, origin):
+			reserved = registry.get_reservation(packet_id)
+	if reserved.is_empty() or not bool(reserved.get("ok", false)):
+		slots.release(slot_index)
+		_emit_toast("НЕТ МЕСТА В ПАПКЕ")
+		return false
+
+	packet.shape_id = str(reserved.get("shape_id", packet.shape_id))
+	packet.rotation = int(reserved.get("rotation", packet.rotation))
+	packet.shape_cells = REGISTRY_SCRIPT.shape_cells(packet.shape_id, packet.rotation)
+	var def := _type_def(str(packet.type))
+	var duration := ECONOMY.recv_transfer_time(def, _channel_factor(), _speed_level())
 	packet.state = PACKET_SCRIPT.STATE_LOADING
 	packet.loading_folder_id = folder_id
 	packet.loading_progress = 0.0
@@ -331,120 +401,74 @@ func receive_packet(packet_id: String, folder_id: String) -> bool:
 	return true
 
 
-func connect_packet(packet_id: String) -> bool:
-	var packet = active_packets.get(packet_id)
-	if packet == null or not packet.can_connect() or slots == null or modal_open:
-		return false
-	if _connection_games.has(packet_id):
-		return false
-	var index: int = int(slots.reserve("in", packet.id, packet.file_name))
-	if index < 0:
-		_emit_toast("Все слоты соединения заняты")
-		return false
-	var game_node = CONNECTION_SCRIPT.new()
-	_connection_games[packet_id] = game_node
-	game_node.finished.connect(_on_connection_finished)
-	_push_modal()
-	game_node.start(hour, successes_this_hour, _zone_level(), packet_id)
-	show_connection.emit(game_node)
-	if game_node.get_parent() == null:
-		add_child(game_node)
-	return true
-
-
-## Уничтожить пакет-атаку (шифровальщик) до заноса.
-func destroy_attack_packet(packet_id: String) -> bool:
-	var packet = active_packets.get(packet_id)
-	if packet == null or not packet.is_attack:
-		return false
-	if str(packet.attack_kind) == "junk":
-		var junk_rewarded := false
-		if attack_director != null:
-			junk_rewarded = attack_director.on_junk_packet_destroyed(packet_id)
-		_remove_packet(packet_id)
-		return junk_rewarded
-	var rewarded := false
-	if attack_director != null:
-		rewarded = attack_director.on_ransomware_packet_destroyed(packet_id)
-	_remove_packet(packet_id)
-	return rewarded
-
-
 # --- запросы ---------------------------------------------------------------
 
-func spawn_request_now() -> String:
-	return _spawn_random_request()
+func spawn_request_now(count_override: int = 0) -> String:
+	return _spawn_random_request(true, int(count_override))
 
 
-func _spawn_random_request() -> String:
+func _spawn_random_request(force: bool = false, count_override: int = 0) -> String:
 	if registry == null:
 		return ""
-	var available: Array = registry.get_available_files()
+	if not force:
+		if requests_spawned >= request_cap:
+			return ""
+		if _normal_request_count() >= active_request_limit:
+			return ""
+	var available: Array = []
+	for file in registry.get_available_files():
+		if not is_folder_locked(str(file.folder_id)):
+			available.append(file)
 	if available.is_empty():
 		return ""
-	# Файлы из заблокированных папок недоступны для запросов.
-	var filtered: Array = []
-	for file in available:
-		if not is_folder_locked(str(file.folder_id)):
-			filtered.append(file)
-	available = filtered
-	if available.is_empty():
+	var count := 0
+	if count_override > 0:
+		if available.size() < count_override:
+			return ""
+		count = count_override
+	else:
+		count = _roll_required_count()
+		if available.size() < count:
+			return ""
+	if count <= 0:
 		return ""
-	var count := _roll_required_count()
-	count = mini(count, available.size())
-	var pool: Array = available.duplicate()
-	var files: Array = []
-	for i in range(count):
-		var idx := _randi_range(0, pool.size() - 1)
-		files.append(pool[idx])
-		pool.remove_at(idx)
-	var protocol := "tcp" if _randf() < 0.5 else "udp"
-	return _make_request(files, protocol, false, "", "")
-
-
-func spawn_phishing_request(attack_id: String) -> String:
-	if registry == null:
+	var req_id := _create_request(count, "tcp")
+	if req_id.is_empty():
 		return ""
-	var available: Array = registry.get_available_files()
-	var filtered: Array = []
-	for file in available:
-		if not is_folder_locked(str(file.folder_id)):
-			filtered.append(file)
-	available = filtered
-	var files: Array = []
-	if not available.is_empty():
-		var count := mini(_randi_range(1, 2), available.size())
-		var pool: Array = available.duplicate()
-		for i in range(count):
-			var idx := _randi_range(0, pool.size() - 1)
-			files.append(pool[idx])
-			pool.remove_at(idx)
-	return _make_request(files, "tcp", true, "phishing", attack_id)
+	requests_spawned += 1
+	return req_id
 
 
-func _make_request(files: Array, protocol: String, is_attack: bool, attack_kind: String, attack_id: String) -> String:
+## Legacy-хелпер: создать запрос под N слотов (файлы не прикрепляются).
+func _make_request(files: Array, protocol: String, _is_attack: bool,
+		_attack_kind: String, _attack_id: String) -> String:
+	var count := maxi(1, files.size())
+	return _create_request(count, protocol)
+
+
+func _create_request(count: int, protocol: String) -> String:
 	var req = REQUEST_SCRIPT.new()
 	req.id = "req_%d" % _next_request_num
 	_next_request_num += 1
-	req.protocol = protocol.to_lower()
+	req.protocol = _clean_protocol(protocol)
 	req.timer_total = ECONOMY.request_timer(hour, _upgrades())
 	req.time_left = req.timer_total
-	req.is_attack = is_attack
-	req.attack_kind = attack_kind
-	req.attack_id = attack_id
-	for file in files:
-		if file == null:
-			continue
-		req.required.append(str(file.id))
-		req.required_types.append(str(file.type))
-	if is_attack and attack_kind == "phishing":
-		req.client_name = "Служба доставки"
-		req.client_id = "id_7F3К" # кириллическая К — видимый телл D08
-		req.avatar = "?"
-	else:
-		req.client_name = _pick_org()
-		req.client_id = "id_%04X" % _next_request_num
-		req.avatar = req.client_name.substr(0, 1).to_upper()
+	req.client_name = _pick_org()
+	req.client_id = "id_%04X" % _next_request_num
+	req.avatar = req.client_name.substr(0, 1).to_upper()
+	req.is_attack = false
+	req.attack_kind = ""
+	req.attack_id = ""
+	req.required.clear()
+	req.attached.clear()
+	# required — это слоты контейнера (required_count), а не заранее выбранные
+	# файлы: игрок сам решает, какие файлы положить (attach_file).
+	for i in range(maxi(1, int(count))):
+		req.required.append("__slot_%s_%d" % [req.id, i])
+	# Соединения в v2 нет: TCP/UDP — выбор оплаты/скорости, а не мини-игра.
+	req.connected = true
+	req.set_meta("required_count", maxi(1, int(count)))
+	req.set_meta("queued", false)
 	active_requests[req.id] = req
 	request_added.emit(req.id)
 	_play_sfx(&"request_ready")
@@ -455,31 +479,32 @@ func attach_file(req_id: String, file_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null or registry == null:
 		return false
-	var file = registry.files.get(file_id)
-	if file == null:
+	if req.sending or req.minigame_active or _send_queue.has(req_id):
 		return false
-	if req.sending or req.minigame_active:
-		return false
-	if is_folder_locked(str(file.folder_id)):
-		_emit_toast("Папка заблокирована шифровальщиком")
-		return false
-	if not req.required.has(file_id):
-		_add_sla(-2.0)
-		_emit_toast("Этот файл не требуется запросом (−2 SLA)")
-		return false
-	if not file.attached_request.is_empty() and file.attached_request != req_id:
-		_emit_toast("Файл уже прикреплён к другому запросу")
+	var need := _required_count(req)
+	if req.attached.size() >= need:
+		_emit_toast("Контейнер заполнен")
 		return false
 	if req.attached.has(file_id):
 		return true
+	var file = registry.files.get(file_id)
+	if file == null:
+		return false
+	if is_folder_locked(str(file.folder_id)):
+		_emit_toast("Папка заблокирована")
+		return false
+	if str(file.location) == "table":
+		_emit_toast("Файл на столе — сначала верните его в папку")
+		return false
+	if not str(file.attached_request).is_empty() and str(file.attached_request) != req_id:
+		_emit_toast("Файл уже прикреплён к другому запросу")
+		return false
 	if not registry.attach_file(file_id, req_id):
 		return false
 	req.attached.append(file_id)
+	_fill_required_slot(req, file_id)
+	req.required_types = _attached_types(req)
 	request_changed.emit(req_id)
-	# Отправка автоматическая: последний прикреплённый файл запускает её без
-	# отдельного клика. TCP ждёт успешного соединения (is_ready), UDP — сразу.
-	if req.is_ready() and not req.sending:
-		_begin_send(req_id)
 	return true
 
 
@@ -487,12 +512,15 @@ func detach_file(req_id: String, file_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null or registry == null:
 		return false
-	if req.sending or req.minigame_active:
+	if req.sending or req.minigame_active or _send_queue.has(req_id):
 		return false
 	if not req.attached.has(file_id):
 		return false
-	registry.detach_file(file_id)
+	if registry.files.has(file_id):
+		registry.detach_file(file_id)
 	req.attached.erase(file_id)
+	_clear_required_slot(req, file_id)
+	req.required_types = _attached_types(req)
 	request_changed.emit(req_id)
 	return true
 
@@ -501,82 +529,204 @@ func reject_request(req_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
-	if req.is_attack and req.attack_kind == "phishing":
-		if attack_director != null:
-			attack_director.resolve_phishing(req_id, "rejected")
-	else:
-		_add_money(REJECT_FINE_MONEY)
-		_add_sla(REJECT_FINE_SLA)
-		_emit_toast("Запрос отклонён: −5 $, −5 SLA")
+	if req.sending or req.minigame_active:
+		_emit_toast("Запрос уже в работе")
+		return false
+	_add_money(REJECT_FINE_MONEY)
+	_add_sla(REJECT_FINE_SLA)
 	_failed += 1
+	_add_stat("failed", 1)
+	_emit_toast("Запрос отклонён: −5 $, −5 SLA")
 	_cleanup_request(req_id, true)
 	return true
 
 
-func connect_request(req_id: String) -> bool:
+## v2: соединения нет. Метод-заглушка, чтобы не ломать старый UI.
+func connect_packet(_packet_id: String) -> bool:
+	return false
+
+
+## v2: соединения нет. Метод-заглушка, чтобы не ломать старый UI.
+func connect_request(_req_id: String) -> bool:
+	return false
+
+
+func set_request_protocol(req_id: String, protocol: String) -> bool:
 	var req = active_requests.get(req_id)
-	if req == null or req.protocol != "tcp" or req.connected or slots == null or modal_open:
+	if req == null:
 		return false
-	if _connection_games.has(req_id):
+	if req.sending or req.minigame_active or _send_queue.has(req_id):
 		return false
-	if req.slot_reserved:
+	var clean := _clean_protocol(protocol)
+	if clean.is_empty():
 		return false
-	var index: int = int(slots.reserve("out", req.id, req.client_name))
-	if index < 0:
-		_emit_toast("Все слоты соединения заняты")
-		return false
-	req.slot_reserved = true
-	var game_node = CONNECTION_SCRIPT.new()
-	_connection_games[req_id] = game_node
-	game_node.finished.connect(_on_connection_finished)
-	_push_modal()
-	game_node.start(hour, successes_this_hour, _zone_level(), req_id)
-	show_connection.emit(game_node)
-	if game_node.get_parent() == null:
-		add_child(game_node)
+	req.protocol = clean
 	request_changed.emit(req_id)
 	return true
 
 
-## Отправка запускается сразу, без окна-заглушки MiniGame. Окно мини-игры
-## остаётся на будущее (_on_minigame_finished), но в текущем цикле не
-## создаётся: качество считается полным (1.0).
+## Явная отправка запроса. Автостарта при attach_file больше нет.
 func start_send(req_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
-	if req.minigame_active or req.sending:
+	if not running or _finish_guard:
+		return false
+	if req.sending or req.minigame_active or _send_queue.has(req_id):
 		return false
 	if _minigame != null:
-		return false
-	# Пока открыта ConnectionGame (своя или другого запроса), отправку не
-	# стартуем: иначе TCP-запрос уйдёт без полоски соединения. Успешное
-	# соединение вызывает _begin_send уже после _pop_modal.
-	if modal_open:
+		_emit_toast("Сначала закройте мини-игру")
 		return false
 	if hour_elapsed < send_disabled_until:
 		_emit_toast("Отправка временно недоступна")
 		return false
-	if not req.is_ready():
-		_emit_toast("Запрос не готов к отправке")
+	var need := _required_count(req)
+	if need <= 0 or req.attached.size() < need:
+		_emit_toast("Контейнер не собран")
 		return false
-	# TCP отправляется только после успешного соединения (иначе запрос ушёл бы
-	# без полоски соединения). UDP можно отправлять сразу.
-	if req.protocol == "tcp" and not req.connected:
-		_emit_toast("Сначала подключитесь к клиенту")
+	if _attached_files_valid(req) == false:
+		_emit_toast("Файл контейнера недоступен")
 		return false
-	for file_id in req.required:
-		if registry != null and registry.files.has(str(file_id)):
-			var required_file = registry.files[str(file_id)]
-			if is_folder_locked(str(required_file.folder_id)):
-				_emit_toast("Папка заблокирована шифровальщиком")
-				return false
-	if req.required_types.is_empty():
-		req.required_types = _request_types(req)
-	req.quality = 1.0
-	req.minigame_active = false
-	_begin_send(req_id)
+
+	var types := _attached_types(req)
+	req.required_types = types
+	var selection: Dictionary = ECONOMY.send_minigame_for(types)
+	req.send_sum = int(selection.get("sum", 0))
+	req.minigame_id = str(selection.get("id", "dots"))
+	req.minigame_tier = clampi(int(selection.get("tier", 1)), 1, 4)
+	req.minigame_active = true
+	# Legacy Request.is_ready() перестаёт быть true на время мини-игры/отправки.
+	_blank_required_slots(req)
+	request_changed.emit(req_id)
+
+	var context := {
+		"request_id": req_id,
+		"client_name": req.client_name,
+		"types": types,
+		"sum": req.send_sum,
+		"protocol": req.protocol,
+		"reward_text": "КОНТЕЙНЕР УХОДИТ",
+	}
+	var seed_value := _randi_range(1, 2147483646)
+	var game_node = null
+	if send_game_factory.is_valid():
+		game_node = send_game_factory.call(req.minigame_id, req.minigame_tier, seed_value, context)
+	else:
+		game_node = FACTORY.create_send(req.minigame_id, req.minigame_tier, seed_value, context)
+	if game_node == null:
+		# Фабрика ещё не готова: не блокируем игрока, качество среднее.
+		req.minigame_active = false
+		req.quality = 0.5
+		request_changed.emit(req_id)
+		_emit_toast("Мини-игра недоступна: качество 50%")
+		_start_send_after_minigame(req_id)
+		return true
+
+	_minigame = game_node
+	_minigame_request_id = req_id
+	if game_node.has_signal("finished"):
+		game_node.finished.connect(_on_send_minigame_finished)
+	if game_node is Node and game_node.get_parent() == null:
+		add_child(game_node)
+	show_minigame.emit(game_node)
 	return true
+
+
+func _on_send_minigame_finished(quality: float) -> void:
+	var req_id := _minigame_request_id
+	_clear_send_game_node()
+	var req = active_requests.get(req_id)
+	if req == null:
+		return
+	req.minigame_active = false
+	req.quality = clampf(float(quality), 0.0, 1.0)
+	request_changed.emit(req_id)
+	if not running or _finish_guard:
+		return
+	_start_send_after_minigame(req_id)
+
+
+## После мини-игры: занять out-слот или встать в очередь (M15).
+func _start_send_after_minigame(req_id: String) -> void:
+	var req = active_requests.get(req_id)
+	if req == null or req.sending:
+		return
+	if slots == null:
+		_queue_request(req_id)
+		return
+	var slot_index: int = int(slots.reserve("out", req_id, req.client_name))
+	if slot_index < 0:
+		_queue_request(req_id)
+		return
+	req.slot_reserved = true
+	req.set_meta("queued", false)
+	_begin_send(req_id)
+
+
+func _queue_request(req_id: String) -> void:
+	var req = active_requests.get(req_id)
+	if req == null:
+		return
+	req.sending = false
+	req.slot_reserved = false
+	req.set_meta("queued", true)
+	if not _send_queue.has(req_id):
+		_send_queue.append(req_id)
+	request_changed.emit(req_id)
+	_emit_toast("ОЖИДАНИЕ СЛОТА")
+
+
+func _begin_send(req_id: String) -> void:
+	var req = active_requests.get(req_id)
+	if req == null or req.sending:
+		return
+	var factor := _channel_factor()
+	var duration := 0.0
+	var base_sum := 0.0
+	var n := 0
+	for file_id in req.attached:
+		var file = registry.files.get(str(file_id)) if registry != null else null
+		if file == null:
+			continue
+		var def := _type_def(str(file.type))
+		duration += ECONOMY.send_transfer_time(def, factor, _speed_level(), req.protocol)
+		base_sum += float(def.get("base_pay", 0))
+		n += 1
+	if n == 0:
+		_cleanup_request(req_id, true)
+		return
+	req.send_duration = maxf(0.1, duration)
+	req.send_base_sum = base_sum
+	req.send_progress = 0.0
+	req.sending = true
+	req.slot_reserved = true
+	req.set_meta("queued", false)
+	_send_start_time_left[req_id] = float(req.time_left)
+	_send_start_timer_total[req_id] = float(req.timer_total)
+	request_changed.emit(req_id)
+	_play_sfx(&"modem")
+	_emit_toast("Отправка началась")
+
+
+func _process_send_queue() -> void:
+	if _processing_queue or not running or slots == null:
+		return
+	if _send_queue.is_empty():
+		return
+	_processing_queue = true
+	for req_id in _send_queue.duplicate():
+		if not active_requests.has(req_id):
+			_send_queue.erase(req_id)
+			continue
+		var req = active_requests[req_id]
+		var slot_index: int = int(slots.reserve("out", req_id, req.client_name))
+		if slot_index < 0:
+			break
+		_send_queue.erase(req_id)
+		req.set_meta("queued", false)
+		req.slot_reserved = true
+		_begin_send(req_id)
+	_processing_queue = false
 
 
 # --- атаки -----------------------------------------------------------------
@@ -587,27 +737,53 @@ func spawn_attack_now(kind: String = "") -> String:
 	return attack_director.spawn_attack(kind)
 
 
-func destroy_attack(id: String) -> bool:
-	if attack_director == null:
-		return false
-	return attack_director.destroy(id)
+## Legacy-методы карточек атак: безопасные заглушки (UI-волна их удалит).
+func destroy_attack(_id: String) -> bool:
+	return false
 
 
-func quarantine_attack(id: String) -> bool:
-	if attack_director == null:
-		return false
-	return attack_director.quarantine(id)
+func quarantine_attack(_id: String) -> bool:
+	return false
 
 
-func hold_shield(seconds: float = 0.1) -> bool:
-	shield_until = hour_elapsed + maxf(0.0, seconds)
-	if attack_director == null:
-		return false
-	return attack_director.hold_shield(seconds)
+func destroy_attack_packet(_packet_id: String) -> bool:
+	return false
 
 
-func use_shield(seconds: float = 0.1) -> bool:
-	return hold_shield(seconds)
+func destroy_attack_file(_file_id: String) -> bool:
+	return false
+
+
+func spawn_junk_packet(_attack_id: String) -> String:
+	return ""
+
+
+func spawn_ransomware_packet(_attack_id: String) -> String:
+	return ""
+
+
+func spawn_phishing_request(_attack_id: String) -> String:
+	return ""
+
+
+func hold_shield(_seconds: float = 0.1) -> bool:
+	return false
+
+
+func use_shield(_seconds: float = 0.1) -> bool:
+	return false
+
+
+func notify_file_destroyed(_file_id: String) -> bool:
+	return false
+
+
+func junk_auto_carry(_packet_id: String, _attack_id: String) -> void:
+	pass
+
+
+func register_ransomware_file(_file_id: String, _attack_id: String) -> void:
+	pass
 
 
 func attack_disable_recv(seconds: float) -> void:
@@ -622,37 +798,23 @@ func attack_channel_debuff(seconds: float) -> void:
 	channel_debuff_until = hour_elapsed + maxf(0.0, seconds)
 
 
-func attack_lose_packets(count: int) -> void:
-	var lost := 0
-	var sla_loss := 0.0
-	for id in active_packets.keys():
-		if lost >= maxi(0, count):
-			break
-		var packet = active_packets[id]
-		if packet.is_attack:
-			continue
-		sla_loss += _packet_sla_loss(packet)
-		_remove_packet(str(id))
-		_failed += 1
-		lost += 1
-	if lost > 0:
-		if sla_loss > 0.0:
-			_add_sla(-sla_loss)
-		_emit_toast("DDoS: потеряно пакетов — %d (−%s SLA)" % [lost, _format_loss(sla_loss)])
+func attack_lose_packets(_count: int) -> void:
+	pass
 
 
 func attack_lock_random_file(seconds: float) -> void:
 	if registry == null:
 		return
-	var candidates: Array = registry.get_available_files()
+	var candidates: Array = []
+	for file in registry.get_available_files():
+		if not is_folder_locked(str(file.folder_id)):
+			candidates.append(file)
 	if candidates.is_empty():
 		return
 	var file = candidates[_randi_range(0, candidates.size() - 1)]
-	registry.lock_file(file.id, seconds)
+	registry.lock_file(str(file.id), seconds)
 	_emit_toast("Фишинг: файл заблокирован на %d с" % int(seconds))
 
-
-# --- блокировка папки шифровальщиком --------------------------------------
 
 func is_folder_locked(folder_id: String) -> bool:
 	if folder_id.is_empty() or not blocked_folders.has(folder_id):
@@ -660,22 +822,20 @@ func is_folder_locked(folder_id: String) -> bool:
 	return hour_elapsed < float(blocked_folders[folder_id])
 
 
-## Через folder_block_delay_sec папка становится недоступной, файл — locked.
-func lock_ransomware_folder(folder_id: String, file_id: String, seconds: float) -> void:
+func lock_random_folder(seconds: float) -> String:
+	if registry == null or registry.folders.is_empty():
+		return ""
+	var ids: Array = registry.folders.keys()
+	var folder_id := str(ids[_randi_range(0, ids.size() - 1)])
+	blocked_folders[folder_id] = hour_elapsed + maxf(0.1, seconds)
+	_emit_toast("Карантин: папка заблокирована на %d с" % int(seconds))
+	return folder_id
+
+
+func lock_ransomware_folder(folder_id: String, _file_id: String, seconds: float) -> void:
 	if folder_id.is_empty():
 		return
 	blocked_folders[folder_id] = hour_elapsed + maxf(0.1, seconds)
-	if registry != null and registry.files.has(file_id):
-		# FileRegistry.lock_file не принимает malicious, а шифровальщик уже
-		# помечен malicious. Переводим файл в locked напрямую (D08/D09).
-		var file = registry.files[file_id]
-		var prev: StringName = &"folder" if not str(file.folder_id).is_empty() else &"registry"
-		file._location_before_lock = prev
-		file.location = &"locked"
-		file.lock_until = Time.get_unix_time_from_system() + maxf(0.1, seconds)
-		registry.file_changed.emit(file)
-		registry.registry_changed.emit()
-	_emit_toast("Шифровальщик: папка заблокирована на %d с" % int(seconds))
 
 
 func unlock_ransomware_folder(folder_id: String) -> void:
@@ -683,55 +843,9 @@ func unlock_ransomware_folder(folder_id: String) -> void:
 		blocked_folders.erase(folder_id)
 
 
-## Авто-занос мусора: карточка уходит из приёма, появляется malicious/fake.
-func junk_auto_carry(packet_id: String, _attack_id: String) -> void:
-	_remove_packet(packet_id)
-	if registry == null:
-		return
-	var folder_id := _random_folder_with_space()
-	var file = null
-	if not folder_id.is_empty():
-		file = registry.create_file(_unique_file_name("fake"), "text", folder_id, &"folder")
-	if file == null:
-		file = registry.create_file(_unique_file_name("fake"), "text", "", &"registry")
-	if file != null:
-		# У мусора нет типа/расширения — только malicious/fake.
-		file.type = ""
-		file.ext = ""
-		registry.mark_malicious(str(file.id), "junk")
-
-
-## Файл-шифровальщик создан на складе — передаём в AttackDirector.
-func register_ransomware_file(file_id: String, attack_id: String) -> void:
-	if attack_director != null:
-		attack_director.on_ransomware_file(file_id, attack_id)
-
-
-## Файл уничтожен пользователем (D08): если это шифровальщик — награда.
-func notify_file_destroyed(file_id: String) -> bool:
-	if attack_director == null:
-		return false
-	return attack_director.on_file_destroyed(file_id)
-
-
-## Уничтожение malicious/locked файла атаки из UI (D08 остаётся кликабельным).
-func destroy_attack_file(file_id: String) -> bool:
-	if registry == null or not registry.files.has(file_id):
-		return false
-	var file = registry.files[file_id]
-	if str(file.location) == "locked":
-		registry.unlock_file(file_id)
-		if registry.files.has(file_id):
-			registry.mark_malicious(file_id, "ransomware")
-	var destroyed: bool = bool(registry.destroy_malicious(file_id))
-	if destroyed:
-		notify_file_destroyed(file_id)
-	return destroyed
-
-
 # --- отчёт -----------------------------------------------------------------
 
-func report() -> Dictionary:
+func report(packets_left_override: int = -1, requests_left_override: int = -1) -> Dictionary:
 	var earned := 0
 	if game != null:
 		earned = maxi(0, int(game.stats.get("money_earned", 0)) - _start_money_earned)
@@ -740,6 +854,12 @@ func report() -> Dictionary:
 	if game != null:
 		sla_delta = float(game.sla) - _start_sla
 		money_delta = int(game.money) - _start_money
+	var packets_left := active_packets.size()
+	if packets_left_override >= 0:
+		packets_left = packets_left_override
+	var requests_left := active_requests.size()
+	if requests_left_override >= 0:
+		requests_left = requests_left_override
 	return {
 		"hour": hour,
 		"earned": earned,
@@ -750,8 +870,13 @@ func report() -> Dictionary:
 		"attacks_failed": _attacks_failed,
 		"sla_delta": sla_delta,
 		"time_left": time_left,
-		"packets_left": active_packets.size(),
-		"requests_left": active_requests.size(),
+		"packets_left": packets_left,
+		"requests_left": requests_left,
+		"files_carry": maxi(0, files_budget - files_spawned),
+		"files_budget": files_budget,
+		"files_spawned": files_spawned,
+		"requests_spawned": requests_spawned,
+		"request_cap": request_cap,
 	}
 
 
@@ -763,14 +888,19 @@ func _tick_requests(dt: float) -> void:
 		if not active_requests.has(id):
 			continue
 		var req = active_requests[id]
-		req.time_left = maxf(0.0, req.time_left - dt)
-		if req.time_left <= 0.0:
-			_timeout_request(str(id))
+		if req.minigame_active or _send_queue.has(str(id)):
 			continue
+		# D2: отправка уже началась — игрок не может на неё повлиять, поэтому
+		# таймер запроса замирает и тикает только прогресс передачи. Таймаут
+		# остаётся для запросов, которые ещё не отправляются.
 		if req.sending:
 			req.send_progress += dt
 			if req.send_progress >= req.send_duration:
 				_complete_send(str(id))
+			continue
+		req.time_left = maxf(0.0, req.time_left - dt)
+		if req.time_left <= 0.0:
+			_timeout_request(str(id))
 
 
 func _tick_packets(dt: float) -> void:
@@ -778,56 +908,66 @@ func _tick_packets(dt: float) -> void:
 		if not active_packets.has(id):
 			continue
 		var packet = active_packets[id]
-		# Мусор не имеет таймера — им управляет AttackDirector (15 с авто-занос).
-		if str(packet.attack_kind) == "junk":
-			continue
-		if packet.state == PACKET_SCRIPT.STATE_LOST:
-			packet.lost_left = maxf(0.0, packet.lost_left - dt)
-			if packet.lost_left <= 0.0:
-				packet.state = PACKET_SCRIPT.STATE_WAITING
-				packet_changed.emit(str(id))
-			continue
 		if packet.state == PACKET_SCRIPT.STATE_LOADING:
 			packet.loading_progress += dt
 			if packet.loading_progress >= packet.loading_duration:
 				_finish_loading(str(id))
 			continue
-		if packet.state == PACKET_SCRIPT.STATE_WAITING or packet.state == PACKET_SCRIPT.STATE_CONNECTED:
-			packet.time_left = maxf(0.0, packet.time_left - dt)
-			if packet.time_left <= 0.0:
-				_timeout_packet(str(id))
+		packet.time_left = maxf(0.0, packet.time_left - dt)
+		if packet.time_left <= 0.0:
+			_timeout_packet(str(id))
 
 
 func _tick_spawns(dt: float) -> void:
-	# Приём.
-	if hour_elapsed >= recv_disabled_until:
-		spawn_recv_accum += dt
-		var steps := 0
-		while spawn_recv_accum >= _recv_interval_current and steps < MAX_SPAWN_STEPS:
-			steps += 1
-			spawn_recv_accum -= _recv_interval_current
-			_recv_interval_current = _recv_interval() * _jitter()
-			if _buffer_used() >= _buffer_limit():
+	if files_spawned >= files_budget:
+		return
+	if hour_elapsed < recv_disabled_until:
+		return
+	if _next_spawn_at < 0.0:
+		_next_spawn_at = hour_elapsed + _next_receive_interval()
+	spawn_recv_accum = maxf(0.0, hour_elapsed - _next_spawn_at)
+	var steps := 0
+	while files_spawned < files_budget and steps < MAX_SPAWN_STEPS:
+		if _next_spawn_at > spawn_window + 0.0001:
+			return
+		if _spawn_frozen_notified and hour_elapsed > spawn_window:
+			# Окно закрылось, пока буфер был полон: файл переносится на час.
+			return
+		if hour_elapsed < _next_spawn_at:
+			return
+		steps += 1
+		if _buffer_used() >= _buffer_limit():
+			# Не теряем файл: не двигаем _next_spawn_at, пока буфер полон.
+			if not _spawn_frozen_notified:
 				spawn_frozen.emit("buffer_full")
-				spawn_recv_accum = 0.0
-				break
-			_spawn_random_packet()
-	else:
+				_spawn_frozen_notified = true
+			return
+		if _spawn_random_packet() == "":
+			return
+		files_spawned += 1
+		spawned_this_hour += 1
+		_spawn_frozen_notified = false
+		var interval := _next_receive_interval()
+		_recv_interval_current = interval
+		_next_spawn_at = maxf(_next_spawn_at + interval, hour_elapsed + interval)
 		spawn_recv_accum = 0.0
 
-	# Отправка.
-	if hour_elapsed < send_disabled_until:
+
+func _tick_request_spawns(dt: float) -> void:
+	if requests_spawned >= request_cap or _normal_request_count() >= active_request_limit:
 		spawn_send_accum = 0.0
 		return
 	spawn_send_accum += dt
-	var send_steps := 0
-	while spawn_send_accum >= _send_interval() and send_steps < MAX_SPAWN_STEPS:
-		send_steps += 1
-		spawn_send_accum -= _send_interval()
-		if _normal_request_count() >= _max_requests():
+	var steps := 0
+	while spawn_send_accum >= _send_interval_current and steps < MAX_SPAWN_STEPS:
+		steps += 1
+		spawn_send_accum -= _send_interval_current
+		_send_interval_current = _send_interval()
+		if requests_spawned >= request_cap or _normal_request_count() >= active_request_limit:
 			spawn_send_accum = 0.0
+			return
+		if not _spawn_random_request().is_empty():
 			break
-		_spawn_random_request()
 
 
 func _tick_attacks(dt: float) -> void:
@@ -853,70 +993,40 @@ func _tick_folder_blocks() -> void:
 			blocked_folders.erase(folder_id)
 
 
-func _random_folder_with_space() -> String:
-	if registry == null:
-		return ""
-	var ids: Array = registry.folders.keys()
-	if ids.is_empty():
-		return ""
-	var start := _randi_range(0, ids.size() - 1)
-	for step in range(ids.size()):
-		var folder_id := str(ids[(start + step) % ids.size()])
-		var folder = registry.folders[folder_id]
-		if not is_folder_locked(folder_id) and folder.count() < 16:
-			return folder_id
-	return ""
-
-
 # --- завершение сущностей --------------------------------------------------
 
 func _finish_loading(packet_id: String) -> void:
 	var packet = active_packets.get(packet_id)
 	if packet == null or registry == null:
 		return
-	var folder_id: String = packet.loading_folder_id
-	# reserve_slot держит место; перед create_file его нужно снять.
-	registry.release_slot(folder_id)
+	var file = registry.confirm_reservation(packet_id, packet.file_name, packet.type)
+	packet.state = PACKET_SCRIPT.STATE_WAITING
 	packet.loading_folder_id = ""
-	var base_name: String = packet.file_name
-	if packet.is_attack and packet.attack_kind == "ransomware":
-		base_name = base_name.trim_suffix(".exe")
-	var file = registry.create_file(_unique_file_name(base_name, packet_id), packet.type, folder_id, &"folder")
+	if slots != null:
+		slots.release_by_entity(packet_id)
 	if file == null:
 		_remove_packet(packet_id)
 		_emit_toast("Не удалось сохранить файл")
 		return
-	if packet.is_attack and packet.attack_kind == "ransomware":
-		file.ext = "exe"
-		registry.file_changed.emit(file)
-		_remove_packet(packet_id)
-		register_ransomware_file(str(file.id), packet.attack_id)
-		_emit_toast("Шифровальщик на складе: уничтожьте файл")
-		return
-	var def := _type_def(packet.type)
+	var def := _type_def(str(packet.type))
 	_add_money(int(def.get("recv_fee", 0)))
-	_add_sla(RECV_FEE_SLA)
-	if game != null and game.has_method("add_stat"):
-		game.add_stat("files_received", 1)
-	if game != null and game.has_method("add_stat"):
-		game.add_stat("recv_done", 1)
+	_add_stat("files_received", 1)
+	_add_stat("recv_done", 1)
 	_remove_packet(packet_id)
 	_play_sfx(&"recv")
 	_emit_toast("Файл принят: %s" % file.display_name())
+	_process_send_queue()
 
 
 func _timeout_packet(packet_id: String) -> void:
 	var packet = active_packets.get(packet_id)
 	if packet == null:
 		return
-	if packet.is_attack:
-		# Атака не нанесла урона: карточка уходит, AttackDirector уберёт запись.
-		_remove_packet(packet_id)
-		return
 	var loss := _packet_sla_loss(packet)
-	_add_sla(-loss)
+	if loss > 0.0:
+		_add_sla(-loss)
 	_failed += 1
-	# Плата за приём не начисляется: пакет не дошёл до папки (failed).
+	_add_stat("failed", 1)
 	_emit_toast("Пакет потерян по таймауту: −%s SLA" % _format_loss(loss))
 	_remove_packet(packet_id)
 
@@ -925,35 +1035,29 @@ func _remove_packet(packet_id: String) -> void:
 	if not active_packets.has(packet_id):
 		return
 	var packet = active_packets[packet_id]
-	# Прерванная загрузка должна вернуть резерв папки (D05).
-	if packet.state == PACKET_SCRIPT.STATE_LOADING and not str(packet.loading_folder_id).is_empty() and registry != null:
-		registry.release_slot(str(packet.loading_folder_id))
+	if packet.state == PACKET_SCRIPT.STATE_LOADING:
+		if registry != null:
+			registry.cancel_reservation(packet_id)
+		if slots != null:
+			slots.release_by_entity(packet_id)
 		packet.loading_folder_id = ""
-	if _connection_games.has(packet_id):
-		var node = _connection_games[packet_id]
-		_connection_games.erase(packet_id)
-		if is_instance_valid(node):
-			node.queue_free()
-		_pop_modal()
 	active_packets.erase(packet_id)
 	if slots != null:
 		slots.release_by_entity(packet_id)
 	packet_removed.emit(packet_id)
+	if running:
+		_process_send_queue()
 
 
 func _timeout_request(req_id: String) -> void:
 	var req = active_requests.get(req_id)
 	if req == null:
 		return
-	if req.is_attack and req.attack_kind == "phishing":
-		if attack_director != null:
-			attack_director.resolve_phishing(req_id, "timeout")
-		_failed += 1
-	else:
-		var fine := -(10.0 + 2.0 * float(hour))
-		_add_sla(fine)
-		_failed += 1
-		_emit_toast("Запрос просрочен: %.0f SLA" % fine)
+	var fine := -(10.0 + 2.0 * float(hour))
+	_add_sla(fine)
+	_failed += 1
+	_add_stat("failed", 1)
+	_emit_toast("Запрос просрочен: %.0f SLA" % fine)
 	_cleanup_request(req_id, true)
 
 
@@ -962,40 +1066,41 @@ func _complete_send(req_id: String) -> void:
 	if req == null:
 		return
 	req.sending = false
-	var payout := 0
-	if req.is_attack and req.attack_kind == "phishing":
-		_failed += 1
-		if attack_director != null:
-			attack_director.resolve_phishing(req_id, "sent")
-		_emit_toast("Фишинг отправлен: −40 $, −10 SLA")
-	else:
-		var streak := 0
-		if game != null:
-			streak = int(game.streak)
-		payout = ECONOMY.payout(
-			req.send_base_sum,
-			req.required.size(),
-			req.time_left,
-			req.timer_total,
-			req.quality,
-			req.protocol,
-			streak,
-			_upgrades()
-		)
-		_add_money(payout)
-		_add_sla(SEND_SLA)
-		_completed += 1
-		if game != null:
-			game.streak = streak + 1
-			if game.has_method("add_stat"):
-				game.add_stat("requests_done", 1)
-		_emit_toast("Отправлено: +%d $, +1 SLA" % payout)
-		_play_sfx(&"money_up")
-	# D02: файлы не расходуются, но получают cooldown 20 с.
-	for file_id in req.required:
-		if registry != null and registry.files.has(file_id):
-			registry.set_cooldown(file_id, FILE_COOLDOWN)
-	_cleanup_request(req_id, true)
+	var n := 0
+	for file_id in req.attached:
+		if registry != null and registry.files.has(str(file_id)):
+			n += 1
+	if n <= 0:
+		_cleanup_request(req_id, true)
+		return
+	var streak := int(game.streak) if game != null else 0
+	var time_at_start := float(_send_start_time_left.get(req_id, req.time_left))
+	var total := float(_send_start_timer_total.get(req_id, req.timer_total))
+	var payout := ECONOMY.payout(
+		req.send_base_sum,
+		n,
+		time_at_start,
+		total,
+		req.quality,
+		req.protocol,
+		streak,
+		_upgrades()
+	)
+	_add_money(payout)
+	_completed += 1
+	if game != null:
+		game.streak = streak + 1
+	_add_stat("requests_done", 1)
+	_emit_toast("Отправлено: +%d $" % payout)
+	_play_sfx(&"money_up")
+
+	# §2.8: при успешной отправке файлы расходуются.
+	for file_id in req.attached.duplicate():
+		if registry != null and registry.files.has(str(file_id)):
+			registry.consume_file(str(file_id))
+	req.attached.clear()
+	req.required_types.clear()
+	_cleanup_request(req_id, false)
 
 
 func _cleanup_request(req_id: String, detach: bool) -> void:
@@ -1004,21 +1109,25 @@ func _cleanup_request(req_id: String, detach: bool) -> void:
 	var req = active_requests[req_id]
 	if detach and registry != null:
 		for file_id in req.attached.duplicate():
-			registry.detach_file(str(file_id))
+			if registry.files.has(str(file_id)):
+				registry.detach_file(str(file_id))
 	req.attached.clear()
+	req.required_types.clear()
+	_send_queue.erase(req_id)
+	_send_start_time_left.erase(req_id)
+	_send_start_timer_total.erase(req_id)
 	if _minigame_request_id == req_id:
-		_close_minigame()
-	if _connection_games.has(req_id):
-		var node = _connection_games[req_id]
-		_connection_games.erase(req_id)
-		if is_instance_valid(node):
-			node.queue_free()
-		_pop_modal()
+		force_close_send_minigame()
 	if slots != null:
 		slots.release_by_entity(req_id)
+	req.sending = false
 	req.slot_reserved = false
+	req.minigame_active = false
+	req.set_meta("queued", false)
 	active_requests.erase(req_id)
 	request_removed.emit(req_id)
+	if running:
+		_process_send_queue()
 
 
 func _check_failed_files() -> void:
@@ -1028,192 +1137,120 @@ func _check_failed_files() -> void:
 		if not active_requests.has(req_id):
 			continue
 		var req = active_requests[req_id]
-		var broken := false
-		for file_id in req.required:
+		var changed := false
+		for file_id in req.attached.duplicate():
 			var file = registry.files.get(str(file_id))
-			if file == null or str(file.location) == "failed":
-				broken = true
-				break
-		if not broken:
-			continue
-		_add_money(FAILED_FILE_FINE_MONEY)
-		_add_sla(FAILED_FILE_FINE_SLA)
-		_failed += 1
-		_emit_toast("Файл запроса сбойный — запрос отменён: −15 $, −10 SLA")
-		_cleanup_request(str(req_id), true)
+			if file == null:
+				req.attached.erase(file_id)
+				_clear_required_slot(req, str(file_id))
+				changed = true
+				continue
+			var loc := str(file.location)
+			if loc == "failed" or loc == "malicious":
+				req.attached.erase(file_id)
+				_clear_required_slot(req, str(file_id))
+				changed = true
+		if changed:
+			req.required_types = _attached_types(req)
+			request_changed.emit(str(req_id))
 
+
+func force_close_send_minigame() -> void:
+	var req_id := _minigame_request_id
+	if _minigame == null and req_id.is_empty():
+		return
+	_clear_send_game_node()
+	var req = active_requests.get(req_id)
+	if req != null:
+		req.minigame_active = false
+		req.quality = 0.0
+		request_changed.emit(req_id)
+	minigame_cancelled.emit(req_id)
+
+
+# --- конец часа ------------------------------------------------------------
 
 func _finish_hour() -> void:
 	if _finish_guard:
 		return
 	_finish_guard = true
 	running = false
-	# Отчёт фиксируем ДО очистки, чтобы earned/completed/failed/attacks были
-	# посчитаны по фактическому часу. Затем все сущности отменяются без штрафов.
-	var summary := report()
-	_cleanup_hour_entities()
-	summary["packets_left"] = active_packets.size()
-	summary["requests_left"] = active_requests.size()
-	hour_finished.emit(summary)
 
+	var packets_left := active_packets.size()
+	var requests_left := active_requests.size()
 
-## Конец часа: снять всё без штрафов SLA (пакеты, запросы, слоты, резервы).
-func _cleanup_hour_entities() -> void:
+	# B5b: мини-игра отправки не должна софтлокать конец часа.
+	force_close_send_minigame()
+	# Если атака успела открыться в последнем тике, снимаем её без штрафа,
+	# чтобы не оставить открытую модалку после конца часа.
+	if attack_director != null and attack_director.has_method("cancel_active"):
+		attack_director.cancel_active()
+
+	# Очередь и все активные запросы проваливаются по SLA (без потери файлов).
+	_send_queue.clear()
+	for req_id in active_requests.keys().duplicate():
+		var fine := -(10.0 + 2.0 * float(hour))
+		_add_sla(fine)
+		_failed += 1
+		_add_stat("failed", 1)
+		_cleanup_request(str(req_id), true)
+
+	# Пакеты в буфере/загрузке просто снимаются, без дополнительных штрафов.
+	for packet_id in active_packets.keys().duplicate():
+		_remove_packet(str(packet_id))
+
 	if slots != null:
 		for slot in slots.slots:
 			if slot.occupied:
 				slots.release(slot.index)
-	for id in active_requests.keys():
-		_cleanup_request(str(id), true)
-	for id in active_packets.keys():
-		_remove_packet(str(id))
-	_close_all_modals()
+
 	blocked_folders.clear()
-	_modal_count = 0
+	_attack_paused = false
+	paused = false
 	modal_open = false
-
-
-func _close_all_modals() -> void:
-	for node in _connection_games.values():
-		if is_instance_valid(node):
-			node.queue_free()
-	_connection_games.clear()
-	_close_minigame()
 	_modal_count = 0
-	modal_open = false
+	carry_files = clampi(files_budget - files_spawned, 0, MAX_FILES_PER_HOUR)
+
+	var summary := report(packets_left, requests_left)
+	hour_finished.emit(summary)
 
 
-# --- модалки ---------------------------------------------------------------
+# --- модалки/мини-игры -----------------------------------------------------
 
-func _on_connection_finished(success: bool, entity_id: String) -> void:
-	_connection_games.erase(entity_id)
-	_pop_modal()
-	if active_packets.has(entity_id):
-		var packet = active_packets[entity_id]
-		if success:
-			packet.state = PACKET_SCRIPT.STATE_CONNECTED
-			successes_this_hour += 1
-			packet_changed.emit(entity_id)
-			_play_sfx(&"modem")
-		else:
-			if slots != null:
-				slots.release_by_entity(entity_id)
-			packet_changed.emit(entity_id)
-		return
-	if active_requests.has(entity_id):
-		var req = active_requests[entity_id]
-		if success:
-			req.connected = true
-			req.slot_reserved = true
-			successes_this_hour += 1
-			_play_sfx(&"modem")
-			request_changed.emit(entity_id)
-			# TCP отправляется сразу после соединения, если файлы уже собраны.
-			if req.is_ready() and not req.sending:
-				_begin_send(entity_id)
-			return
-		req.connected = false
-		req.slot_reserved = false
-		if slots != null:
-			slots.release_by_entity(entity_id)
-		request_changed.emit(entity_id)
-
-
-func _on_minigame_finished(quality: float) -> void:
+func _clear_send_game_node() -> void:
+	var node = _minigame
 	var req_id := _minigame_request_id
 	_minigame = null
 	_minigame_request_id = ""
-	_pop_modal()
-	var req = active_requests.get(req_id)
-	if req == null:
-		return
-	req.minigame_active = false
-	req.quality = clampf(quality, 0.0, 1.0)
-	request_changed.emit(req_id)
-	_begin_send(req_id)
-
-
-func _begin_send(req_id: String, allow_retry: bool = true) -> void:
-	var req = active_requests.get(req_id)
-	if req == null or req.sending:
-		return
-	# Пока открыта чужая модалка (ConnectionGame), авто-путь не стартует.
-	# Своё соединение к этому моменту уже закрыло модалку (_pop_modal).
-	if modal_open:
-		return
-	# Защита авто-пути: TCP не стартует без установленного соединения.
-	if req.protocol == "tcp" and not req.connected:
-		return
-	if req.protocol == "udp" and allow_retry and _randf() < 0.25:
-		# UDP-потеря при отправке: один повтор без мини-игры, чтобы
-		# автоотправка не могла зациклиться на серии потерь.
-		req.quality = 1.0
-		req.minigame_active = false
-		_emit_toast("UDP-потеря: отправляем заново")
-		_begin_send(req_id, false)
-		return
-	var types := _request_types(req)
-	if types.is_empty():
-		for value in req.required_types:
-			types.append(str(value))
-	req.required_types = types
-	var factor := _channel_factor()
-	var duration := 0.0
-	var base_sum := 0.0
-	for file_id in req.required:
-		if registry == null or not registry.files.has(str(file_id)):
-			continue
-		var file = registry.files[str(file_id)]
-		var def := _type_def(str(file.type))
-		duration += ECONOMY.send_time(def, factor, _upgrades())
-		base_sum += float(def.get("base_pay", 0))
-	req.send_duration = maxf(0.1, duration)
-	req.send_base_sum = base_sum
-	req.sending = true
-	req.send_progress = 0.0
-	request_changed.emit(req_id)
-	_play_sfx(&"modem")
-	_emit_toast("Отправка началась")
-
-
-func _close_minigame() -> void:
-	var had := _minigame != null or not _minigame_request_id.is_empty()
-	if _minigame != null and is_instance_valid(_minigame):
-		_minigame.queue_free()
-	_minigame = null
-	_minigame_request_id = ""
-	if had:
-		_pop_modal()
+	if node != null and is_instance_valid(node):
+		node.queue_free()
+	minigame_closed.emit(req_id)
 
 
 # --- спавн/буфер -----------------------------------------------------------
 
-func _add_packet(packet, _force: bool = false) -> bool:
-	if _packet_uses_buffer(packet) and _buffer_used() >= _buffer_limit():
-		var oldest := _oldest_packet()
-		if oldest.is_empty():
-			spawn_frozen.emit("buffer_full")
-			return false
-		var evicted = active_packets.get(oldest)
-		var loss := _packet_sla_loss(evicted)
-		_remove_packet(oldest)
-		if loss > 0.0:
-			_add_sla(-loss)
-		_failed += 1
-		_emit_toast("Буфер переполнен: старый пакет потерян, −%s SLA" % _format_loss(loss))
+func _add_packet(packet) -> bool:
+	if _buffer_used() >= _buffer_limit():
+		spawn_frozen.emit("buffer_full")
+		return false
 	active_packets[packet.id] = packet
 	packet_added.emit(packet.id)
 	return true
 
 
-## Штраф SLA за потерю пакета — по типу (п.13): text 2 / sound 4 / photo 8 /
-## video 16. Пакеты атак не штрафуются повторно (их урон считает
-## AttackDirector), неизвестный/пустой тип обычного пакета → fallback 2.
+func _buffer_used() -> int:
+	return active_packets.size()
+
+
+func _buffer_limit() -> int:
+	if game != null and game.has_method("buffer_limit"):
+		return maxi(1, int(game.buffer_limit()))
+	return maxi(1, ECONOMY.buffer_limit(_upgrades()))
+
+
 func _packet_sla_loss(packet) -> float:
 	if packet == null:
 		return DEFAULT_PACKET_SLA_LOSS
-	if bool(packet.is_attack):
-		return ATTACK_PACKET_SLA_LOSS
 	var type := str(packet.type)
 	if type.is_empty():
 		return DEFAULT_PACKET_SLA_LOSS
@@ -1227,162 +1264,263 @@ func _format_loss(value: float) -> String:
 	return "%.1f" % value
 
 
-## Мусор занимает место в приёме, остальные атаки — отдельный слой (D07).
-func _packet_uses_buffer(packet) -> bool:
-	if not packet.is_attack:
-		return true
-	return str(packet.attack_kind) == "junk"
-
-
-func _buffer_used() -> int:
-	var count := 0
-	for packet in active_packets.values():
-		if _packet_uses_buffer(packet):
-			count += 1
-	return count
-
-
-func _oldest_packet() -> String:
-	var oldest_id := ""
-	var oldest_order := 2147483647
-	for id in active_packets.keys():
-		var packet = active_packets[id]
-		if not _packet_uses_buffer(packet):
-			continue
-		if int(packet.order) < oldest_order:
-			oldest_order = int(packet.order)
-			oldest_id = str(id)
-	return oldest_id
-
-
-func _buffer_limit() -> int:
-	var base := 4
-	var per := 2
-	var cap := 8
-	var data = _data()
-	if data != null and data.get("balance") is Dictionary:
-		var constants = data.balance.get("constants", null)
-		if constants is Dictionary:
-			base = int(constants.get("buffer_base", base))
-			per = int(constants.get("buffer_per_upgrade", per))
-			cap = int(constants.get("buffer_max", cap))
-	return clampi(base + per * _buffer_level(), base, cap)
-
-
-func _buffer_level() -> int:
-	var upgrades := _upgrades()
-	for key in ["buffer_level", "buffer_slots", "shop_buffer", "buffer"]:
-		if upgrades.has(key):
-			return int(upgrades[key])
-	return 0
-
-
 # --- тайминги/данные -------------------------------------------------------
 
 func _hour_seconds() -> float:
 	var data = _data()
-	if data != null and data.get("balance") is Dictionary:
-		var constants = data.balance.get("constants", null)
-		if constants is Dictionary:
-			return maxf(1.0, float(constants.get("hour_seconds", DEFAULT_HOUR_SECONDS)))
+	if data != null and data.get("constants") is Dictionary:
+		var consts: Dictionary = data.constants
+		if consts.has("hour_seconds"):
+			return maxf(1.0, float(consts.get("hour_seconds", DEFAULT_HOUR_SECONDS)))
 	return DEFAULT_HOUR_SECONDS
 
 
-func _difficulty() -> Dictionary:
+func _hour_def() -> Dictionary:
 	var data = _data()
-	if data != null and data.has_method("difficulty_for"):
-		return data.difficulty_for(hour)
-	return {}
+	if data != null and data.has_method("hour_def"):
+		var def = data.hour_def(hour)
+		if def is Dictionary:
+			return def
+	return {
+		"files": 4,
+		"request_cap": 2,
+		"active_requests": 1,
+		"recv_interval": DEFAULT_RECV_INTERVAL,
+		"send_interval": DEFAULT_SEND_INTERVAL,
+		"type_weights": _default_type_weights(hour),
+		"request_mix": DEFAULT_REQUEST_MIX.duplicate(),
+	}
 
 
+## Legacy-значение из таблицы часа (для UI/старых тестов).
 func _recv_interval() -> float:
-	var interval := float(_difficulty().get("recv_interval", DEFAULT_RECV_INTERVAL))
-	if hour > 8:
-		var periods := int(floor(float(hour - 8) / 2.0))
-		interval /= (1.0 + 0.05 * float(periods))
-	return maxf(0.2, interval)
+	return maxf(0.2, float(_hour_def().get("recv_interval", DEFAULT_RECV_INTERVAL)))
+
+
+## Фактический интервал спавна: 75% часа / бюджет файлов.
+func _receive_interval() -> float:
+	var budget := maxi(1, files_budget)
+	return maxf(0.2, spawn_window / float(budget))
+
+
+## Следующий интервал с джиттером ±20%. Остаток бюджета распределяется по
+## остатку окна, поэтому последний файл успевает до конца окна (без потери
+## бюджета из-за накопления положительного джиттера).
+func _next_receive_interval() -> float:
+	var remaining_files := maxi(1, files_budget - files_spawned)
+	var remaining_time := maxf(0.2, spawn_window - hour_elapsed)
+	var base := remaining_time / float(remaining_files)
+	var jittered := base * _jitter()
+	if remaining_files <= 1:
+		jittered = minf(jittered, remaining_time - 0.01)
+	return maxf(0.2, jittered)
 
 
 func _send_interval() -> float:
-	return maxf(0.5, float(_difficulty().get("send_interval", DEFAULT_SEND_INTERVAL)))
+	return maxf(0.5, float(_hour_def().get("send_interval", DEFAULT_SEND_INTERVAL)))
 
 
 func _max_requests() -> int:
-	return maxi(1, int(_difficulty().get("max_requests", DEFAULT_MAX_REQUESTS)))
+	return active_request_limit
 
 
 func _normal_request_count() -> int:
-	var count := 0
-	for req in active_requests.values():
-		if not req.is_attack:
-			count += 1
-	return count
+	return active_requests.size()
 
 
 func _jitter() -> float:
-	return _randf_range(0.8, 1.2)
-
-
-const TYPE_ORDER: Array[String] = ["text", "sound", "photo", "video"]
+	return 1.0 + _randf_range(-SPAWN_JITTER, SPAWN_JITTER)
 
 
 func _pick_type() -> String:
-	var pool := _type_pool()
-	if pool.is_empty():
-		return _fallback_minigame_type()
-	return str(pool[_randi_range(0, pool.size() - 1)])
-
-
-## Пул типов с учётом открытий (п.16): minigame_text/sound/photo/video.
-func _type_pool() -> Array:
-	var raw_pool: Array = []
-	var data = _data()
-	if data != null and data.get("balance") is Dictionary:
-		var spawn = data.balance.get("spawn", null)
-		if spawn is Dictionary:
-			var by_hour = spawn.get("type_pool_by_hour", null)
-			if by_hour is Dictionary:
-				var key := "1" if hour <= 1 else ("2" if hour == 2 else "3+")
-				var pool = by_hour.get(key, null)
-				if pool is Array and not (pool as Array).is_empty():
-					raw_pool = pool
-	if raw_pool.is_empty():
-		raw_pool = ["text", "sound"] if hour <= 1 else ["text", "sound", "photo", "video"]
-	var out: Array = []
-	for type in raw_pool:
-		var type_id := str(type)
-		if _type_unlocked(type_id):
-			out.append(type_id)
-	if out.is_empty():
+	var keys: Array = []
+	var weights: Array = []
+	for type_id in TYPE_ORDER:
+		var w := maxf(0.0, float(type_weights.get(type_id, 0.0)))
+		if w <= 0.0:
+			continue
+		keys.append(type_id)
+		weights.append(w)
+	if keys.is_empty():
 		for type_id in TYPE_ORDER:
-			if _type_unlocked(type_id):
-				out.append(type_id)
+			var fallback := maxf(0.0, float(DEFAULT_TYPE_WEIGHTS.get(type_id, 0.0)))
+			if fallback > 0.0:
+				keys.append(type_id)
+				weights.append(fallback)
+	if keys.is_empty():
+		return "text"
+	var total := 0.0
+	for w in weights:
+		total += float(w)
+	if total <= 0.0:
+		return str(keys[0])
+	var roll := _randf() * total
+	var acc := 0.0
+	for i in range(keys.size()):
+		acc += float(weights[i])
+		if roll < acc:
+			return str(keys[i])
+	return str(keys[keys.size() - 1])
+
+
+func _type_pool() -> Array:
+	var out: Array = []
+	for type_id in TYPE_ORDER:
+		if float(type_weights.get(type_id, 0.0)) > 0.0:
+			out.append(type_id)
 	if out.is_empty():
 		out = ["text"]
 	return out
 
 
-## Открыт ли тип: проверяются minigame_<type> и (если задан) type_<type>.
-func _type_unlocked(type: String) -> bool:
-	if not _feature_unlocked("minigame_" + type):
+func _default_type_weights(p_hour: int) -> Dictionary:
+	var idx := clampi(int(p_hour) - 1, 0, 8)
+	var table := [
+		[0.70, 0.30, 0.00, 0.00],
+		[0.55, 0.30, 0.15, 0.00],
+		[0.40, 0.30, 0.22, 0.08],
+		[0.30, 0.25, 0.28, 0.17],
+		[0.22, 0.20, 0.32, 0.26],
+		[0.15, 0.15, 0.35, 0.35],
+		[0.10, 0.12, 0.35, 0.43],
+		[0.06, 0.08, 0.32, 0.54],
+		[0.04, 0.04, 0.30, 0.62],
+	]
+	var row: Array = table[idx]
+	var out := {}
+	for i in range(TYPE_ORDER.size()):
+		out[TYPE_ORDER[i]] = float(row[i])
+	return out
+
+
+func _required_count(req) -> int:
+	if req == null:
+		return 0
+	if req.has_meta("required_count"):
+		return maxi(0, int(req.get_meta("required_count")))
+	return maxi(0, int(req.required_count()))
+
+
+## Совместимость со старым UI: required содержит N слотов; заполненный слот
+## несёт id файла, пустой — служебный placeholder "__slot_...".
+func _fill_required_slot(req, file_id: String) -> void:
+	if req == null:
+		return
+	for i in range(req.required.size()):
+		var value := str(req.required[i])
+		if value.begins_with("__slot_"):
+			req.required[i] = file_id
+			return
+
+
+func _clear_required_slot(req, file_id: String) -> void:
+	if req == null:
+		return
+	for i in range(req.required.size()):
+		if str(req.required[i]) == file_id:
+			req.required[i] = "__slot_%s_%d" % [req.id, i]
+			return
+
+
+func _blank_required_slots(req) -> void:
+	if req == null:
+		return
+	for i in range(req.required.size()):
+		req.required[i] = "__slot_%s_%d" % [req.id, i]
+
+
+func _request_ready(req) -> bool:
+	if req == null:
 		return false
-	return _feature_unlocked("type_" + type)
+	if req.sending or req.minigame_active:
+		return false
+	if _send_queue.has(str(req.id)):
+		return false
+	return req.attached.size() >= _required_count(req) and _required_count(req) > 0
 
 
-## Первый открытый тип мини-игры (text открыт с часа 1).
-func _fallback_minigame_type() -> String:
-	for type_id in TYPE_ORDER:
-		if _feature_unlocked("minigame_" + type_id):
-			return type_id
-	return "text"
-
-
-func _feature_unlocked(id: String) -> bool:
-	if game == null:
-		_bind()
-	if game != null and game.has_method("feature_unlocked"):
-		return bool(game.feature_unlocked(id))
+func _attached_files_valid(req) -> bool:
+	if registry == null:
+		return false
+	for file_id in req.attached:
+		var file = registry.files.get(str(file_id))
+		if file == null:
+			return false
+		if is_folder_locked(str(file.folder_id)):
+			return false
+		if str(file.location) == "locked" or str(file.location) == "table":
+			return false
 	return true
+
+
+func _attached_types(req) -> Array[String]:
+	var out: Array[String] = []
+	if req == null or registry == null:
+		return out
+	for file_id in req.attached:
+		var file = registry.files.get(str(file_id))
+		if file != null:
+			out.append(str(file.type))
+	return out
+
+
+func _request_types(req) -> Array[String]:
+	return _attached_types(req)
+
+
+func _roll_required_count() -> int:
+	var dist := request_mix
+	if dist.is_empty():
+		dist = _dict_of(_hour_def().get("request_mix", DEFAULT_REQUEST_MIX))
+	if dist.is_empty():
+		dist = DEFAULT_REQUEST_MIX.duplicate()
+	var total := 0.0
+	var keys: Array = dist.keys()
+	keys.sort()
+	var weights: Array = []
+	for key in keys:
+		var w := maxf(0.0, float(dist[key]))
+		weights.append(w)
+		total += w
+	if total <= 0.0:
+		return 1
+	var roll := _randf() * total
+	var acc := 0.0
+	for i in range(keys.size()):
+		acc += float(weights[i])
+		if roll < acc:
+			return clampi(int(str(keys[i])), 1, 3)
+	return clampi(int(str(keys[keys.size() - 1])), 1, 3)
+
+
+# --- канал -----------------------------------------------------------------
+
+func _channel_factor() -> float:
+	var load := channel_load()
+	var factor := ECONOMY.channel_factor(load, _upgrades())
+	if hour_elapsed < channel_debuff_until:
+		factor *= 1.4
+	return factor
+
+
+func _active_weights() -> Array:
+	var weights: Array = []
+	if registry == null:
+		return weights
+	for packet in active_packets.values():
+		if packet.state == PACKET_SCRIPT.STATE_LOADING:
+			weights.append(_type_weight(str(packet.type)))
+	for req in active_requests.values():
+		if req.sending:
+			for file_id in req.attached:
+				var file = registry.files.get(str(file_id))
+				if file != null:
+					weights.append(_type_weight(str(file.type)))
+	return weights
+
+
+func _type_weight(type: String) -> float:
+	return maxf(0.0, float(_type_def(type).get("weight", 0.0)))
 
 
 func _type_def(type: String) -> Dictionary:
@@ -1394,16 +1532,25 @@ func _type_def(type: String) -> Dictionary:
 	return {}
 
 
-func _request_types(req) -> Array[String]:
-	var out: Array[String] = []
-	if registry == null:
-		return out
-	for file_id in req.required:
-		var file = registry.files.get(str(file_id))
-		if file != null:
-			out.append(str(file.type))
-	return out
+func _speed_level() -> int:
+	return _level("speed_level")
 
+
+func _level(key: String) -> int:
+	if game != null and game.has_method("level"):
+		return int(game.level(key))
+	if game != null and game.get("upgrades") is Dictionary:
+		return int((game.upgrades as Dictionary).get(key, 0))
+	return 0
+
+
+func _upgrades() -> Dictionary:
+	if game != null and game.get("upgrades") is Dictionary:
+		return game.upgrades
+	return {}
+
+
+# --- имена/клиенты ---------------------------------------------------------
 
 func _make_file_name() -> String:
 	var base := "файл"
@@ -1412,7 +1559,8 @@ func _make_file_name() -> String:
 		var names: Dictionary = data.names
 		var adjectives = names.get("adjectives", [])
 		var nouns = names.get("nouns", [])
-		if adjectives is Array and not (adjectives as Array).is_empty() and nouns is Array and not (nouns as Array).is_empty():
+		if adjectives is Array and not (adjectives as Array).is_empty() \
+				and nouns is Array and not (nouns as Array).is_empty():
 			var adj := str(adjectives[_randi_range(0, adjectives.size() - 1)])
 			var noun := str(nouns[_randi_range(0, nouns.size() - 1)])
 			base = "%s %s" % [adj, noun]
@@ -1454,106 +1602,18 @@ func _pick_org() -> String:
 	return "Клиент"
 
 
-## Сколько файлов требует запрос. На старте меньше: час 1 — всегда 1 файл,
-## час 2 — 1 (0.75) или 2 (0.25), час 3+ — 1/2/3 (0.6/0.3/0.1).
-## Данные — balance.spawn.required_count_by_hour, fallback — size_distribution.
-func _roll_required_count() -> int:
-	var dist := _required_count_distribution()
-	if dist.is_empty():
-		dist = {"1": 0.6, "2": 0.3, "3": 0.1}
-	var total := 0.0
-	var keys: Array = dist.keys()
-	keys.sort()
-	var weights: Array = []
-	for key in keys:
-		var weight := maxf(0.0, float(dist[key]))
-		weights.append(weight)
-		total += weight
-	if total <= 0.0:
-		return 1
-	var roll := _randf() * total
-	var acc := 0.0
-	for i in range(keys.size()):
-		acc += float(weights[i])
-		if roll < acc:
-			return clampi(int(str(keys[i])), 1, 3)
-	return clampi(int(str(keys[keys.size() - 1])), 1, 3)
-
-
-func _required_count_distribution() -> Dictionary:
-	var data = _data()
-	if data != null and data.get("balance") is Dictionary:
-		var spawn = data.balance.get("spawn", null)
-		if spawn is Dictionary:
-			var by_hour = spawn.get("required_count_by_hour", null)
-			if by_hour is Dictionary:
-				var key := "1" if hour <= 1 else ("2" if hour == 2 else "3+")
-				var dist = by_hour.get(key, null)
-				if dist is Dictionary and not (dist as Dictionary).is_empty():
-					return dist
-			var fallback = spawn.get("required_size_distribution", null)
-			if fallback is Dictionary:
-				return fallback
-	return {}
-
-
-# --- канал -----------------------------------------------------------------
-
-func _channel_factor() -> float:
-	if slots == null:
-		return 1.0
-	var load := ECONOMY.channel_load(hour, 0, _active_weights(), _upgrades())
-	var factor := ECONOMY.channel_factor(load, _upgrades())
-	if hour_elapsed < channel_debuff_until:
-		factor *= 1.4
-	return factor
-
-
-func _active_weights() -> Array:
-	var weights: Array = []
-	if registry == null:
-		return weights
-	for packet in active_packets.values():
-		if packet.state == PACKET_SCRIPT.STATE_LOADING:
-			weights.append(_type_weight(str(packet.type)))
-	for req in active_requests.values():
-		if req.sending:
-			for file_id in req.required:
-				var file = registry.files.get(str(file_id))
-				if file != null:
-					weights.append(_type_weight(str(file.type)))
-	return weights
-
-
-func _type_weight(type: String) -> float:
-	return maxf(0.0, float(_type_def(type).get("weight", 0.0)))
-
-
-func _upgrades() -> Dictionary:
-	if game == null or not (game.upgrades is Dictionary):
-		return {}
-	return game.upgrades
-
-
-func _zone_level() -> int:
-	var upgrades := _upgrades()
-	for key in ["zone_level", "zone_width", "shop_zone", "zone"]:
-		if upgrades.has(key):
-			return int(upgrades[key])
-	return 0
-
-
 # --- служебное -------------------------------------------------------------
 
 func _bind() -> void:
 	if game == null:
 		game = _autoload("Game")
-	if game != null:
-		if game.registry != null:
-			registry = game.registry
+	if game != null and game.get("registry") != null:
+		registry = game.registry
 	if registry == null:
 		registry = REGISTRY_SCRIPT.new()
 		registry.setup_new_run()
+		if game != null:
+			game.registry = registry
 	if rng == null:
 		rng = _autoload("Rng")
 		if rng == null:
@@ -1563,8 +1623,10 @@ func _bind() -> void:
 
 
 func _ensure_attack_director() -> void:
-	if attack_director != null:
-		return
+	if attack_director != null and is_instance_valid(attack_director):
+		if attack_director.get_parent() == self:
+			remove_child(attack_director)
+		attack_director.free()
 	attack_director = ATTACK_SCRIPT.new()
 	attack_director.setup(self)
 	add_child(attack_director)
@@ -1573,13 +1635,39 @@ func _ensure_attack_director() -> void:
 	attack_director.attack_removed.connect(_on_attack_removed)
 	attack_director.toast.connect(_on_attack_toast)
 	attack_director.resolved.connect(_on_attack_resolved)
+	attack_director.attack_resolved.connect(_on_attack_resolved_detail)
+	attack_director.show_attack_minigame.connect(_on_show_attack_minigame)
 
 
 func _clear_entities() -> void:
-	_cleanup_hour_entities()
-	active_packets.clear()
+	force_close_send_minigame()
+	_send_queue.clear()
+	_send_start_time_left.clear()
+	_send_start_timer_total.clear()
+	for req_id in active_requests.keys().duplicate():
+		var req = active_requests[req_id]
+		if req.has_meta("queued"):
+			req.set_meta("queued", false)
+		if registry != null:
+			for file_id in req.attached.duplicate():
+				if registry.files.has(str(file_id)):
+					registry.detach_file(str(file_id))
+		req.attached.clear()
+		req.sending = false
+		req.minigame_active = false
+		req.slot_reserved = false
+	for packet_id in active_packets.keys().duplicate():
+		_remove_packet(str(packet_id))
 	active_requests.clear()
-	# Старые слоты заменяются новыми в start_hour.
+	active_packets.clear()
+	if slots != null:
+		for slot in slots.slots:
+			if slot.occupied:
+				slots.release(slot.index)
+	blocked_folders.clear()
+	modal_open = false
+	_modal_count = 0
+	_attack_paused = false
 
 
 func _running_reset_counters() -> void:
@@ -1592,18 +1680,10 @@ func _running_reset_counters() -> void:
 	_attacks_failed = 0
 
 
-func _push_modal() -> void:
-	_modal_count += 1
-	modal_open = true
-
-
-func _pop_modal() -> void:
-	_modal_count = maxi(0, _modal_count - 1)
-	modal_open = _modal_count > 0
-
-
 func _on_slots_changed() -> void:
 	slot_changed.emit()
+	if running and not _processing_queue:
+		_process_send_queue()
 
 
 func _on_attack_added(id: String) -> void:
@@ -1622,13 +1702,28 @@ func _on_attack_toast(text: String) -> void:
 	_emit_toast(text)
 
 
-func _on_attack_resolved(_id: String, success: bool) -> void:
+func _on_attack_resolved(_id: String, _success: bool) -> void:
+	# Детальный счёт — из attack_resolved(kind, success, tier).
+	pass
+
+
+func _on_attack_resolved_detail(kind: String, success: bool, tier: int) -> void:
 	if success:
 		_attacks_blocked += 1
-		if game != null and game.has_method("add_stat"):
-			game.add_stat("attacks_blocked", 1)
+		_add_stat("attacks_blocked", 1)
 	else:
 		_attacks_failed += 1
+		_add_stat("attacks_failed", 1)
+	attack_resolved.emit(kind, success, tier)
+
+
+func _on_show_attack_minigame(game_node, kind: String) -> void:
+	show_attack_minigame.emit(game_node, kind)
+
+
+## Legacy-хук: соединения больше нет.
+func _on_connection_finished(_success: bool, _entity_id: String) -> void:
+	pass
 
 
 func _add_money(delta: int) -> void:
@@ -1647,14 +1742,28 @@ func _add_sla(delta: float) -> void:
 		game.add_sla(float(delta), "hour")
 
 
+func _add_stat(key: String, delta: int) -> void:
+	if game != null and game.has_method("add_stat"):
+		game.add_stat(key, delta)
+
+
 func _emit_toast(text: String) -> void:
 	toast.emit(text)
 
 
+func _clean_protocol(protocol: String) -> String:
+	var clean := str(protocol).strip_edges().to_lower()
+	if clean == "udp":
+		return "udp"
+	if clean == "tcp":
+		return "tcp"
+	return ""
+
+
 func _randf() -> float:
 	if rng != null and rng.has_method("randf"):
-		return float(rng.randf())
-	return randf()
+		return clampf(float(rng.randf()), 0.0, 0.999999)
+	return clampf(randf(), 0.0, 0.999999)
 
 
 func _randf_range(from: float, to: float) -> float:
@@ -1686,6 +1795,12 @@ func _play_sfx(id: StringName) -> void:
 
 func _data():
 	return _autoload("Data")
+
+
+func _dict_of(value) -> Dictionary:
+	if value is Dictionary:
+		return (value as Dictionary).duplicate(true)
+	return {}
 
 
 func _autoload(name: String):

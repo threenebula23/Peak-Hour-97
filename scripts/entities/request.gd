@@ -32,6 +32,12 @@ var required_types: Array[String] = []
 var send_duration: float = 0.0
 var send_base_sum: float = 0.0
 
+## v2: выбор мини-игры отправки. Сумма коэффициентов типов, выбранная игра и
+## её ступень. Заполняются HourDirector/Economy, в save опциональны.
+var send_sum: int = 0
+var minigame_id: String = ""
+var minigame_tier: int = 0
+
 
 ## Готов ли запрос к отправке: все required прикреплены, TCP подключён.
 func is_ready() -> bool:
@@ -95,6 +101,9 @@ func to_dict() -> Dictionary:
 		"required_types": required_types.duplicate(),
 		"send_duration": send_duration,
 		"send_base_sum": send_base_sum,
+		"send_sum": send_sum,
+		"minigame_id": minigame_id,
+		"minigame_tier": minigame_tier,
 	}
 
 
@@ -121,6 +130,9 @@ static func from_dict(d: Dictionary):
 	r.required_types = _string_array(d.get("required_types", []))
 	r.send_duration = float(d.get("send_duration", 0.0))
 	r.send_base_sum = float(d.get("send_base_sum", 0.0))
+	r.send_sum = int(d.get("send_sum", 0))
+	r.minigame_id = str(d.get("minigame_id", ""))
+	r.minigame_tier = int(d.get("minigame_tier", 0))
 	return r
 
 

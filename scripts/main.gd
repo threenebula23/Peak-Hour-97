@@ -27,6 +27,10 @@ var toast_layer: ToastLayer
 
 var tree: TreePanel
 var grid: FileGrid
+## Стол сортировки v2: правая колонка подготовки вместо ПРИЁМ/ОТПРАВКА.
+var sorting_table: SortingTable
+## Центральный drag-контроллер (превью фигура/квадрат, hover-open папок).
+var drag_controller: DragController = null
 ## Маскот-туториал (scripts/ui/tutorial_mascot.gd).
 var mascot: TutorialMascot = null
 ## Кнопка «МАГАЗИН» в строке меню: видна только в подготовке и после открытия.
@@ -62,8 +66,8 @@ var _confirm_action := ""
 var _backdrop: Control = null
 var _hour_ui_shown := false
 var _hour_signals_connected := false
-## Активная модалка мини-игры (соединение/отправка); вторая не открывается.
-var _modal_game: Control = null
+## Активная модалка мини-игры (отправка/атака); вторая не открывается.
+var _modal_game: Node = null
 
 ## Туториал первого часа показывается один раз за запуск.
 var _tutorial_shown := false
@@ -85,13 +89,8 @@ var _registry_refresh_queued := false
 ## поэтому кэшируем их здесь и возвращаем в stats после нового забега.
 var _settings_cache: Dictionary = {}
 
-## --- Атаки часа: оверлей DDoS и щит-карантин -----------------------------
-var _ddos_overlay = null
-var _packet_shift := 0.0
-var _shield_receive = null
-var _shield_send = null
-var _shield_holding := false
-var _shield_hold_acc := 0.0
+## Канал был перегружен в прошлом кадре — чтобы flash не спамил.
+var _channel_hot := false
 
 ## Автопауза часа, пока открыты служебные модалки (настройки/подтверждение/имя).
 var _auto_paused := false
@@ -101,13 +100,13 @@ var _fs_verify_token := 0
 ## --- Скролл списка ПРИЁМ (5–8 пакетов не влезают в 416×264) ---------------
 var _recv_bar: ScrollBar90
 var _recv_scroll := 0.0
-const RECV_CARD_H := 48.0
+const RECV_CARD_H := 56.0
 const RECV_WHEEL_STEP := 24.0
 
-## --- Карточки ОТПРАВКИ: 3–4 запроса не влезают в 252 px при шаге 64 -------
-## Внутри RequestCard контент заканчивается на y=56, поэтому 60 px достаточно.
-const REQ_CARD_H := 64.0
-const REQ_CARD_H_COMPACT := 60.0
+## --- Скролл карточек ОТПРАВКИ: карточка v2 выше, запросов до 4 -----------
+var _send_bar: ScrollBar90
+var _send_scroll := 0.0
+const REQ_CARD_H := 108.0
 
 ## --- Поиск по файлам (апгрейд shop_search) --------------------------------
 var _search_edit: LineEdit
@@ -116,42 +115,43 @@ var _current_files: Array = []
 
 
 func _ready() -> void:
+	_create_drag_controller()
 	_build()
 	_connect_all()
 	controller = GAME_CONTROLLER.new()
 	controller.name = "GameController"
 	add_child(controller)
 	controller.phase_changed.connect(_on_phase)
+	controller.shop_changed.connect(_on_shop_changed)
 	_build_modals()
 	_apply_saved_settings()
 	_init_mascot()
 	_bind_registry_signals()
 	main_menu.set_has_save(controller.has_save())
 	main_menu.visible = true
+	_apply_phase_panels(true)
 	_update_shop_visibility()
 	if _demo_requested():
 		call_deferred("_start_demo")
 
 
+## Один DragController под Main: его находят FileGrid/SortingTable/TreePanel.
+func _create_drag_controller() -> void:
+	drag_controller = DragController.new()
+	drag_controller.name = "DragController"
+	add_child(drag_controller)
+
+
 func _process(delta: float) -> void:
 	if controller == null:
 		return
+	_clear_modal_if_dead()
 	if controller.phase == GAME_CONTROLLER.PHASE_HOUR:
 		_sync_modal_pause()
-		_tick_shield_hold(delta)
 		controller.tick(delta)
 		# tick мог завершить час — тогда экран уже переключился на отчёт.
 		if controller.phase == GAME_CONTROLLER.PHASE_HOUR:
 			_refresh_hour()
-
-
-## Отпускание ЛКМ в любом месте снимает удержание щита.
-func _input(event: InputEvent) -> void:
-	if not (event is InputEventMouseButton):
-		return
-	var mb := event as InputEventMouseButton
-	if mb.button_index == MOUSE_BUTTON_LEFT and not mb.pressed:
-		_on_shield_release()
 
 
 ## Esc: закрывает верхнюю модалку, ставит смену на паузу или игнорируется.
@@ -476,6 +476,8 @@ func _build_modals() -> void:
 	modal_root.add_child(shop_modal)
 	shop_modal.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	shop_modal.buy_requested.connect(_on_shop_buy)
+	shop_modal.reroll_requested.connect(_on_shop_reroll)
+	shop_modal.lock_toggled.connect(_on_shop_lock)
 	shop_modal.closed.connect(func() -> void: shop_modal.visible = false)
 	shop_modal.visible = false
 
@@ -525,6 +527,8 @@ func _build_modals() -> void:
 				_to_menu()
 			elif action.begins_with("destroy:"):
 				_destroy_folder_contents(action.substr("destroy:".length()))
+			elif action.begins_with("file:"):
+				_destroy_normal_file(action.substr("file:".length()))
 		_sync_modal_pause()
 	)
 	confirm_modal.visible = false
@@ -628,7 +632,7 @@ func _refresh_prep() -> void:
 	if controller == null:
 		return
 	_sync_search_layout()
-	var d: Dictionary = controller.prep_data()
+	var d: Dictionary = _enrich_prep_data(controller.prep_data())
 	var sections: Array = d.get("sections", [])
 	tree.set_data(sections)
 	tree_window.set_title("ДИСКИ",
@@ -637,29 +641,71 @@ func _refresh_prep() -> void:
 	var folder_id := ""
 	var folder_name := ""
 	var section_id := ""
+	var keep := str(grid.folder_id) if grid != null else ""
+	var first_meta: Dictionary = {}
 	for sec in sections:
-		var folders: Array = sec.get("folders", [])
-		if not folders.is_empty():
-			folder_id = str(folders[0].get("id", ""))
-			folder_name = str(folders[0].get("name", ""))
-			section_id = str(sec.get("id", ""))
+		for fol in sec.get("folders", []):
+			var meta := {"id": str(fol.get("id", "")),
+				"name": str(fol.get("name", "")),
+				"section": str(sec.get("id", ""))}
+			if first_meta.is_empty():
+				first_meta = meta
+			if not keep.is_empty() and str(meta["id"]) == keep:
+				folder_id = str(meta["id"])
+				folder_name = str(meta["name"])
+				section_id = str(meta["section"])
+				break
+		if not folder_id.is_empty():
 			break
+	if folder_id.is_empty() and not first_meta.is_empty():
+		folder_id = str(first_meta.get("id", ""))
+		folder_name = str(first_meta.get("name", ""))
+		section_id = str(first_meta.get("section", ""))
 
 	_clear_hour_panels()
 	if folder_id.is_empty():
 		grid.set_folder("", "ПАПКА", "C: \\")
 		_current_files = []
-		grid.set_files([])
-		files_window.set_title("ФАЙЛЫ · ПУСТО",
-			_plural_ru(0, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ"))
+		grid.set_filter("")
+		files_window.set_title("ФАЙЛЫ · ПУСТО", "занято 0 из 0")
 		if workspace != null:
-			workspace.title_right = _plural_ru(0, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
+			workspace.title_right = "занято 0 из 0"
 	else:
 		tree.select_folder(folder_id)
 		_show_folder(folder_id, folder_name, section_id, d)
+	if sorting_table != null:
+		sorting_table.refresh()
+	_apply_phase_panels(true)
 	_update_status(d)
 	_update_shop_visibility()
 	_maybe_show_prep_tutorial()
+
+
+## v2: prep_data контроллера ещё отдаёт capacity=16; заменяем на реальные
+## клетки папки из реестра, чтобы дерево показывало «занято/всего клеток».
+func _enrich_prep_data(d: Dictionary) -> Dictionary:
+	var out := d.duplicate(true)
+	var registry = Game.registry
+	if registry == null:
+		return out
+	for sec in out.get("sections", []):
+		var free_cells := 0
+		var capacity_total := 0
+		for fol in sec.get("folders", []):
+			var folder = registry.folders.get(str(fol.get("id", "")))
+			if folder == null:
+				continue
+			var stats: Dictionary = registry.folder_cell_stats(str(folder.id))
+			fol["occupied_cells"] = int(stats.get("occupied", 0))
+			fol["total_cells"] = int(stats.get("total", 20))
+			fol["files"] = int(stats.get("files", 0))
+			fol["count"] = int(stats.get("occupied", 0))
+			fol["capacity"] = int(stats.get("total", 20))
+			free_cells += int(stats.get("free", 0))
+			capacity_total += int(stats.get("total", 20))
+		sec["free_cells"] = free_cells
+		sec["capacity"] = capacity_total
+	return out
 
 
 func _count_folders(sections: Array) -> int:
@@ -815,11 +861,15 @@ func _refresh_current_folder(d: Dictionary, folder_id: String) -> void:
 func _refresh_tree_counts(d: Dictionary) -> void:
 	if tree == null:
 		return
-	var sections: Array = d.get("sections", [])
+	var sections: Array = _enrich_prep_data(d).get("sections", [])
 	var known: Dictionary = {}
 	for sec in sections:
 		for fol in sec.get("folders", []):
-			known[str(fol.get("id", ""))] = int(fol.get("count", 0))
+			known[str(fol.get("id", ""))] = {
+				"files": int(fol.get("files", 0)),
+				"occupied": int(fol.get("occupied_cells", 0)),
+				"total": int(fol.get("total_cells", 0)),
+			}
 	var current: Dictionary = {}
 	for e in tree.get("_rows"):
 		var row = e["row"]
@@ -837,8 +887,10 @@ func _refresh_tree_counts(d: Dictionary) -> void:
 		if known.has(selected):
 			tree.select_folder(selected)
 	for id in known.keys():
+		var info: Dictionary = known[id]
 		if same:
-			tree.update_count(str(id), int(known[id]))
+			tree.update_stats(str(id), int(info["files"]), int(info["occupied"]),
+				int(info["total"]))
 	if tree_window != null:
 		tree_window.set_title("ДИСКИ",
 			_plural_ru(_count_folders(sections), "ПАПКА", "ПАПКИ", "ПАПОК"))
@@ -853,7 +905,8 @@ func _update_shop_visibility() -> void:
 		return
 	var in_prep: bool = controller != null \
 		and controller.phase == GAME_CONTROLLER.PHASE_PREP
-	_shop_btn.visible = in_prep and Game.feature_unlocked("shop")
+	# Магазин появляется после первого часа и скрыт во время часа.
+	_shop_btn.visible = in_prep and int(Game.hour) > 1
 	if _start_btn != null:
 		_start_btn.visible = in_prep
 
@@ -883,45 +936,52 @@ func _on_search_changed(_text: String) -> void:
 	_apply_file_filter()
 
 
-## Заголовок окна ФАЙЛЫ: при активном фильтре показываем «N ИЗ M».
+## Заголовок окна ФАЙЛЫ: счётчик в КЛЕТКАХ (v2), при фильтре — найденные файлы.
 func _update_files_title() -> void:
 	if files_window == null or grid == null:
 		return
 	var folder_label := _folder_name(grid.folder_id).to_upper()
 	if folder_label.is_empty():
 		folder_label = "ПАПКА"
-	var total := _current_files.size()
-	var shown := grid.get_cards().size()
-	var hint := "ПУСТО"
-	if total > 0:
-		if shown == total:
-			hint = _plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
-		else:
-			hint = "%d из %s" % [shown,
-				_plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")]
+	var stats: Dictionary = grid.stats()
+	var occupied := int(stats.get("occupied", 0))
+	var total := int(stats.get("total", 0))
+	var hint := "занято %d из %d" % [occupied, total]
+	var query := ""
+	if _search_edit != null and _search_edit.visible:
+		query = _search_edit.text.strip_edges()
+	if not query.is_empty():
+		hint = "найдено %d · занято %d из %d" % [_filtered_files().size(), occupied, total]
 	files_window.set_title("ФАЙЛЫ · %s" % folder_label, hint)
 	if workspace != null:
-		workspace.title_right = _plural_ru(total, "ОБЪЕКТ", "ОБЪЕКТА", "ОБЪЕКТОВ")
+		workspace.title_right = "занято %d из %d" % [occupied, total]
 
 
-## Фильтр текущей папки по подстроке имени (регистронезависимо).
-func _apply_file_filter() -> void:
-	if grid == null:
-		return
+## Файлы текущей папки, подходящие под строку поиска.
+func _filtered_files() -> Array:
 	var query := ""
 	if _search_edit != null and _search_edit.visible:
 		query = _search_edit.text.strip_edges().to_lower()
 	if query.is_empty():
-		grid.set_files(_current_files)
-		_update_files_title()
-		return
+		return _current_files.duplicate()
 	var filtered: Array = []
 	for f in _current_files:
 		var name := str(f.get("name", "")).to_lower()
 		var ext := str(f.get("ext", "")).to_lower()
 		if name.find(query) >= 0 or ("%s.%s" % [name, ext]).find(query) >= 0:
 			filtered.append(f)
-	grid.set_files(filtered)
+	return filtered
+
+
+## Фильтр сетки по подстроке имени: FileGrid приглушает несовпадения,
+## позиции фигур сохраняются (set_filter, а не пересоздание списка).
+func _apply_file_filter() -> void:
+	if grid == null:
+		return
+	var query := ""
+	if _search_edit != null and _search_edit.visible:
+		query = _search_edit.text.strip_edges().to_lower()
+	grid.set_filter(query)
 	_update_files_title()
 
 
@@ -933,32 +993,29 @@ func _folder_meta(d: Dictionary, folder_id: String) -> Dictionary:
 	return {}
 
 
-func _tcp_max(upgrades: Dictionary) -> int:
-	return 2 + int(upgrades.get("shop_slot3", 0)) + int(upgrades.get("shop_slot4", 0))
+func _tcp_max(_upgrades: Dictionary) -> int:
+	return maxi(1, int(Game.connection_slots()))
 
 
 func _update_status(d: Dictionary) -> void:
 	var sla := int(round(float(d.get("sla", 0.0))))
 	var hour := int(d.get("hour", 1))
-	var tcp_max := _tcp_max(d.get("upgrades", {}))
-	var max_sla := maxi(1, int(Game.MAX_SLA))
+	var sla_cap := maxi(1, int(round(float(Game.sla_cap()))))
+	var channel_cap := maxi(1, int(round(float(Game.channel_capacity()))))
+	var slots_max := maxi(1, int(Game.connection_slots()))
+	var buffer_max := maxi(1, int(Game.buffer_limit()))
 	status_bar.set_metric("money", "$ %d" % int(d.get("money", 0)))
-	status_bar.set_metric("sla", "%d / %d" % [sla, max_sla],
-		clampf(float(sla) / float(max_sla), 0.0, 1.0))
-	status_bar.set_metric("hour", "ЧАС %d" % hour, float(hour - 1) / 9.0)
-	status_bar.set_metric("tcp", "0 / %d" % tcp_max, 0.0)
-	var buffer_max := 4
-	if controller != null and controller.hour_director != null:
-		buffer_max = maxi(1, int(controller.hour_director.buffer_limit()))
+	status_bar.set_metric("sla", "%d / %d" % [sla, sla_cap],
+		clampf(float(sla) / float(sla_cap), 0.0, 1.0))
+	status_bar.set_metric("hour", "ЧАС %d" % hour,
+		float(hour - 1) / float(GAME_CONTROLLER.HOURS_PER_RUN))
+	status_bar.set_metric("tcp", "0 / %d" % slots_max, 0.0)
 	status_bar.set_metric("buffer", "0 / %d" % buffer_max, 0.0)
-	status_bar.set_metric("channel", "0%", 0.0)
+	status_bar.set_metric("channel", "0/%d" % channel_cap, 0.0, false)
+	_channel_hot = false
 
 
 func _clear_hour_panels() -> void:
-	_ddos_overlay = null
-	_packet_shift = 0.0
-	_shield_holding = false
-	_shield_hold_acc = 0.0
 	for c in receive_window.content.get_children():
 		# Скроллбар ПРИЁМА живёт всё время — его не пересоздаём.
 		if c == _recv_bar:
@@ -966,15 +1023,22 @@ func _clear_hour_panels() -> void:
 		receive_window.content.remove_child(c)
 		c.queue_free()
 	for c in send_window.content.get_children():
+		if c == _send_bar:
+			continue
 		send_window.content.remove_child(c)
 		c.queue_free()
 	packets.clear()
 	requests.clear()
 	_recv_scroll = 0.0
+	_send_scroll = 0.0
 	if _recv_bar != null:
 		var h := maxf(1.0, receive_window.content.size.y)
 		_recv_bar.set_metrics(h, h, 0.0)
 		_recv_bar.visible = false
+	if _send_bar != null:
+		var h2 := maxf(1.0, send_window.content.size.y)
+		_send_bar.set_metrics(h2, h2, 0.0)
+		_send_bar.visible = false
 	for c in slot_cells:
 		if is_instance_valid(c):
 			if c.get_parent() != null:
@@ -983,14 +1047,12 @@ func _clear_hour_panels() -> void:
 	slot_cells.clear()
 	if slot_count_label != null:
 		slot_count_label.text = "0/%d" % _tcp_max(Game.upgrades)
-	receive_window.set_title(_padded_title("ПРИЁМ"),
-		_plural_ru(0, "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ"))
-	send_window.set_title(_padded_title("ОТПРАВКА"),
-		_plural_ru(0, "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ"))
-	_update_shield_visuals({})
+	receive_window.set_title("ПРИЁМ", _plural_ru(0, "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ"))
+	send_window.set_title("ОТПРАВКА", _plural_ru(0, "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ"))
 
 
 func _on_phase(phase: StringName) -> void:
+	_clear_modal_if_dead()
 	match phase:
 		GAME_CONTROLLER.PHASE_PREP:
 			_hour_ui_shown = false
@@ -1020,6 +1082,17 @@ func _on_phase(phase: StringName) -> void:
 	_update_shop_visibility()
 
 
+## v2: в подготовке правая колонка — стол сортировки (4×6), в час —
+## окна ПРИЁМ и ОТПРАВКА. Окна не пересоздаются, только переключаются.
+func _apply_phase_panels(is_prep: bool) -> void:
+	if receive_window != null:
+		receive_window.visible = not is_prep
+	if send_window != null:
+		send_window.visible = not is_prep
+	if sorting_table != null:
+		sorting_table.visible = is_prep
+
+
 ## Настоящий экран часа: карточки пакетов/запросов, слоты и статус.
 func _show_hour() -> void:
 	if _hour_ui_shown:
@@ -1029,6 +1102,7 @@ func _show_hour() -> void:
 	if mascot != null:
 		mascot.hide_message()
 	_clear_hour_panels()
+	_apply_phase_panels(false)
 	_connect_hour_signals()
 	_refresh_hour()
 	_update_shop_visibility()
@@ -1056,28 +1130,31 @@ func _connect_hour_signals() -> void:
 	controller.hour_finished.connect(_on_hour_finished)
 	controller.run_finished.connect(_on_run_finished)
 	controller.toast.connect(func(text: String) -> void: _toast(text, "info"))
-	controller.show_connection.connect(_on_show_connection)
 	controller.show_minigame.connect(_on_show_minigame)
-	var director = controller.hour_director
-	if director != null:
-		director.attack_added.connect(_on_attack_added_ui)
-		director.attack_changed.connect(_on_attack_changed_ui)
-		director.attack_removed.connect(_on_attack_removed_ui)
+	controller.show_attack_minigame.connect(_on_show_attack_minigame)
+	# Принудительное закрытие (конец часа / отмена атаки) освобождает ноду
+	# раньше, чем UI успевает получить finished — чистим висячий указатель.
+	controller.minigame_closed.connect(_on_minigame_closed_ui)
+	controller.attack_resolved.connect(_on_attack_resolved_ui)
 
 
-func _on_attack_added_ui(_id: String) -> void:
-	_refresh_attacks()
-	_refresh_hour()
+## Атака v2 — только модальная мини-игра, без карточек/оверлеев.
+func _on_show_attack_minigame(game_node, kind: String) -> void:
+	_toast("АТАКА: %s" % _attack_kind_name(kind), "warn")
+	_show_modal_game(game_node)
 
 
-func _on_attack_changed_ui(_id: String) -> void:
-	_refresh_attacks()
-	_refresh_hour()
-
-
-func _on_attack_removed_ui(_id: String) -> void:
-	_refresh_attacks()
-	_refresh_hour()
+func _attack_kind_name(kind: String) -> String:
+	match kind:
+		"junk":
+			return "ФИЛЬТР"
+		"ddos":
+			return "ЩИТ"
+		"phishing":
+			return "ПАСПОРТ"
+		"ransomware":
+			return "КАРАНТИН"
+	return kind.to_upper()
 
 
 ## HourDirector уже вызвал start() — здесь только показываем готовую модалку.
@@ -1088,6 +1165,30 @@ func _on_show_connection(game_node) -> void:
 ## Отправка: HourDirector уже вызвал start() и создал MiniGame.
 func _on_show_minigame(game_node) -> void:
 	_show_modal_game(game_node)
+
+
+## HourDirector.force_close_send_minigame(): нода уже queue_free — снимаем модалку.
+func _on_minigame_closed_ui(_req_id: String) -> void:
+	_clear_modal_if_dead()
+
+
+## AttackDirector закончил/отменил атаку: нода уже queue_free — снимаем модалку.
+func _on_attack_resolved_ui(_kind: String, _success: bool, _tier: int) -> void:
+	_clear_modal_if_dead()
+
+
+## Сбрасывает _modal_game, если нода освобождена или стоит в очереди на free.
+## Не трогает живую мини-игру и не запускает отправку запросов.
+func _clear_modal_if_dead() -> void:
+	if _modal_game == null:
+		return
+	var dead := not is_instance_valid(_modal_game) \
+		or _modal_game.is_queued_for_deletion()
+	if not dead:
+		return
+	_modal_game = null
+	if controller != null:
+		controller.modal_open = false
 
 
 func _show_modal_game(game_node) -> void:
@@ -1101,8 +1202,18 @@ func _show_modal_game(game_node) -> void:
 			var old_running = _modal_game.get("running")
 			if old_running == null or bool(old_running):
 				return
+			# Старая игра уже завершилась и ждёт «ПРОДОЛЖИТЬ»: новая модалка
+			# заменяет её, поэтому освобождаем прежнюю ноду.
+			_modal_game.queue_free()
 		_modal_game = null
 	_modal_game = game_node
+	# D2 (§5.5): модальные мини-игры сначала показывают q%/вердикт/ПРОДОЛЖИТЬ,
+	# и только клик по кнопке эмитит finished (директор применяет исход).
+	var deferred = game_node.get("defer_finish_signal")
+	if deferred != null:
+		game_node.set("defer_finish_signal", true)
+	if controller != null:
+		controller.modal_open = true
 	if game_node.get_parent() == null:
 		modal_root.add_child(game_node)
 	elif game_node.get_parent() != modal_root:
@@ -1114,26 +1225,27 @@ func _show_modal_game(game_node) -> void:
 		game_node.finished.connect(_on_modal_game_finished.bind(game_node))
 
 
-## Общий обработчик finished у ConnectionGame (2 арг) и MiniGame (1 арг).
-## Третий параметр приходит из bind(); для мини-игры он окажется во втором.
-func _on_modal_game_finished(_a = null, _b = null, game_node = null) -> void:
-	if game_node == null:
-		if _b is Node:
-			game_node = _b
-		elif _a is Node:
-			game_node = _a
-	if game_node != null and is_instance_valid(game_node) and not game_node.is_queued_for_deletion():
-		game_node.queue_free()
-	if game_node == null or _modal_game == game_node:
-		_modal_game = null
-	if controller != null:
+## Общий обработчик finished у MiniGame (1 арг: quality).
+## Параметр game_node приходит из bind(); атаку закрывает AttackDirector.
+## ВАЖНО: сбрасываем _modal_game только для ЭТОЙ ноды и НЕ стартуем отправку.
+func _on_modal_game_finished(_a = null, game_node = null) -> void:
+	if game_node == null and _a is Node:
+		game_node = _a
+	if game_node != null and is_instance_valid(game_node):
+		# D2: отложенный MiniGame освобождает себя сам в _continue_clicked(),
+		# а директор очереди/атаки — своим обработчиком finished. Не убиваем
+		# ноду раньше, чем игрок увидел экран результата.
+		var deferred = game_node.get("defer_finish_signal")
+		var keep_alive: bool = deferred != null and bool(deferred)
+		if not keep_alive and not game_node.is_queued_for_deletion():
+			game_node.queue_free()
+		if _modal_game == game_node:
+			_modal_game = null
+	_clear_modal_if_dead()
+	if _modal_game == null and controller != null:
 		controller.modal_open = false
-	# TCP-запрос подключён: если файлы уже собраны, отправка стартует сразу,
-	# без дополнительного клика по карточке (start_send сам защищён от повтора).
-	if _b is String and controller != null and controller.hour_director != null:
-		var req_id := str(_b)
-		if controller.hour_director.active_requests.has(req_id):
-			_maybe_start_send(req_id)
+	# v2: отправка НЕ стартует автоматически по закрытию мини-игры — только
+	# явная кнопка ОТПРАВИТЬ (или очередь слота внутри HourDirector).
 	_refresh_hour()
 
 
@@ -1150,7 +1262,6 @@ func _refresh_hour() -> void:
 	var slots_data: Array = d.get("slots", [])
 	var status: Dictionary = d.get("status", {})
 
-	_refresh_attacks()
 	_refresh_packets(packet_data)
 	_refresh_requests(request_data)
 	_refresh_slots(slots_data, packet_data, request_data)
@@ -1159,29 +1270,15 @@ func _refresh_hour() -> void:
 
 
 func _refresh_hour_titles(packets_data: Array, requests_data: Array, _status: Dictionary) -> void:
-	receive_window.set_title(_padded_title("ПРИЁМ"),
+	receive_window.set_title("ПРИЁМ",
 		_plural_ru(packets_data.size(), "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ"))
-	send_window.set_title(_padded_title("ОТПРАВКА"),
+	send_window.set_title("ОТПРАВКА",
 		_plural_ru(requests_data.size(), "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ"))
 
 
 # --------------------------------------------------------------------------
-# Атаки: оверлей DDoS и щит-карантин
+# Час: списки пакетов (скролл)
 # --------------------------------------------------------------------------
-
-## Активная DDoS-атака (Dictionary) или {}.
-func _active_ddos() -> Dictionary:
-	if controller == null or controller.hour_director == null:
-		return {}
-	var director = controller.hour_director
-	if director.attack_director == null:
-		return {}
-	for id in director.attack_director.active_attacks:
-		var data: Dictionary = director.attack_director.active_attacks[id]
-		if str(data.get("kind", "")) == "ddos":
-			return data
-	return {}
-
 
 func _reposition_packet_cards() -> void:
 	var card_w := 392.0
@@ -1190,14 +1287,13 @@ func _reposition_packet_cards() -> void:
 		card_w = maxf(120.0, receive_window.content.size.x - 20.0)
 	for i in packets.size():
 		if is_instance_valid(packets[i]):
-			packets[i].position = Vector2(6,
-				1 + _packet_shift + i * RECV_CARD_H - _recv_scroll)
-			packets[i].size = Vector2(card_w, 44)
+			packets[i].position = Vector2(6, 1 + i * RECV_CARD_H - _recv_scroll)
+			packets[i].size = Vector2(card_w, 52)
 
 
-## Высота списка пакетов: сдвиг DDoS-плашки + по 48 px на карточку.
+## Высота списка пакетов: по RECV_CARD_H на карточку (DDoS-плашки больше нет).
 func _recv_content_height(count: int) -> float:
-	return _packet_shift + float(maxi(0, count)) * RECV_CARD_H
+	return float(maxi(0, count)) * RECV_CARD_H
 
 
 ## Пересчитать метрики скроллбара и вернуть карточки в актуальные позиции.
@@ -1249,123 +1345,6 @@ func _on_recv_gui_input(event: InputEvent) -> void:
 		receive_window.content.accept_event()
 
 
-## Оверлей DDoS в ПРИЁМЕ (плашка + красные мини-карточки) и состояние щитов.
-func _refresh_attacks() -> void:
-	var ddos := _active_ddos()
-	if ddos.is_empty():
-		if _ddos_overlay != null and is_instance_valid(_ddos_overlay):
-			var parent = _ddos_overlay.get_parent()
-			if parent != null:
-				parent.remove_child(_ddos_overlay)
-			_ddos_overlay.queue_free()
-		_ddos_overlay = null
-		_packet_shift = 0.0
-		_shield_holding = false
-		_update_shield_visuals({})
-		_sync_recv_scroll()
-		return
-
-	if _ddos_overlay == null or not is_instance_valid(_ddos_overlay):
-		_ddos_overlay = DdosOverlay.new()
-		_ddos_overlay.name = "DdosOverlay"
-		receive_window.content.add_child(_ddos_overlay)
-		receive_window.content.move_child(_ddos_overlay, 0)
-		_ddos_overlay.position = Vector2(6, 1)
-		_ddos_overlay.size = Vector2(
-			maxf(120.0, receive_window.content.size.x - 20.0), 34)
-	_packet_shift = 36.0
-	_ddos_overlay.cards = int(ddos.get("cards", 10))
-	_ddos_overlay.hold = float(ddos.get("shield_hold", 0.0))
-	_ddos_overlay.needed = maxf(0.1, float(ddos.get("shield_needed", 1.5)))
-	_ddos_overlay.queue_redraw()
-	_update_shield_visuals(ddos)
-	_sync_recv_scroll()
-
-
-func _update_shield_visuals(ddos: Dictionary) -> void:
-	var active := not ddos.is_empty()
-	var progress := 0.0
-	var needed := 1.5
-	if active:
-		needed = maxf(0.1, float(ddos.get("shield_needed", 1.5)))
-		progress = clampf(float(ddos.get("shield_hold", 0.0)) / needed, 0.0, 1.0)
-	for shield in [_shield_receive, _shield_send]:
-		if shield == null or not is_instance_valid(shield):
-			continue
-		shield.active = active
-		shield.progress = progress
-		shield.holding = _shield_holding
-		shield.tooltip_text = "ЩИТ · УДЕРЖИВАЙТЕ ПРОТИВ DDoS" if active \
-			else "ЩИТ · ПЕРЕТАЩИТЕ СЮДА УГРОЗУ"
-		shield.queue_redraw()
-
-
-func _tick_shield_hold(delta: float) -> void:
-	if not _shield_holding:
-		return
-	if controller == null or controller.hour_director == null:
-		return
-	var ddos := _active_ddos()
-	if ddos.is_empty():
-		_shield_holding = false
-		_update_shield_visuals({})
-		return
-	var step := minf(maxf(delta, 0.0), 0.1)
-	if step <= 0.0:
-		return
-	_shield_hold_acc += step
-	controller.hour_director.hold_shield(step)
-	_update_shield_visuals(_active_ddos())
-
-
-func _on_shield_press(_target: String = "") -> void:
-	if controller == null or controller.hour_director == null:
-		return
-	if _active_ddos().is_empty():
-		_toast("DDoS НЕТ · ЩИТ НЕ НУЖЕН", "info")
-		return
-	_shield_holding = true
-	_shield_hold_acc = 0.0
-	_toast("ДЕРЖИТЕ ЩИТ · ОТРАЖЕНИЕ DDoS", "warn")
-	_update_shield_visuals(_active_ddos())
-
-
-func _on_shield_release() -> void:
-	if not _shield_holding:
-		return
-	_shield_holding = false
-	_update_shield_visuals(_active_ddos())
-
-
-## Drop любой карточки-угрозы на щит. Возвращает true, если угроза обезврежена.
-func _on_quarantine_drop(payload: Dictionary) -> bool:
-	if controller == null or controller.hour_director == null:
-		return false
-	if str(payload.get("kind", "")) != "packet":
-		return false
-	var is_threat := bool(payload.get("is_attack", false)) \
-		or not str(payload.get("attack_kind", "")).is_empty()
-	if not is_threat:
-		_toast("ЭТО НЕ УГРОЗА · −2 SLA", "warn")
-		Game.add_sla(-2.0, "quarantine")
-		_refresh_hour()
-		return false
-	var director = controller.hour_director
-	var attack_id := str(payload.get("attack_id", ""))
-	var packet_id := str(payload.get("id", ""))
-	var ok := false
-	if not attack_id.is_empty():
-		ok = director.quarantine_attack(attack_id)
-	if not ok and not packet_id.is_empty():
-		ok = director.destroy_attack_packet(packet_id)
-	if ok:
-		_toast("УГРОЗА В КАРАНТИНЕ", "success")
-	else:
-		_toast("НЕ УДАЛОСЬ ОБЕЗВРЕДИТЬ УГРОЗУ", "warn")
-	_refresh_hour()
-	return ok
-
-
 func _card_ids(cards: Array) -> Array:
 	var out: Array = []
 	for c in cards:
@@ -1407,9 +1386,8 @@ func _refresh_packets(data: Array) -> void:
 			card.name = "Packet_%s" % str(data[i].get("id", ""))
 			receive_window.content.add_child(card)
 			card.custom_minimum_size = Vector2.ZERO
-			card.position = Vector2(6, 1 + _packet_shift + i * RECV_CARD_H - _recv_scroll)
-			card.size = Vector2(maxf(120.0, receive_window.content.size.x - 20.0), 44)
-			card.connect_pressed.connect(_on_packet_connect)
+			card.position = Vector2(6, 1 + i * RECV_CARD_H - _recv_scroll)
+			card.size = Vector2(maxf(120.0, receive_window.content.size.x - 20.0), 52)
 			packets.append(card)
 
 	for i in data.size():
@@ -1419,12 +1397,15 @@ func _refresh_packets(data: Array) -> void:
 		var card := packets[i]
 		var left := float(p.get("time_left", 0.0))
 		var total := float(p.get("timer_total", 0.0))
+		var progress := 0.0
+		var duration := float(p.get("loading_duration", 0.0))
+		if str(p.get("state", "")) == "loading" and duration > 0.0:
+			progress = clampf(float(p.get("loading_progress", 0.0)) / duration, 0.0, 1.0)
 		card.setup(str(p.get("id", "")), str(p.get("file_name", "")),
 			_ext_for_type(str(p.get("type", ""))), str(p.get("type", "")),
-			str(p.get("protocol", "")).to_upper(), left, total,
-			float(p.get("loading_progress", 0.0)), int(p.get("size_kb", 0)),
-			bool(p.get("is_attack", false)), str(p.get("attack_kind", "")),
-			str(p.get("attack_id", "")), str(p.get("state", "waiting")))
+			str(p.get("protocol", "")).to_upper(), left, total, progress,
+			int(p.get("size_kb", 0)), str(p.get("state", "waiting")),
+			str(p.get("shape_id", "O1")), int(p.get("rotation", 0)))
 		card.set_time(left, total)
 
 	_sync_recv_scroll(data.size())
@@ -1436,78 +1417,85 @@ func _refresh_packets(data: Array) -> void:
 
 
 func _refresh_requests(data: Array) -> void:
-	var visible: Array = data.slice(0, 4)
 	var ids: Array = []
-	for r in visible:
+	for r in data:
 		ids.append(str(r.get("id", "")))
 	if not _same_ids(ids, _card_ids(requests)):
 		for c in requests:
 			send_window.content.remove_child(c)
 			c.queue_free()
 		requests.clear()
-		for i in visible.size():
+		for i in data.size():
 			var card := RequestCard.new()
-			card.name = "Request_%s" % str(visible[i].get("id", ""))
+			card.name = "Request_%s" % str(data[i].get("id", ""))
 			send_window.content.add_child(card)
 			card.custom_minimum_size = Vector2.ZERO
-			card.position = Vector2(6, i * REQ_CARD_H)
+			card.position = Vector2(6, i * REQ_CARD_H - _send_scroll)
 			card.size = Vector2(400, REQ_CARD_H)
-			card.connect_pressed.connect(_on_request_connect)
+			card.send_pressed.connect(_on_request_send)
 			card.reject_pressed.connect(_on_request_reject)
 			card.file_dropped.connect(_on_file_to_request)
 			card.detach_pressed.connect(_on_request_detach)
+			card.protocol_toggle_requested.connect(_on_request_protocol_toggle)
 			requests.append(card)
-	# Раскладка каждый кадр: при 3–4 запросах шаг меньше, чтобы все влезли в 252 px.
-	_layout_request_cards(visible.size())
+	_layout_request_cards(data.size())
 
-	for i in visible.size():
+	for i in data.size():
 		if i >= requests.size():
 			break
-		var r: Dictionary = visible[i]
+		var r: Dictionary = data[i]
 		var progress := 0.0
 		var duration := float(r.get("send_duration", 0.0))
 		if bool(r.get("sending", false)) and duration > 0.0:
 			progress = clampf(float(r.get("send_progress", 0.0)) / duration, 0.0, 1.0)
-		var is_phish := bool(r.get("is_attack", false)) and str(r.get("attack_kind", "")) == "phishing"
+		var required := int(r.get("required_count", 0))
 		requests[i].setup(str(r.get("id", "")), str(r.get("client_name", "")),
 			str(r.get("client_id", "")), str(r.get("protocol", "")).to_upper(),
 			_request_slots(r), float(r.get("time_left", 0.0)),
-			float(r.get("timer_total", 0.0)), progress,
-			bool(r.get("is_attack", false)), str(r.get("attack_kind", "")),
-			str(r.get("attack_id", "")), is_phish)
+			float(r.get("timer_total", 0.0)), progress, required,
+			bool(r.get("queued", false)), bool(r.get("sending", false)),
+			int(r.get("send_sum", 0)), str(r.get("minigame_id", "")),
+			int(r.get("minigame_tier", 0)), bool(r.get("minigame_active", false)),
+			bool(r.get("ready", false)))
 		requests[i].queue_redraw()
+	_sync_send_scroll(data.size())
 
 
-## Высота карточки запроса: 3–4 штуки должны целиком влезать в 252 px.
-func _request_card_height(count: int) -> float:
-	return REQ_CARD_H_COMPACT if count >= 3 else REQ_CARD_H
+## Высота карточки запроса v2 (контент с кнопками и предсказанием).
+func _request_card_height(_count: int) -> float:
+	return REQ_CARD_H
 
 
 ## Разложить карточки запросов по вертикали без пересоздания.
-func _layout_request_cards(count: int) -> void:
+func _layout_request_cards(_count: int) -> void:
 	if send_window == null or send_window.content == null:
 		return
-	var h := _request_card_height(count)
-	var w := maxf(120.0, send_window.content.size.x - 12.0)
+	var h := REQ_CARD_H
+	var w := maxf(120.0, send_window.content.size.x - 20.0)
 	for i in requests.size():
 		var card := requests[i]
 		if card == null or not is_instance_valid(card):
 			continue
-		card.position = Vector2(6, i * h)
+		card.position = Vector2(6, i * h - _send_scroll)
 		card.size = Vector2(w, h)
 		card.queue_redraw()
 
 
-## Слоты запроса: required-файлы из реестра; отсутствующий файл — null.
+## Слоты запроса: прикреплённые файлы из реестра; пустой слот — null.
+## required в v2 пуст, состав задаётся required_count + attached.
 func _request_slots(request: Dictionary) -> Array:
-	var out: Array = []
+	var required := maxi(0, int(request.get("required_count", 0)))
+	if required <= 0:
+		required = maxi(1, (request.get("attached", []) as Array).size())
 	var attached: Array = request.get("attached", [])
+	var out: Array = []
 	var registry = Game.registry
-	for file_id in request.get("required", []):
-		var fid := str(file_id)
-		var file = null
-		if registry != null:
-			file = registry.files.get(fid)
+	for i in required:
+		if i >= attached.size():
+			out.append(null)
+			continue
+		var fid := str(attached[i])
+		var file = registry.files.get(fid) if registry != null else null
 		if file == null:
 			out.append(null)
 			continue
@@ -1515,39 +1503,41 @@ func _request_slots(request: Dictionary) -> Array:
 		if not str(file.folder_id).is_empty() and registry.folders.has(file.folder_id):
 			folder_name = str(registry.folders[file.folder_id].name)
 		out.append({
+			"id": fid,
 			"name": str(file.name),
 			"ext": str(file.ext),
 			"type": str(file.type),
 			"folder": folder_name,
-			"attached": attached.has(fid),
+			"attached": true,
 		})
 	return out
 
 
 func _refresh_slots(data: Array, packets_data: Array = [],
 		requests_data: Array = []) -> void:
-	if slot_cells.size() != 4:
+	if slot_cells.size() != 5:
 		for c in slot_cells:
 			if is_instance_valid(c):
 				if c.get_parent() != null:
 					c.get_parent().remove_child(c)
 				c.queue_free()
 		slot_cells.clear()
-		for i in 4:
+		for i in 5:
 			var cell := SlotCell.new()
 			cell.name = "Slot_%d" % i
 			slots_strip.add_child(cell)
 			cell.position = Vector2(58 + i * 240, 5)
 			cell.size = Vector2(236, 44)
-			cell.close_pressed.connect(_on_slot_close)
 			cell.cell_pressed.connect(_on_slot_press)
-			cell.packet_dropped.connect(_on_packet_to_slot)
 			slot_cells.append(cell)
 
-	for i in 4:
+	for i in 5:
 		var cell := slot_cells[i]
 		if i >= data.size():
-			cell.setup("", "", "down", 0.0, "empty", "СВОБОДЕН", "")
+			# Слоты сверх купленных: показываем замок, а не пустую ячейку.
+			cell.setup("", "", "down", 0.0, "locked", "КУПИТЬ В МАГАЗИНЕ",
+				str(i + 1))
+			_hide_slot_close(cell)
 			continue
 		var s: Dictionary = data[i]
 		var occupied := bool(s.get("occupied", false))
@@ -1556,10 +1546,20 @@ func _refresh_slots(data: Array, packets_data: Array = [],
 		if occupied:
 			progress = _slot_entity_progress(str(s.get("entity_id", "")), dir,
 				packets_data, requests_data)
+			if progress <= 0.0:
+				progress = clampf(float(s.get("progress", 0.0)), 0.0, 1.0)
 		cell.setup(str(s.get("entity_id", "")), str(s.get("entity_name", "")), dir,
 			progress,
 			"active" if occupied else "empty",
 			"" if occupied else "СВОБОДЕН", str(int(s.get("index", i)) + 1))
+		# v2: прервать передачу нельзя — крестик не показываем и не подключаем.
+		_hide_slot_close(cell)
+
+
+func _hide_slot_close(cell: Control) -> void:
+	var close_btn := cell.get_node_or_null("CloseButton")
+	if close_btn != null:
+		(close_btn as Control).visible = false
 
 
 ## Прогресс занятого слота: загрузка пакета или отправка запроса.
@@ -1593,21 +1593,27 @@ func _slot_entity_progress(entity_id: String, dir: String, packets_data: Array,
 func _refresh_hour_status(status: Dictionary) -> void:
 	var used := int(status.get("tcp_used", 0))
 	var max_slots := maxi(1, int(status.get("tcp_max", 0)))
-	var percent := float(status.get("channel_percent", 0.0))
+	var load := maxi(0, int(round(float(status.get("channel", 0.0)))))
+	var capacity := maxi(1, int(round(float(Game.channel_capacity()))))
+	var factor := float(status.get("channel_factor", 1.0))
 	var sla := int(round(float(status.get("sla", 0.0))))
+	var sla_cap := maxi(1, int(round(float(Game.sla_cap()))))
 	var buffer_used := int(status.get("buffer_used", 0))
 	var buffer_max := maxi(1, int(status.get("buffer_max", 0)))
 	var hour := int(status.get("hour", 1))
 	var left := maxf(0.0, float(status.get("time_left", 0.0)))
 	var secs := int(ceilf(left))
+	var hot := factor > 1.0001
 
 	status_bar.set_metric("tcp", "%d / %d" % [used, max_slots],
 		clampf(float(used) / float(max_slots), 0.0, 1.0))
-	status_bar.set_metric("channel", "%d%%" % int(round(percent)),
-		clampf(percent / 100.0, 0.0, 1.0))
-	var max_sla := maxi(1, int(Game.MAX_SLA))
-	status_bar.set_metric("sla", "%d / %d" % [sla, max_sla],
-		clampf(float(sla) / float(max_sla), 0.0, 1.0))
+	status_bar.set_metric("channel", "%d/%d" % [load, capacity],
+		clampf(float(load) / float(capacity), 0.0, 2.0), hot)
+	if hot and not _channel_hot:
+		status_bar.flash("channel", "×%.2f" % factor, Theme90.ERROR)
+	_channel_hot = hot
+	status_bar.set_metric("sla", "%d / %d" % [sla, sla_cap],
+		clampf(float(sla) / float(sla_cap), 0.0, 1.0))
 	status_bar.set_metric("buffer", "%d / %d" % [buffer_used, buffer_max],
 		clampf(float(buffer_used) / float(buffer_max), 0.0, 1.0))
 	status_bar.set_metric("money", "$ %d" % int(status.get("money", 0)))
@@ -1642,7 +1648,7 @@ func _open_hour_result() -> void:
 		"missed": int(report.get("attacks_failed", 0)),
 		"sla_delta": int(round(float(report.get("sla_delta", 0.0)))),
 		"sla": int(round(sla)),
-		"sla_max": maxi(1, int(Game.MAX_SLA)),
+		"sla_max": maxi(1, int(round(float(Game.sla_cap())))),
 	})
 
 
@@ -1676,7 +1682,7 @@ func _show_run_result() -> void:
 		"hours_total": GAME_CONTROLLER.HOURS_PER_RUN,
 		"money": int(r.get("money", 0)),
 		"sla": int(round(float(r.get("sla", 0.0)))),
-		"sla_max": maxi(1, int(Game.MAX_SLA)),
+		"sla_max": maxi(1, int(round(float(Game.sla_cap())))),
 		"unlocked": (r.get("unlocked", []) as Array).duplicate(),
 	})
 	var unlocked: Array = r.get("unlocked", [])
@@ -1841,25 +1847,37 @@ func _build() -> void:
 	grid = FileGrid.new()
 	grid.name = "FileGrid"
 	add_child_to(files_window.content, grid, Vector2.ZERO, files_window.content.size)
+	grid.drag_controller = drag_controller
 	_build_search_field()
 
-	# окно ПРИЁМ (856,48,416,264)
+	# окно ПРИЁМ (856,48,416,264) — только в час
 	receive_window = WindowFrame.new()
 	receive_window.name = "ReceiveWindow"
-	receive_window.title = _padded_title("ПРИЁМ")
+	receive_window.title = "ПРИЁМ"
 	receive_window.title_hint = _plural_ru(5, "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ")
 	receive_window.icon_kind = "inbox"
 	_place(self, receive_window, Rect2(856, 48, 416, 264))
 	_build_receive_scroll()
 
-	# окно ОТПРАВКА (856,320,416,276)
+	# окно ОТПРАВКА (856,320,416,276) — только в час
 	send_window = WindowFrame.new()
 	send_window.name = "SendWindow"
-	send_window.title = _padded_title("ОТПРАВКА")
+	send_window.title = "ОТПРАВКА"
 	send_window.title_hint = _plural_ru(4, "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ")
 	send_window.icon_kind = "outbox"
 	_place(self, send_window, Rect2(856, 320, 416, 276))
-	_build_shields()
+	_build_send_scroll()
+
+	# v2: стол сортировки на месте обоих окон — 856,48,416,548.
+	sorting_table = SortingTable.new()
+	sorting_table.name = "SortingTable"
+	_place(self, sorting_table, Rect2(856, 48, 416, 548))
+	sorting_table.drag_controller = drag_controller
+	sorting_table.file_dropped.connect(_on_table_file_dropped)
+	sorting_table.table_changed.connect(_on_table_changed)
+	sorting_table.drop_rejected.connect(func(text: String) -> void: _toast(text, "warn"))
+	sorting_table.tooltip_text = "Перетащите файлы, чтобы разложить по папкам"
+	sorting_table.visible = true
 
 	# полоса TCP-слотов (8,604,1264,52)
 	slots_strip = Panel90.new()
@@ -1938,6 +1956,69 @@ func _build_receive_scroll() -> void:
 	receive_window.content.gui_input.connect(_on_recv_gui_input)
 
 
+## Скролл ОТПРАВКИ: карточка запроса v2 выше, запросов бывает до 4.
+func _build_send_scroll() -> void:
+	if send_window == null or send_window.content == null:
+		return
+	send_window.content.clip_contents = true
+	_send_bar = ScrollBar90.new()
+	_send_bar.name = "SendScroll"
+	send_window.content.add_child(_send_bar)
+	_send_bar.position = Vector2(
+		maxf(0.0, send_window.content.size.x - Theme90.SCROLLBAR), 0.0)
+	_send_bar.size = Vector2(Theme90.SCROLLBAR, send_window.content.size.y)
+	_send_bar.visible = false
+	_send_bar.value_changed.connect(_on_send_scroll)
+	send_window.content.gui_input.connect(_on_send_gui_input)
+
+
+func _sync_send_scroll(count: int = -1) -> void:
+	if _send_bar == null or send_window == null or send_window.content == null:
+		return
+	var n := requests.size() if count < 0 else count
+	var view_h := maxf(1.0, send_window.content.size.y)
+	var content_h := float(maxi(0, n)) * REQ_CARD_H
+	_send_bar.position = Vector2(
+		maxf(0.0, send_window.content.size.x - Theme90.SCROLLBAR), 0.0)
+	_send_bar.size = Vector2(Theme90.SCROLLBAR, view_h)
+	_send_bar.visible = content_h > view_h
+	_send_scroll = clampf(_send_scroll, 0.0, maxf(0.0, content_h - view_h))
+	_send_bar.set_metrics(view_h, maxf(view_h, content_h), _send_scroll)
+	_layout_request_cards(n)
+
+
+func _on_send_scroll(value: float) -> void:
+	_send_scroll = maxf(0.0, value)
+	_layout_request_cards(requests.size())
+
+
+func _nudge_send_scroll(delta: float) -> void:
+	if _send_bar == null:
+		return
+	var next := clampf(_send_scroll + delta, 0.0, _send_bar._limit())
+	_send_scroll = next
+	_send_bar.value = next
+	_layout_request_cards(requests.size())
+
+
+func _on_send_gui_input(event: InputEvent) -> void:
+	if not (event is InputEventMouseButton):
+		return
+	var mb := event as InputEventMouseButton
+	if not mb.pressed:
+		return
+	var step := 0.0
+	if mb.button_index == MOUSE_BUTTON_WHEEL_UP:
+		step = -RECV_WHEEL_STEP
+	elif mb.button_index == MOUSE_BUTTON_WHEEL_DOWN:
+		step = RECV_WHEEL_STEP
+	if is_zero_approx(step):
+		return
+	_nudge_send_scroll(step)
+	if send_window != null and send_window.content != null:
+		send_window.content.accept_event()
+
+
 func _build_search_field() -> void:
 	if files_window == null or files_window.content == null:
 		return
@@ -1968,40 +2049,6 @@ func add_child_to(parent: Node, c: Control, pos: Vector2, sz: Vector2) -> void:
 	c.custom_minimum_size = Vector2.ZERO
 	c.position = pos
 	c.size = sz
-
-
-# --------------------------------------------------------------------------
-# Щит-карантин в заголовках ПРИЁМ/ОТПРАВКА
-# --------------------------------------------------------------------------
-
-const SHIELD_W := 48.0
-const SHIELD_H := 20.0
-const SHIELD_X := 22.0
-
-## Отступ заголовка, чтобы текст не заезжал под щит (щит стоит сразу за иконкой).
-func _padded_title(t: String) -> String:
-	var f := Theme90.ui()
-	var space_w := f.get_string_size(" ", HORIZONTAL_ALIGNMENT_LEFT, -1, Theme90.FS_BODY).x
-	if space_w <= 0.0:
-		return "          " + t
-	var n := int(ceil((SHIELD_W + 34.0) / space_w))
-	return " ".repeat(n) + t
-
-
-func _build_shields() -> void:
-	_shield_receive = _make_shield("receive", receive_window)
-	_shield_send = _make_shield("send", send_window)
-
-
-func _make_shield(target: String, frame: WindowFrame) -> Control:
-	var shield := ShieldDrop.new()
-	shield.name = "ShieldDrop"
-	shield.main = self
-	shield.target = target
-	frame.add_child(shield)
-	shield.position = Vector2(SHIELD_X, 2)
-	shield.size = Vector2(SHIELD_W, SHIELD_H)
-	return shield
 
 
 func _make_menu(labels: Array) -> PopupMenu:
@@ -2091,13 +2138,13 @@ func _apply_mock() -> void:
 		receive_window.content.add_child(card)
 		card.custom_minimum_size = Vector2.ZERO
 		card.position = Vector2(6, y)
-		card.size = Vector2(400, 44)
+		card.size = Vector2(400, 52)
 		card.setup(str(d["id"]), str(d["name"]), str(d["ext"]), str(d["type"]),
 			str(d["protocol"]), float(d["left"]), float(d["total"]), float(d["progress"]),
 			int(d["size_kb"]))
 		card.connect_pressed.connect(_on_packet_connect)
 		packets.append(card)
-		y += 48.0
+		y += RECV_CARD_H
 
 	var rq := _mock_requests()
 	y = 0.0
@@ -2107,7 +2154,7 @@ func _apply_mock() -> void:
 		send_window.content.add_child(card)
 		card.custom_minimum_size = Vector2.ZERO
 		card.position = Vector2(6, y)
-		card.size = Vector2(400, 60)
+		card.size = Vector2(400, REQ_CARD_H)
 		card.setup(str(d["id"]), str(d["client"]), str(d["client_id"]), str(d["protocol"]),
 			d["slots"], float(d["left"]), float(d["total"]), float(d["progress"]))
 		card.connect_pressed.connect(_on_request_connect)
@@ -2115,7 +2162,7 @@ func _apply_mock() -> void:
 		card.file_dropped.connect(_on_file_to_request)
 		card.detach_pressed.connect(_on_request_detach)
 		requests.append(card)
-		y += 64.0
+		y += REQ_CARD_H
 
 	var sl := _mock_slots()
 	for i in sl.size():
@@ -2284,15 +2331,18 @@ func _mock_slots() -> Array:
 
 func _connect_all() -> void:
 	tree.folder_selected.connect(_on_folder_selected)
-	tree.file_dropped.connect(_on_drop_to_folder)
+	tree.file_dropped.connect(_on_tree_file_drop)
+	tree.packet_dropped.connect(_on_tree_packet_drop)
 	tree.context_menu_requested.connect(_on_tree_context)
 	tree.new_folder_requested.connect(_on_new_folder)
 
 	grid.file_selected.connect(_on_file_selected)
 	grid.file_activated.connect(_on_file_activated)
 	grid.file_context_requested.connect(_on_file_context)
-	grid.file_dropped.connect(_on_drop_to_folder)
+	grid.file_dropped.connect(_on_grid_file_drop)
+	grid.packet_dropped.connect(_on_grid_packet_drop)
 	grid.service_filter_changed.connect(_on_service_filter)
+	grid.drop_rejected.connect(func(text: String) -> void: _toast(text, "warn"))
 
 
 func _on_folder_selected(folder_id: String) -> void:
@@ -2307,20 +2357,24 @@ func _on_folder_selected(folder_id: String) -> void:
 
 func _on_file_selected(id: String) -> void:
 	_selected_file = id
-	for c in grid.get_cards():
-		if c.id == id:
-			files_window.set_title("ФАЙЛЫ · %s" % _folder_name(grid.folder_id),
-				"ВЫБРАН: %s.%s" % [c.file_name, c.ext])
-			return
+	var file = Game.registry.get_file(id) if Game.registry != null else null
+	if file != null:
+		files_window.set_title("ФАЙЛЫ · %s" % _folder_name(grid.folder_id),
+			"ВЫБРАН: %s.%s" % [str(file.name), str(file.ext)])
 
 
 func _on_file_activated(id: String) -> void:
-	for c in grid.get_cards():
-		if c.id == id:
-			_toast("ПРОСМОТР: %s.%s" % [c.file_name, c.ext], "info")
+	var file = Game.registry.get_file(id) if Game.registry != null else null
+	if file != null:
+		_toast("ПРОСМОТР: %s.%s" % [str(file.name), str(file.ext)], "info")
 
 
 func _on_service_filter(on: bool) -> void:
+	# Сигнал приходит и от FileGrid.set_service_filter(), и от пункта меню:
+	# применяем состояние к сетке без повторной эмиссии сигнала.
+	if grid != null and bool(grid.service_filter) != bool(on):
+		grid.service_filter = bool(on)
+		grid.queue_redraw()
 	if on:
 		var hidden := 0
 		if grid != null:
@@ -2331,35 +2385,14 @@ func _on_service_filter(on: bool) -> void:
 		_toast("ПОКАЗАНЫ ВСЕ ОБЪЕКТЫ", "info")
 
 
-func _on_packet_connect(id: String) -> void:
-	if controller == null or controller.hour_director == null:
-		return
-	var director = controller.hour_director
-	var packet = director.active_packets.get(id)
-	if packet == null:
-		return
-	if str(packet.protocol).to_lower() != "tcp":
-		_toast("UDP-ПАКЕТ: СОЕДИНЕНИЕ НЕ ТРЕБУЕТСЯ", "warn")
-		return
-	# Успех: HourDirector сам эмитит show_connection, модалку покажет _on_show_connection.
-	if director.connect_packet(id):
-		return
-	_toast("НЕ УДАЛОСЬ СОЕДИНИТЬСЯ: НЕТ СЛОТА ИЛИ ПАКЕТ НЕ ГОТОВ", "warn")
+## Legacy: соединений больше нет. Клик по пакету ничего не запускает.
+func _on_packet_connect(_id: String) -> void:
+	_toast("ПЕРЕТАЩИТЕ ПАКЕТ В ПАПКУ", "info")
 
 
-func _on_request_connect(id: String) -> void:
-	if controller == null or controller.hour_director == null:
-		return
-	var director = controller.hour_director
-	var req = director.active_requests.get(id)
-	if req == null:
-		return
-	if str(req.protocol).to_lower() != "tcp":
-		_toast("UDP-ЗАПРОС · СОЕДИНЕНИЕ НЕ ТРЕБУЕТСЯ", "warn")
-		return
-	if director.connect_request(id):
-		return
-	_toast("НЕ УДАЛОСЬ СОЕДИНИТЬСЯ: НЕТ СЛОТА ИЛИ ЗАПРОС УЖЕ ПОДКЛЮЧЁН", "warn")
+## Legacy: соединений больше нет. Отправка — явной кнопкой ОТПРАВИТЬ.
+func _on_request_connect(_id: String) -> void:
+	_toast("СОБЕРИТЕ ФАЙЛЫ И НАЖМИТЕ ОТПРАВИТЬ", "info")
 
 
 func _on_request_reject(id: String) -> void:
@@ -2378,12 +2411,10 @@ func _on_request_detach(request_id: String, slot_index: int) -> void:
 	var req = controller.hour_director.active_requests.get(request_id)
 	if req == null:
 		return
-	if slot_index < 0 or slot_index >= req.required.size():
-		return
-	var file_id := str(req.required[slot_index])
-	if not req.attached.has(file_id):
+	if slot_index < 0 or slot_index >= req.attached.size():
 		_toast("ФАЙЛ НЕ ПРИКРЕПЛЁН", "info")
 		return
+	var file_id := str(req.attached[slot_index])
 	if controller.hour_director.detach_file(request_id, file_id):
 		_toast("ФАЙЛ ОТСОЕДИНЁН ОТ ЗАПРОСА", "info")
 		_refresh_hour()
@@ -2391,8 +2422,12 @@ func _on_request_detach(request_id: String, slot_index: int) -> void:
 		_toast("НЕ УДАЛОСЬ ОТСОЕДИНИТЬ", "warn")
 
 
+## Прикрепление файла к запросу: только attach, без автостарта отправки.
 func _on_file_to_request(request_id: String, _slot_index: int, payload: Dictionary) -> void:
 	if controller == null or controller.hour_director == null:
+		return
+	if str(payload.get("from", "")) == "table":
+		_toast("ФАЙЛ НА СТОЛЕ — СНАЧАЛА ВЕРНИТЕ ЕГО В ПАПКУ", "warn")
 		return
 	var file_id := str(payload.get("id", ""))
 	if file_id.is_empty():
@@ -2400,56 +2435,40 @@ func _on_file_to_request(request_id: String, _slot_index: int, payload: Dictiona
 	if controller.hour_director.attach_file(request_id, file_id):
 		_toast("ФАЙЛ ПРИКРЕПЛЁН", "success")
 		_refresh_hour()
-		_maybe_start_send(request_id)
 	else:
 		_toast("НЕ УДАЛОСЬ ПРИКРЕПИТЬ ФАЙЛ", "warn")
 
 
-## Автостарт отправки, когда запрос собран и не занят мини-игрой/слотом.
+## Явная отправка по кнопке ОТПРАВИТЬ (v2).
+func _on_request_send(req_id: String) -> void:
+	_maybe_start_send(req_id)
+
+
 func _maybe_start_send(req_id: String) -> void:
 	if controller == null or controller.hour_director == null:
 		return
-	var director = controller.hour_director
-	var req = director.active_requests.get(req_id)
+	if controller.hour_director.start_send(req_id):
+		_refresh_hour()
+	else:
+		_toast("ОТПРАВКА НЕ НАЧАЛАСЬ: ПРОВЕРЬТЕ ФАЙЛЫ, СЛОТ И МИНИ-ИГРУ", "warn")
+
+
+func _on_request_protocol_toggle(req_id: String) -> void:
+	if controller == null or controller.hour_director == null:
+		return
+	var req = controller.hour_director.active_requests.get(req_id)
 	if req == null:
 		return
-	if not req.is_ready() or req.minigame_active or req.sending:
-		return
-	if director.start_send(req_id):
-		return
-	_toast("ОТПРАВКА НЕ НАЧАЛАСЬ: НЕТ СЛОТА ИЛИ ПАПКА ЗАБЛОКИРОВАНА", "warn")
-
-
-func _on_slot_close(id: String) -> void:
-	if controller == null or controller.hour_director == null or id.is_empty():
-		return
-	var director = controller.hour_director
-	var handled := false
-	var req = director.active_requests.get(id)
-	if req != null:
-		if director.slots != null:
-			director.slots.release_by_entity(id)
-		req.connected = false
-		req.slot_reserved = false
-		req.sending = false
-		req.send_progress = 0.0
-		handled = true
-	else:
-		var packet = director.active_packets.get(id)
-		if packet != null:
-			if director.slots != null:
-				director.slots.release_by_entity(id)
-			# Прерванная загрузка возвращает резерв слота папки.
-			if str(packet.state) == "loading" and not str(packet.loading_folder_id).is_empty():
-				if Game.registry != null:
-					Game.registry.release_slot(str(packet.loading_folder_id))
-				packet.loading_folder_id = ""
-			packet.state = "waiting"
-			packet.loading_progress = 0.0
-			handled = true
-	if handled:
-		_toast("ПЕРЕДАЧА ПРЕРВАНА · СЛОТ СВОБОДЕН", "warn")
+	var next := "udp" if str(req.protocol).to_lower() == "tcp" else "tcp"
+	if controller.hour_director.set_request_protocol(req_id, next):
 		_refresh_hour()
+	else:
+		_toast("ПРОТОКОЛ НЕ ИЗМЕНЁН: ЗАПРОС В РАБОТЕ", "warn")
+
+
+## v2: прервать передачу нельзя, слот освободится сам. Заглушка для совместимости.
+func _on_slot_close(_id: String) -> void:
+	pass
 
 
 func _on_slot_press(id: String) -> void:
@@ -2458,48 +2477,120 @@ func _on_slot_press(id: String) -> void:
 			_toast("СЛОТ ДОСТУПЕН В МАГАЗИНЕ", "info")
 
 
-func _on_packet_to_slot(_cell_id: String, payload: Dictionary) -> void:
-	# Слот занимает только настоящее соединение; drop — это попытка подключить.
-	if bool(payload.get("is_attack", false)) \
-			or not str(payload.get("attack_kind", "")).is_empty():
-		_toast("УГРОЗУ — В ЩИТ", "warn")
+## Legacy: перетаскивание пакета на слот больше не запускает соединение.
+func _on_packet_to_slot(_cell_id: String, _payload: Dictionary) -> void:
+	_toast("ПЕРЕТАЩИТЕ ПАКЕТ В ПАПКУ", "info")
+
+
+# --------------------------------------------------------------------------
+# Drop-обработчики v2
+# --------------------------------------------------------------------------
+
+## Точный drop в сетку папки: origin/rotation уходят в HourDirector.
+func _on_grid_packet_drop(payload: Dictionary, origin: Vector2i, rotation: int) -> void:
+	if controller == null or controller.hour_director == null:
 		return
 	var packet_id := str(payload.get("id", ""))
 	if packet_id.is_empty():
 		return
-	_on_packet_connect(packet_id)
+	var folder_id := str(grid.folder_id)
+	if controller.hour_director.receive_packet(packet_id, folder_id, origin, rotation):
+		_toast("ПАКЕТ ПРИНЯТ", "success")
+	else:
+		_toast("ПАКЕТ НЕ ПРИНЯТ · ПАКЕТ ОСТАЛСЯ В БУФЕРЕ", "warn")
+	_refresh_hour()
 
 
-func _on_drop_to_folder(folder_id: String, payload: Dictionary) -> void:
+## Drop пакета на строку папки — auto-place первой подходящей фигурой.
+func _on_tree_packet_drop(folder_id: String, payload: Dictionary) -> void:
+	if controller == null or controller.hour_director == null:
+		return
+	var packet_id := str(payload.get("id", ""))
+	if packet_id.is_empty():
+		return
+	if controller.hour_director.receive_packet(packet_id, folder_id):
+		_toast("ПАКЕТ ПРИНЯТ В «%s»" % _folder_name(folder_id), "success")
+	else:
+		_toast("ПАКЕТ НЕ ПРИНЯТ · НЕТ МЕСТА ИЛИ СЛОТА", "warn")
+	_refresh_hour()
+
+
+## Файл уже разложен самой сеткой — остаётся сохранить и обновить счётчики.
+func _on_grid_file_drop(payload: Dictionary) -> void:
 	if controller == null:
 		return
-	var kind := str(payload.get("kind", "file"))
-	var entity_id := str(payload.get("id", ""))
-	var folder_label := folder_id
-	if Game.registry != null and Game.registry.folders.has(folder_id):
-		folder_label = str(Game.registry.folders[folder_id].name)
-	if kind == "packet":
-		if entity_id.is_empty() or controller.hour_director == null:
-			return
-		if controller.hour_director.receive_packet(entity_id, folder_id):
-			_toast("ПАКЕТ ПРИНЯТ В «%s»" % folder_label, "success")
-			_refresh_hour()
-		else:
-			_toast("ПАПКА ЗАПОЛНЕНА ИЛИ НЕТ СОЕДИНЕНИЯ", "warn")
+	controller.save()
+	if controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		var d: Dictionary = controller.prep_data()
+		if not str(grid.folder_id).is_empty():
+			_refresh_tree_counts(d)
+			_refresh_current_folder(d, str(grid.folder_id))
+	else:
+		_refresh_hour()
+	_toast("ПЕРЕМЕЩЕНО: %s" % str(payload.get("name", "файл")), "success")
+
+
+## Drop на строку папки: auto-place (или со стола — move_from_table).
+func _on_tree_file_drop(folder_id: String, payload: Dictionary) -> void:
+	if controller == null or Game.registry == null:
 		return
-	if kind != "file":
+	var file_id := str(payload.get("id", ""))
+	if file_id.is_empty():
 		return
-	if entity_id.is_empty() or Game.registry == null:
+	var from := str(payload.get("from", "folder"))
+	var file = Game.registry.files.get(file_id)
+	if file != null and from != "table" and str(file.folder_id) == folder_id \
+			and str(file.location) == "folder":
+		_toast("ФАЙЛ УЖЕ В ЭТОЙ ПАПКЕ", "info")
 		return
-	if Game.registry.move_file(entity_id, folder_id):
+	var ok := false
+	if from == "table" and Game.registry.has_method("move_from_table"):
+		ok = bool(Game.registry.move_from_table(file_id, folder_id))
+	else:
+		ok = bool(Game.registry.move_file(file_id, folder_id))
+	if ok:
 		controller.save()
 		if controller.phase == GAME_CONTROLLER.PHASE_PREP:
-			_refresh_prep()
+			var d: Dictionary = controller.prep_data()
+			_refresh_tree_counts(d)
+			if not str(grid.folder_id).is_empty():
+				_refresh_current_folder(d, str(grid.folder_id))
+			if sorting_table != null:
+				sorting_table.refresh()
 		else:
 			_refresh_hour()
-		_toast("ПЕРЕМЕЩЕНО: %s → «%s»" % [str(payload.get("name", "файл")), folder_label], "success")
+		_toast("ПЕРЕМЕЩЕНО: %s → «%s»" % [str(payload.get("name", "файл")),
+			_folder_name(folder_id)], "success")
 	else:
-		_toast("НЕ УДАЛОСЬ ПЕРЕМЕСТИТЬ ФАЙЛ", "warn")
+		_toast("НЕ УДАЛОСЬ ПЕРЕМЕСТИТЬ ФАЙЛ: НЕТ МЕСТА", "warn")
+
+
+## Файл уже перенесён SortingTable — обновляем счётчики и сохранение.
+func _on_table_file_dropped(payload: Dictionary) -> void:
+	if controller == null:
+		return
+	controller.save()
+	if controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		var d: Dictionary = controller.prep_data()
+		_refresh_tree_counts(d)
+		if not str(grid.folder_id).is_empty():
+			_refresh_current_folder(d, str(grid.folder_id))
+		if sorting_table != null:
+			sorting_table.refresh()
+	_toast("НА СТОЛЕ: %s" % str(payload.get("name", "файл")), "info")
+
+
+func _on_table_changed() -> void:
+	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		_refresh_tree_counts(controller.prep_data())
+
+
+## Legacy-алиас: старые тесты/вызовы бросали сущность «в папку» без сигнала.
+func _on_drop_to_folder(folder_id: String, payload: Dictionary) -> void:
+	if str(payload.get("kind", "file")) == "packet":
+		_on_tree_packet_drop(folder_id, payload)
+	else:
+		_on_tree_file_drop(folder_id, payload)
 
 
 func _on_tree_context(folder_id: String, pos: Vector2) -> void:
@@ -2668,31 +2759,71 @@ func _on_file_menu(action: String, file_id: String) -> void:
 
 
 ## Уничтожение файла: malicious/locked — это угроза, остальное не удаляется.
+## D2 (M16): обычный НЕприкреплённый файл можно уничтожить в подготовке после
+## подтверждения и без штрафа SLA — это гарантированный выход из soft-lock,
+## когда папка полна, а денег/запаса SLA на разбор нет.
 func _destroy_selected_file(file_id: String) -> void:
 	if Game.registry == null or not Game.registry.files.has(file_id):
 		_toast("ФАЙЛ НЕ НАЙДЕН", "warn")
 		return
 	var file = Game.registry.files[file_id]
 	var loc := str(file.location)
-	if loc != "malicious" and loc != "locked":
-		_toast("ОБЫЧНЫЕ ФАЙЛЫ НЕ УДАЛЯЮТСЯ", "warn")
+	if loc == "malicious" or loc == "locked":
+		var director = controller.hour_director if controller != null else null
+		var ok := false
+		if director != null and director.has_method("destroy_attack_file"):
+			ok = bool(director.destroy_attack_file(file_id))
+		if not ok and Game.registry.has_method("destroy_malicious"):
+			ok = bool(Game.registry.destroy_malicious(file_id))
+		if not ok:
+			_toast("НЕ УДАЛОСЬ УНИЧТОЖИТЬ УГРОЗУ", "warn")
+			return
+		if controller != null:
+			controller.save()
+		if controller != null and controller.phase == GAME_CONTROLLER.PHASE_PREP:
+			_refresh_prep()
+		else:
+			_refresh_hour()
+		_toast("УГРОЗА УНИЧТОЖЕНА", "success")
 		return
-	var director = controller.hour_director if controller != null else null
-	var ok := false
-	if director != null and director.has_method("destroy_attack_file"):
-		ok = bool(director.destroy_attack_file(file_id))
-	if not ok and Game.registry.has_method("destroy_malicious"):
-		ok = bool(Game.registry.destroy_malicious(file_id))
-	if not ok:
-		_toast("НЕ УДАЛОСЬ УНИЧТОЖИТЬ УГРОЗУ", "warn")
+
+	if controller == null or controller.phase != GAME_CONTROLLER.PHASE_PREP:
+		_toast(_tr_or("msg.delete_prep_only",
+			"Обычные файлы удаляются только в подготовке"), "warn")
 		return
+	if loc == "attached" or not str(file.attached_request).is_empty():
+		_toast("НЕЛЬЗЯ УДАЛИТЬ ПРИКРЕПЛЁННЫЙ ФАЙЛ", "warn")
+		return
+	if confirm_modal == null:
+		return
+	_confirm_action = "file:" + file_id
+	var name := str(file.display_name()) if file.has_method("display_name") else str(file.name)
+	confirm_modal.ask(_tr_or("msg.delete_file_confirm", "Удалить файл?"),
+		_tr_or("msg.delete_file_detail",
+			"Файл «%s» будет уничтожен без штрафа SLA.").replace("{name}", name),
+		"Удалить", "Отмена", true)
+
+
+## Подтверждённое уничтожение обычного файла: без SLA/денежных списаний.
+func _destroy_normal_file(file_id: String) -> void:
+	if Game.registry == null or not Game.registry.files.has(file_id):
+		return
+	var file = Game.registry.files[file_id]
+	if str(file.location) == "attached" or not str(file.attached_request).is_empty():
+		_toast("НЕЛЬЗЯ УДАЛИТЬ ПРИКРЕПЛЁННЫЙ ФАЙЛ", "warn")
+		return
+	if not Game.registry.destroy_file(file_id):
+		_toast("НЕ УДАЛОСЬ УДАЛИТЬ ФАЙЛ", "warn")
+		return
+	if _selected_file == file_id:
+		_selected_file = ""
 	if controller != null:
 		controller.save()
 	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_PREP:
 		_refresh_prep()
 	else:
 		_refresh_hour()
-	_toast("УГРОЗА УНИЧТОЖЕНА", "success")
+	_toast("ФАЙЛ УНИЧТОЖЕН", "success")
 
 
 func _on_new_folder() -> void:
@@ -2712,20 +2843,32 @@ func _new_folder_in(folder_id: String) -> void:
 	if Game.registry == null:
 		_toast("ХРАНИЛИЩЕ НЕДОСТУПНО", "error")
 		return
-	if _section_folder_count(section_id) >= 12:
-		_toast("В СЕКЦИИ УЖЕ 12 ПАПОК", "warn")
+	var folders_max := int(Data.const_value("folders_max", 6))
+	if Game.registry.folder_count() >= folders_max:
+		_toast(_tr_or("msg.folder_limit", "ДОСТИГНУТ ЛИМИТ ПАПОК"), "warn")
+		return
+	var cost := int(Data.const_value("folder_new_cost", 100))
+	if int(Game.money) < cost:
+		_toast(_tr_or("msg.folder_need_money", "НУЖНО {cost} $")
+			.replace("{cost}", str(cost)), "warn")
 		return
 	# Имя генерируется из пула Data и делается уникальным внутри секции.
 	var folder_name := _unique_folder_name(section_id, Data.folder_name())
+	Game.add_money(-cost, "folder")
 	var folder = Game.registry.create_folder(section_id, folder_name)
 	if folder == null:
+		Game.add_money(cost, "folder_refund")
+		# Возврат не должен засчитываться в заработок часа/забега.
+		if Game.stats != null:
+			Game.stats["money_earned"] = maxi(0,
+				int(Game.stats.get("money_earned", 0)) - cost)
 		_toast("НЕ УДАЛОСЬ СОЗДАТЬ ПАПКУ", "error")
 		return
 	if controller != null:
 		controller.save()
 	_refresh_prep()
 	_on_folder_selected(str(folder.id))
-	_toast("СОЗДАНА ПАПКА «%s»" % str(folder.name), "success")
+	_toast("СОЗДАНА ПАПКА «%s» · −%d $" % [str(folder.name), cost], "success")
 
 
 ## Уникальное имя в секции: «Имя», «Имя 2», «Имя 3», … с обрезкой до 16.
@@ -2783,18 +2926,18 @@ func _section_of_folder(folder_id: String) -> String:
 
 
 func _on_shop() -> void:
-	if shop_modal == null:
+	if shop_modal == null or controller == null:
 		return
-	# Магазин доступен только в подготовке и после открытия (час 2).
-	if controller == null or controller.phase != GAME_CONTROLLER.PHASE_PREP:
+	# Магазин доступен только в подготовке, после первого часа.
+	if controller.phase != GAME_CONTROLLER.PHASE_PREP:
 		_toast("МАГАЗИН ДОСТУПЕН В ПОДГОТОВКЕ", "warn")
 		return
-	if not Game.feature_unlocked("shop"):
+	if int(Game.hour) <= 1:
 		_toast("МАГАЗИН ОТКРОЕТСЯ ПОСЛЕ ПЕРВОГО ЧАСА", "warn")
 		return
 	if mascot != null:
 		mascot.hide_message()
-	shop_modal.open(Game.money, Game.upgrades)
+	shop_modal.open_prep(controller.shop, int(Game.money), int(Game.hour))
 
 
 func _on_shop_buy(id: String) -> void:
@@ -2802,8 +2945,38 @@ func _on_shop_buy(id: String) -> void:
 		return
 	if controller.buy(id):
 		_toast("КУПЛЕНО: %s" % _shop_item_name(id), "success")
-	shop_modal.refresh(Game.money, Game.upgrades)
-	_refresh_prep()
+	else:
+		_toast("ПОКУПКА НЕ УДАЛАСЬ", "warn")
+	shop_modal.refresh()
+	if controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		_refresh_prep()
+	_update_shop_visibility()
+
+
+func _on_shop_reroll() -> void:
+	if controller == null or controller.shop == null:
+		return
+	if not controller.shop.reroll():
+		_toast("ОБНОВЛЕНИЕ НЕДОСТУПНО", "warn")
+	shop_modal.refresh()
+	if controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		_refresh_prep()
+
+
+func _on_shop_lock(index: int) -> void:
+	if controller == null or controller.shop == null:
+		return
+	controller.shop.toggle_lock(index)
+	shop_modal.refresh()
+
+
+## Shop изменился (покупка/реролл): обновить модалку и снимки экрана.
+func _on_shop_changed() -> void:
+	if shop_modal != null and shop_modal.visible:
+		shop_modal.refresh()
+	_update_shop_visibility()
+	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		_update_status(controller.prep_data())
 
 
 ## Название позиции магазина для тоста (id — только фолбэк).
@@ -2841,6 +3014,13 @@ func _toast(text: String, kind: String = "info") -> void:
 		toast_layer.toast(text, kind)
 
 
+## D2: строка из Data.tr с fallback, если ключ ещё не добавлен в strings_ru.
+func _tr_or(key: String, fallback: String) -> String:
+	if Data != null and Data.has_method("has_string") and Data.has_string(key):
+		return Data.tr(key)
+	return fallback
+
+
 # --------------------------------------------------------------------------
 # Фон
 # --------------------------------------------------------------------------
@@ -2864,144 +3044,3 @@ class Backdrop:
 		draw_rect(Rect2(0, 0, 1, size.y), Theme90.SHADE)
 		draw_rect(Rect2(size.x - 1, 0, 1, size.y), Theme90.FACE_HI)
 		draw_rect(Rect2(0, size.y - 1, size.x, 1), Theme90.FACE_HI)
-
-
-# --------------------------------------------------------------------------
-# Щит-карантин (drop-зона + кнопка удержания против DDoS)
-# --------------------------------------------------------------------------
-
-class ShieldDrop:
-	extends Control
-
-	var main: Node = null
-	var target := "receive"
-	var active := false
-	var progress := 0.0
-	var holding := false
-	var _hover := false
-
-
-	func _ready() -> void:
-		mouse_filter = Control.MOUSE_FILTER_STOP
-		mouse_default_cursor_shape = Control.CURSOR_POINTING_HAND
-		mouse_entered.connect(func() -> void:
-			_hover = true
-			queue_redraw())
-		mouse_exited.connect(func() -> void:
-			_hover = false
-			queue_redraw())
-		tooltip_text = "ЩИТ · ПЕРЕТАЩИТЕ СЮДА УГРОЗУ"
-
-
-	func _draw() -> void:
-		var r := Rect2(Vector2.ZERO, size)
-		var bg := Theme90.NAVY_DEEP if active else Theme90.NAVY
-		draw_rect(r, bg)
-		var edge := Theme90.ERROR if active else (Theme90.ACCENT_LIGHT if _hover else Theme90.FACE_LO)
-		draw_rect(r, edge, false, 1.0)
-
-		# щит: полигон + крест
-		var fill := Theme90.ERROR if active and holding else Theme90.FACE_HI
-		var shield := PackedVector2Array([
-			Vector2(10, 2), Vector2(17, 4), Vector2(16, 11),
-			Vector2(10, 16), Vector2(4, 11), Vector2(3, 4),
-		])
-		draw_colored_polygon(shield, fill)
-		draw_polyline(PackedVector2Array([
-			Vector2(10, 2), Vector2(17, 4), Vector2(16, 11),
-			Vector2(10, 16), Vector2(4, 11), Vector2(3, 4), Vector2(10, 2),
-		]), Theme90.WHITE, 1.0)
-		var cross := Theme90.ERROR if not active else Theme90.WHITE
-		draw_line(Vector2(10, 5), Vector2(10, 12), cross, 1.0)
-		draw_line(Vector2(6, 8), Vector2(14, 8), cross, 1.0)
-
-		var f := Theme90.ui()
-		Theme90.text(self, f, Vector2(20, 3), "ЩИТ", 8,
-			Theme90.ERROR if active else Theme90.ACCENT_LIGHT, 26)
-
-		# прогресс удержания
-		if active:
-			var bar := Rect2(20, 13, 25, 3)
-			draw_rect(bar, Theme90.NAVY_DEEP)
-			var ratio := clampf(progress, 0.0, 1.0)
-			draw_rect(Rect2(bar.position, Vector2(floorf(bar.size.x * ratio), bar.size.y)),
-				Theme90.SUCCESS if ratio >= 1.0 else Theme90.ERROR)
-		else:
-			Theme90.text(self, f, Vector2(20, 12), "DROP", 7, Theme90.FACE_LO, 26)
-
-
-	func _can_drop_data(_at_position: Vector2, data: Variant) -> bool:
-		if not (data is Dictionary):
-			return false
-		if str(data.get("kind", "")) != "packet":
-			return false
-		return bool(data.get("is_attack", false)) or not str(data.get("attack_kind", "")).is_empty()
-
-
-	func _drop_data(_at_position: Vector2, data: Variant) -> void:
-		if main != null and data is Dictionary and main.has_method("_on_quarantine_drop"):
-			main.call("_on_quarantine_drop", data)
-
-
-	func _gui_input(event: InputEvent) -> void:
-		if not (event is InputEventMouseButton):
-			return
-		var mb := event as InputEventMouseButton
-		if mb.button_index != MOUSE_BUTTON_LEFT:
-			return
-		if mb.pressed:
-			if main != null and main.has_method("_on_shield_press"):
-				main.call("_on_shield_press", target)
-		else:
-			if main != null and main.has_method("_on_shield_release"):
-				main.call("_on_shield_release")
-		accept_event()
-
-
-# --------------------------------------------------------------------------
-# Плашка DDoS над карточками приёма
-# --------------------------------------------------------------------------
-
-class DdosOverlay:
-	extends Control
-
-	var cards := 10
-	var hold := 0.0
-	var needed := 1.5
-	var _t := 0.0
-
-
-	func _ready() -> void:
-		mouse_filter = Control.MOUSE_FILTER_IGNORE
-		set_process(true)
-
-
-	func _process(delta: float) -> void:
-		_t += delta
-		queue_redraw()
-
-
-	func _draw() -> void:
-		var r := Rect2(Vector2.ZERO, size)
-		draw_rect(r, Theme90.NAVY_DEEP)
-		var pulse := 0.45 + 0.55 * absf(sin(_t * 4.0))
-		draw_rect(r, Color(Theme90.ERROR, pulse), false, 1.0)
-		draw_rect(Rect2(0, 0, size.x, 1), Theme90.ERROR)
-
-		var f := Theme90.ui()
-		Theme90.text(self, f, Vector2(6, 3), "DDoS · %d КАРТОЧЕК · ДЕРЖИТЕ ЩИТ" % cards,
-			10, Theme90.WHITE, 392)
-
-		# 8–12 маленьких красных прямоугольников
-		var shown := mini(maxi(cards, 8), 12)
-		for i in shown:
-			draw_rect(Rect2(6.0 + i * 13.0, 19.0, 9.0, 8.0), Theme90.ERROR)
-			draw_rect(Rect2(6.0 + i * 13.0, 19.0, 9.0, 1.0), Theme90.ERROR.lightened(0.45))
-
-		# шкала удержания щита
-		var bar := Rect2(180, 21, 214, 4)
-		draw_rect(bar, Theme90.NAVY)
-		draw_rect(Rect2(bar.position, Vector2(1, bar.size.y)), Theme90.SHADE)
-		var ratio := clampf(hold / maxf(0.1, needed), 0.0, 1.0)
-		draw_rect(Rect2(bar.position, Vector2(floorf(bar.size.x * ratio), bar.size.y)),
-			Theme90.SUCCESS if ratio >= 1.0 else Theme90.ERROR)

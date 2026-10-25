@@ -21,6 +21,9 @@ signal shop_changed
 signal toast(text: String)
 signal show_connection(game)
 signal show_minigame(game)
+signal minigame_closed(req_id: String)
+signal show_attack_minigame(game, kind: String)
+signal attack_resolved(kind: String, success: bool, tier: int)
 ## Дополнительно: проброс изменения слотов (удобно для UI во время часа).
 signal slot_changed
 
@@ -104,6 +107,12 @@ func _enter_prep() -> void:
 	modal_open = false
 	if game != null:
 		game.phase = PHASE_PREP
+		# Магазин: 3 лота после каждого часа, начиная с подготовки перед H2.
+		# Во время часа офферы не генерируются и магазин не открывается.
+		if int(game.hour) > 1 and int(game.shop_offer_hour) != int(game.hour):
+			if shop != null:
+				shop.refresh(int(game.hour), int(game.money))
+			shop_changed.emit()
 		# Автосейв на входе в подготовку: прогресс не теряется между часами.
 		game.save_game()
 	phase_changed.emit(phase)
@@ -119,11 +128,19 @@ func start_hour() -> bool:
 	# Час начинается только из подготовки (menu допустим, если Game уже в prep).
 	if phase != PHASE_PREP and not (phase == PHASE_MENU and game.phase == PHASE_PREP):
 		return false
+	# M4/M18: стол сортировки возвращает файлы до старта часа. Если места нет —
+	# час не начинается (никакого soft-lock/потери файлов).
+	if game.registry != null and game.registry.has_method("auto_return_table"):
+		if not bool(game.registry.auto_return_table()):
+			var message := "На столе остались файлы, места нет"
+			toast.emit(message)
+			return false
 	if not bool(game.start_hour()):
 		return false
 	hour_director.start_hour(int(game.hour))
 	hour_director.set_paused(false)
 	hour_director.set_modal_open(false)
+	hour_director.set_attack_paused(false)
 	phase = PHASE_HOUR
 	paused = false
 	modal_open = false
@@ -225,13 +242,14 @@ func prep_data() -> Dictionary:
 				for file in registry.get_folder_files(str(folder.id)):
 					folder_files.append(_file_entry(file))
 				files_map[str(folder.id)] = folder_files
-				capacity_total += FOLDER_CAPACITY
-				free_slots += maxi(0, FOLDER_CAPACITY - folder.count() - int(folder.reserved))
+				capacity_total += folder.total_cells()
+				free_slots += folder.free_cell_count()
 				folders_data.append({
 					"id": str(folder.id),
 					"name": str(folder.name),
-					"count": folder.count(),
-					"capacity": FOLDER_CAPACITY,
+					"count": folder.occupied_cell_count(),
+					"capacity": folder.total_cells(),
+					"files": folder.count(),
 				})
 			sections_data.append({
 				"id": str(section.id),
@@ -288,9 +306,11 @@ func hour_data() -> Dictionary:
 	for id in hour_director.active_requests.keys():
 		var request = hour_director.active_requests[id]
 		var req_entry: Dictionary = request.to_dict()
-		req_entry["ready"] = request.is_ready()
+		req_entry["ready"] = bool(hour_director.is_request_ready(str(id)))
 		req_entry["time_ratio"] = request.time_ratio()
-		req_entry["missing"] = request.missing_count()
+		req_entry["required_count"] = int(hour_director.request_required_count(str(id)))
+		req_entry["missing"] = maxi(0, int(req_entry["required_count"]) - request.attached.size())
+		req_entry["queued"] = bool(hour_director.is_request_queued(str(id)))
 		requests.append(req_entry)
 
 	var used := 0
@@ -323,20 +343,28 @@ func hour_data() -> Dictionary:
 	return {"packets": packets, "requests": requests, "slots": slots_data, "status": status}
 
 
-## Каталог магазина с текущими уровнями/ценами — для модалки магазина.
+## 3 текущих предложения магазина (v2). Пустой массив в H1/во время часа.
 func shop_data() -> Array:
 	_bind()
 	var out: Array = []
-	if shop == null:
+	if shop == null or game == null:
 		return out
-	for item in shop.items():
-		var id := str(item.get("id", ""))
+	if int(game.hour) <= 1 and game.shop_offers.is_empty():
+		return out
+	for raw_id in shop.offers():
+		var id := str(raw_id)
+		var item: Dictionary = shop.get_item(id)
+		if item.is_empty():
+			continue
 		var item_name := str(item.get("name_ru", ""))
 		if item_name.is_empty():
 			item_name = str(item.get("name", id))
 		out.append({
 			"id": id,
 			"name": item_name,
+			"desc": str(item.get("desc_ru", "")),
+			"effect": str(item.get("effect", "")),
+			"value": float(item.get("value", 0.0)),
 			"price": int(shop.price(id)),
 			"level": int(shop.level(id)),
 			"max_level": int(shop.max_level(id)),
@@ -379,6 +407,21 @@ func _on_show_connection(game_node) -> void:
 func _on_show_minigame(game_node) -> void:
 	modal_open = true
 	show_minigame.emit(game_node)
+
+
+func _on_minigame_closed(req_id: String) -> void:
+	modal_open = false
+	minigame_closed.emit(req_id)
+
+
+func _on_show_attack_minigame(game_node, kind: String) -> void:
+	modal_open = true
+	show_attack_minigame.emit(game_node, kind)
+
+
+func _on_attack_resolved(kind: String, success: bool, tier: int) -> void:
+	modal_open = false
+	attack_resolved.emit(kind, success, tier)
 
 
 func _on_slot_changed() -> void:
@@ -431,6 +474,9 @@ func _bind() -> void:
 		hour_director.toast.connect(_on_hour_toast)
 		hour_director.show_connection.connect(_on_show_connection)
 		hour_director.show_minigame.connect(_on_show_minigame)
+		hour_director.minigame_closed.connect(_on_minigame_closed)
+		hour_director.show_attack_minigame.connect(_on_show_attack_minigame)
+		hour_director.attack_resolved.connect(_on_attack_resolved)
 		hour_director.slot_changed.connect(_on_slot_changed)
 	if game != null and not game.run_ended.is_connected(_on_game_run_ended):
 		game.run_ended.connect(_on_game_run_ended)
@@ -440,6 +486,7 @@ func _bind() -> void:
 func _reset_director_state() -> void:
 	if hour_director == null:
 		return
+	hour_director.reset_carry()
 	hour_director.start_hour(1)
 	hour_director.running = false
 	hour_director.paused = false
