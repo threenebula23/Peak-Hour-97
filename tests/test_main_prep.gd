@@ -56,6 +56,21 @@ func _init() -> void:
 	main._refresh_prep()
 	_ok(main.grid.folder_id != "", "повторная подготовка не сбросила папку")
 
+	# --- Плюрализация заголовка ДИСКИ: 1 ПАПКА / 2 ПАПКИ / 5 ПАПОК ---------
+	_eq(main.tree_window.title_hint, "1 ПАПКА", "1 папка — «1 ПАПКА»")
+	_ok(game.registry.create_folder("C", "ПЛЮРАЛ 2") != null,
+		"вторая папка создана для проверки падежа")
+	main._refresh_prep()
+	_eq(main.tree_window.title_hint, "2 ПАПКИ", "2 папки — «2 ПАПКИ»")
+	while main._count_folders(main.controller.prep_data().get("sections", [])) < 5:
+		if game.registry.create_folder("C",
+				main._unique_folder_name("C", "ПЛЮРАЛ")) == null:
+			break
+	main._refresh_prep()
+	_eq(main.tree_window.title_hint, "5 ПАПОК", "5 папок — «5 ПАПОК»")
+	_eq(main._plural_ru(11, "ПАПКА", "ПАПКИ", "ПАПОК"), "11 ПАПОК",
+		"исключение 11–14 — «11 ПАПОК»")
+
 	_test_settings_from_menu(main)
 	await _test_registry_autorefresh(main, game)
 	_test_rename_folder(main, game)

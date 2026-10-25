@@ -84,11 +84,25 @@ func _test_settings() -> void:
 	})
 	_approx(float(_audio.sfx_volume), 0.2, 0.001, "громкость SFX применена")
 	_approx(float(_audio.music_volume), 0.3, 0.001, "громкость музыки применена")
-	_ok(_main._backdrop != null and not _main._backdrop.visible,
-		"спокойный фон скрывает Backdrop")
+	_ok(_main._backdrop != null and bool(_main._backdrop.visible),
+		"спокойный фон не скрывает Backdrop")
+	_ok(_main._backdrop != null and bool(_main._backdrop.calm),
+		"спокойный фон переключает Backdrop.calm=true")
+	var clear = ProjectSettings.get_setting("rendering/environment/defaults/default_clear_color")
+	_ok(clear is Color and (clear as Color).is_equal_approx(Theme90.PAPER),
+		"clear color проекта — бумага, а не серый")
 	var saved = _game.stats.get("settings", {})
 	_ok(saved is Dictionary and int(saved.get("sfx", -1)) == 20,
 		"настройки сохранены в Game.stats")
+
+	# Выключение спокойного фона возвращает dither, Backdrop остаётся видимым.
+	_main.settings_modal.settings_changed.emit({
+		"sfx": 20, "music": 30, "calm_bg": false, "fullscreen": false,
+	})
+	_ok(_main._backdrop != null and bool(_main._backdrop.visible),
+		"обычный фон не скрывает Backdrop")
+	_ok(_main._backdrop != null and not bool(_main._backdrop.calm),
+		"обычный фон сбрасывает Backdrop.calm=false")
 	_main.settings_modal.visible = false
 
 

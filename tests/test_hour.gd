@@ -272,12 +272,19 @@ func _test_send_payout() -> void:
 
 func _test_attacks() -> void:
 	_set_case("attacks")
-	_eq(AD.attacks_for_hour(1), 1, "час 1: 1 атака (D16)")
+	_eq(AD.attacks_for_hour(1), 0, "час 1: атак нет (junk с часа 2)")
 	_eq(AD.attacks_for_hour(2), 1, "час 2: 1 атака")
 	_eq(AD.attacks_for_hour(4), 2, "час 4: 2 атаки")
 	_eq(AD.attacks_for_hour(6), 3, "час 6: 3 атаки")
 	_eq(AD.attacks_for_hour(8), 4, "час 8: 4 атаки")
 	_eq(AD.attacks_for_hour(9), 4, "час 9: 4 атаки")
+
+	# Час 1: расписание пустое, junk ещё заперт — атак нет.
+	_game.hour = 1
+	_hd.start_hour(1)
+	var ad1 = _hd.attack_director
+	_eq(ad1._schedule.size(), 0, "час 1: расписание без атак")
+	_ok(str(ad1.spawn_attack("junk")).is_empty(), "час 1: junk закрыт")
 
 	# junk/ddos открыты с часа 2, phishing — с 3, ransomware — с 4 (п.16).
 	_game.hour = 2

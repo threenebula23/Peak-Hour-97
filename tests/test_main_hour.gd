@@ -51,6 +51,9 @@ func _init() -> void:
 	_eq(main.controller.phase, &"hour", "фаза контроллера — hour")
 	_ok(main._shop_btn != null and not main._shop_btn.visible,
 		"магазин скрыт во время часа")
+	# Регресс: акцентная кнопка старта не должна оставаться в строке меню в час.
+	_ok(main._start_btn != null and not main._start_btn.visible,
+		"кнопка НАЧАТЬ ЧАС скрыта во время часа")
 
 	var director = main.controller.hour_director
 	_ok(director != null, "hour_director доступен")
@@ -62,6 +65,54 @@ func _init() -> void:
 	_ok(main.packets.size() > 0, "карточки пакетов созданы (%d)" % main.packets.size())
 	_ok(main.requests.size() > 0, "карточки запросов созданы (%d)" % main.requests.size())
 	_eq(main.slot_cells.size(), 4, "четыре SlotCell в полосе TCP")
+
+	# --- Плюрализация заголовков окон: падежи счётчиков ---------------------
+	_ok(not str(director.spawn_request_now()).is_empty(),
+		"второй запрос создан для проверки падежа")
+	main._refresh_hour()
+	await process_frame
+	_eq(main.send_window.title_hint, "2 ЗАПРОСА", "2 запроса — «2 ЗАПРОСА»")
+	_eq(main.receive_window.title_hint, "1 ПАКЕТ", "1 пакет — «1 ПАКЕТ»")
+	while director.active_packets.size() < 3:
+		if str(director.spawn_packet_now("text", "tcp")).is_empty():
+			break
+	main._refresh_hour()
+	await process_frame
+	_eq(main.receive_window.title_hint, "3 ПАКЕТА", "3 пакета — «3 ПАКЕТА»")
+	_eq(main._plural_ru(5, "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ"), "5 ПАКЕТОВ",
+		"5 пакетов — «5 ПАКЕТОВ»")
+
+	# --- Вместимость ОТПРАВКИ: 3 и 4 запроса должны быть видны целиком -----
+	# Окно 856,320,416,276 → content 252 px. При шаге 64 карточка №4
+	# уходила за нижний клип (192+64 = 256 > 252).
+	var content: Control = main.send_window.content
+	_eq(int(content.size.y), 252, "контент ОТПРАВКИ: высота 252 px")
+	while director.active_requests.size() < 3:
+		if str(director.spawn_request_now()).is_empty():
+			break
+	main._refresh_hour()
+	await process_frame
+	var cards3 := _request_cards(content)
+	print("ОТПРАВКА N=3: карточек %d, низ последней %.1f / %.1f" % [
+		cards3.size(), _cards_bottom(cards3), content.size.y])
+	_eq(cards3.size(), 3, "3 активных запроса → 3 карточки в ОТПРАВКЕ")
+	_ok(_cards_fit(cards3, content.size.y), "3 карточки целиком в клипе ОТПРАВКИ")
+	_eq(main.send_window.title_hint, "3 ЗАПРОСА", "3 запроса — «3 ЗАПРОСА»")
+
+	while director.active_requests.size() < 4:
+		if str(director.spawn_request_now()).is_empty():
+			break
+	main._refresh_hour()
+	await process_frame
+	var cards4 := _request_cards(content)
+	print("ОТПРАВКА N=4: карточек %d, низ последней %.1f / %.1f" % [
+		cards4.size(), _cards_bottom(cards4), content.size.y])
+	_eq(cards4.size(), 4, "4 активных запроса → 4 карточки в ОТПРАВКЕ")
+	_ok(_cards_fit(cards4, content.size.y), "4 карточки целиком в клипе ОТПРАВКИ")
+	for card in cards4:
+		# Заголовок + таймер живут в верхних 40 px — они обязаны быть в клипе.
+		_ok(card.position.y + 40.0 < content.size.y,
+			"карточка %s: заголовок/таймер в клипе" % str(card.name))
 
 	# Тайминги часа 1 (grace 1.5): пакет 30 с, запрос 45 с.
 	if not pid.is_empty() and director.active_packets.has(pid):
@@ -109,10 +160,66 @@ func _init() -> void:
 	_eq(int(game.hour), 2, "после первого часа Game.hour = 2")
 	_ok(main._shop_btn != null and main._shop_btn.visible,
 		"в подготовке часа 2 магазин виден")
+	_ok(main._start_btn != null and main._start_btn.visible,
+		"после возврата в prep кнопка НАЧАТЬ ЧАС снова видна")
+
+	# --- Реальный переход по сигналу phase_changed (без ручного _on_phase) ---
+	var started: bool = main.controller.start_hour()
+	_ok(started, "controller.start_hour() запускает час 2")
+	await process_frame
+	_eq(main.controller.phase, &"hour", "start_hour() → фаза hour через phase_changed")
+	_ok(main._start_btn != null and not main._start_btn.visible,
+		"phase_changed(hour) скрывает кнопку НАЧАТЬ ЧАС")
+	var director2 = main.controller.hour_director
+	_ok(director2 != null, "hour_director часа 2 доступен")
+	if director2 != null:
+		director2.time_left = 0.05
+		main.controller.tick(0.1)
+		await process_frame
+	_eq(main.controller.phase, &"hour_result", "час 2 → hour_result")
+	main.controller.next_after_hour()
+	await process_frame
+	_eq(main.controller.phase, &"prep", "час 2 закрыт → prep")
+	_ok(main._start_btn != null and main._start_btn.visible,
+		"phase_changed(prep) возвращает кнопку НАЧАТЬ ЧАС")
 
 	print("")
 	print("Проверок: %d, провалов: %d" % [_checks, _fails])
 	_finish()
+
+
+## Карточки запросов в контенте ОТПРАВКИ (живые, видимые).
+func _request_cards(content: Control) -> Array:
+	var out: Array = []
+	if content == null:
+		return out
+	for c in content.get_children():
+		var sc = c.get_script()
+		if sc == null or sc.get_global_name() != "RequestCard":
+			continue
+		if not (c as Control).visible or c.is_queued_for_deletion():
+			continue
+		out.append(c)
+	return out
+
+
+func _cards_bottom(cards: Array) -> float:
+	var bottom := 0.0
+	for c in cards:
+		bottom = maxf(bottom, c.position.y + c.size.y)
+	return bottom
+
+
+## Все карточки целиком внутри клипа контента.
+func _cards_fit(cards: Array, clip_h: float) -> bool:
+	if cards.is_empty():
+		return false
+	for c in cards:
+		if c.position.y < -0.01:
+			return false
+		if c.position.y + c.size.y > clip_h + 0.5:
+			return false
+	return true
 
 
 func _on_timeout() -> void:

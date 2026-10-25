@@ -113,6 +113,7 @@ func _test_game_roundtrip(t) -> void:
 	t.eq(int(game.money), 250, "деньги после add_money")
 	t.approx(float(game.sla), 133.0, 0.0001, "SLA после add_sla (+5 от 128)")
 	game.meta_unlocks["survive_hour_3"] = true
+	game.run_meta_awards.append("survive_hour_3")
 
 	t.ok(game.save_game(), "Game.save_game")
 	var game2 = G.new()
@@ -120,6 +121,7 @@ func _test_game_roundtrip(t) -> void:
 	t.eq(int(game2.money), 250, "деньги восстановлены")
 	t.approx(float(game2.sla), 133.0, 0.0001, "SLA восстановлен")
 	t.ok(game2.meta_unlocks.has("survive_hour_3"), "мета-открытия восстановлены")
+	t.ok(game2.run_meta_awards.has("survive_hour_3"), "run_meta_awards восстановлены")
 	t.eq(str(game2.phase), "prep", "фаза восстановлена")
 	t.eq(int(game2.rng_seed), 4242, "сид восстановлен")
 	t.eq(game2.registry.files.size(), game.registry.files.size(), "файлы восстановлены")

@@ -46,10 +46,10 @@ func _init() -> void:
 
 func _test_schedule_table() -> void:
 	_set_case("schedule_table")
-	var expected: Array[int] = [1, 1, 1, 2, 2, 3, 3, 4, 4]
+	var expected: Array[int] = [0, 1, 1, 2, 2, 3, 3, 4, 4]
 	for i in range(expected.size()):
 		_eq(AD.attacks_for_hour(i + 1), expected[i], "атак в часе %d" % (i + 1))
-	# Данные difficulty.attacks должны совпадать с формулой.
+	# Данные difficulty.attacks должны совпадать с расписанием (час 1 — 0, атаки с часа 2).
 	var data = root.get_node_or_null("Data")
 	if data != null:
 		for h in range(1, 10):

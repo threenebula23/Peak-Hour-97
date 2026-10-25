@@ -48,6 +48,9 @@ func _init() -> void:
 	_test_receive_scroll()
 	_test_search()
 	_test_delete_folder()
+	_test_calm_backdrop()
+	await _test_destroy_contents()
+	_test_run_result_escape()
 
 	await process_frame
 	print("")
@@ -75,7 +78,7 @@ func _test_shop_and_meta() -> void:
 	_main._on_shop()
 	_ok(_main.shop_modal.visible, "магазин открывается в подготовке часа 2")
 	_main.shop_modal.close()
-	_ok(not _main.shop_modal.visible, "магазин закрывается по X")
+	_ok(not _main.shop_modal.visible, "магазин закрывается по Закрыть/Esc")
 	_ok(_game.feature_unlocked("shop"), "магазин открыт прогрессией часа 2")
 
 	_game.meta_unlocks["survive_hour_3"] = true
@@ -203,6 +206,98 @@ func _test_delete_folder() -> void:
 		"файл в папку добавлен")
 	_main._on_tree_menu("delete", busy_id)
 	_ok(_game.registry.folders.has(busy_id), "папка с файлом осталась")
+
+
+func _test_calm_backdrop() -> void:
+	_ok(_main._backdrop != null, "Backdrop создан")
+	if _main._backdrop == null:
+		return
+	_main._apply_settings({"sfx": 50, "music": 50, "calm_bg": true,
+		"fullscreen": false}, false)
+	_ok(_main._backdrop.visible, "спокойный фон не скрывает Backdrop")
+	_ok(bool(_main._backdrop.calm), "Backdrop переключён в спокойный режим")
+	var clear = ProjectSettings.get_setting("rendering/environment/defaults/default_clear_color")
+	_ok(clear is Color and (clear as Color).is_equal_approx(Theme90.PAPER),
+		"clear color проекта — бумага, а не серый")
+	_main._apply_settings({"sfx": 50, "music": 50, "calm_bg": false,
+		"fullscreen": false}, false)
+	_ok(_main._backdrop.visible and not bool(_main._backdrop.calm),
+		"обычный фон возвращает dither без скрытия Backdrop")
+
+
+func _test_destroy_contents() -> void:
+	var folder = _game.registry.create_folder("C", "Под_снос")
+	_ok(folder != null, "папка для уничтожения создана")
+	if folder == null:
+		return
+	var folder_id := str(folder.id)
+	_ok(_game.registry.create_file("снос_1", "text", folder_id) != null, "файл 1 создан")
+	_ok(_game.registry.create_file("снос_2", "text", folder_id) != null, "файл 2 создан")
+
+	# Пустая папка: подтверждение не открывается, штрафа нет.
+	var empty = _game.registry.create_folder("C", "Пустая_снос")
+	_ok(empty != null, "пустая папка создана")
+	if empty != null:
+		var sla_before_empty := float(_game.sla)
+		_main._on_tree_menu("destroy", str(empty.id))
+		_ok(not _main.confirm_modal.visible, "пустая папка не просит подтверждения")
+		_ok(is_equal_approx(float(_game.sla), sla_before_empty),
+			"пустая папка не штрафует SLA")
+
+	# Папка с файлами: подтверждение и реальное удаление.
+	var sla_before := float(_game.sla)
+	_main._on_tree_menu("destroy", folder_id)
+	_ok(_main.confirm_modal.visible, "уничтожение просит подтверждения")
+	_eq(str(_main._confirm_action), "destroy:" + folder_id, "действие подтверждения — destroy")
+	_main.confirm_modal._answer(true)
+	await process_frame
+	_eq(_game.registry.get_folder_files(folder_id).size(), 0,
+		"содержимое папки удалено")
+	_ok(_game.registry.folders.has(folder_id), "сама папка осталась")
+	_ok(is_equal_approx(float(_game.sla), sla_before - 5.0),
+		"SLA снижен на 5 (%.1f → %.1f)" % [sla_before, float(_game.sla)])
+
+
+func _test_run_result_escape() -> void:
+	var modal = _main.run_result_modal
+	_ok(modal != null, "RunResultModal создана")
+	if modal == null:
+		return
+
+	# Пустой unlocked: подсказка про Esc.
+	modal.open({"won": true, "unlocked": []})
+	_eq(modal._unlocked_line(), "", "пустой unlocked не даёт строки открытий")
+	_eq(modal._footer_text(), "ESC — В МЕНЮ", "пустой unlocked — подсказка Esc")
+	_ok(modal.visible, "модалка итогов открыта")
+
+	# Открытия мапятся через Data: reward -> unlock.label.
+	modal.open({"won": true, "unlocked": ["survive_hour_3", "survive_hour_5"]})
+	_ok(modal._unlocked_line().contains("Поиск"), "survive_hour_3 → Поиск")
+	_ok(modal._unlocked_line().contains("Щит"), "survive_hour_5 → Щит")
+	_ok(modal._footer_text().begins_with("ОТКРЫТО:"), "строка открытий в подвале")
+
+	# closed эмитится ровно один раз.
+	var closes := [0]
+	var on_closed := func() -> void: closes[0] += 1
+	modal.closed.connect(on_closed)
+	modal.close()
+	_eq(closes[0], 1, "closed эмитится один раз")
+	modal.closed.disconnect(on_closed)
+
+	# Esc при открытых итогах — в меню, а modal скрыта.
+	var went_menu := [false]
+	var on_menu := func() -> void: went_menu[0] = true
+	modal.to_menu.connect(on_menu)
+	modal.open({"won": true, "unlocked": []})
+	var ev := InputEventKey.new()
+	ev.keycode = KEY_ESCAPE
+	ev.physical_keycode = KEY_ESCAPE
+	ev.pressed = true
+	modal._unhandled_input(ev)
+	_ok(went_menu[0], "Esc на итогах эмитит to_menu")
+	_ok(not modal.visible, "Esc на итогах скрывает модалку")
+	_ok(_main.main_menu.visible, "Esc на итогах показывает главное меню")
+	modal.to_menu.disconnect(on_menu)
 
 
 func _finish() -> void:

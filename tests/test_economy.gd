@@ -17,6 +17,7 @@ func run(t) -> void:
 	_test_data(t)
 	_test_game_defaults(t)
 	_test_progression(t)
+	_test_meta_awards_on_hours(t)
 
 
 func _test_channel(t) -> void:
@@ -225,3 +226,93 @@ func _test_progression(t) -> void:
 	game.start_new_run(6)
 	t.ok(game.feature_unlocked("shield"), "start_new_run не стирает мету")
 	game.free()
+
+
+## Мета-награды выдаются по ходу забега в Game.end_hour, а не только в _finish_run.
+func _test_meta_awards_on_hours(t) -> void:
+	t.set_case("meta_awards")
+	# run_tests.gd запускается из _init до _ready автолоадов — форсируем Data.
+	var loop := Engine.get_main_loop()
+	if loop is SceneTree:
+		var data = (loop as SceneTree).root.get_node_or_null("Data")
+		if data != null and data.get("unlocks") is Dictionary and (data.unlocks as Dictionary).is_empty():
+			data.load_all()
+
+	var game = G.new()
+	var toasts: Array = []
+	game.toast.connect(func(text): toasts.append(str(text)))
+	game.start_new_run(11)
+	toasts.clear()
+
+	# Обычный час без наград: тостов «Открыто: …» быть не должно.
+	game.end_hour()
+	t.eq(int(game.stats.get("hours_done", 0)), 1, "1 час отработан")
+	t.ok(not game.feature_unlocked("search"), "после 1 часа search закрыт")
+	t.ok(not _has_unlock_toast(toasts), "1 час: тоста об открытии нет")
+
+	# 2 часа — ближайшая награда требует 3 часа.
+	game.end_hour()
+	t.eq(int(game.stats.get("hours_done", 0)), 2, "2 часа отработано")
+	t.ok(not game.feature_unlocked("search"), "после 2 часов search закрыт")
+	t.ok(not _has_unlock_toast(toasts), "2 часа: тоста об открытии нет")
+
+	# 3 часа → survive_hour_3 сразу, забег не завершён.
+	game.end_hour()
+	t.eq(int(game.stats.get("hours_done", 0)), 3, "3 часа отработано")
+	t.ok(str(game.phase) != "results", "забег не завершён после 3 часов")
+	t.ok(game.feature_unlocked("search"), "после 3 часов search открыт без завершения забега")
+	t.ok(_has_unlock_toast(toasts), "3 часа: тост «Открыто: …» есть")
+	t.ok(game.run_meta_awards.has("survive_hour_3"), "run_meta_awards: survive_hour_3 за текущий забег")
+	t.eq(game.run_meta_awards.size(), 1, "run_meta_awards без дублей после 3 часов")
+
+	# 4 часа — новых наград нет.
+	game.end_hour()
+	t.ok(not game.feature_unlocked("shield"), "после 4 часов shield ещё закрыт")
+
+	# 5 часов → survive_hour_5.
+	game.end_hour()
+	t.eq(int(game.stats.get("hours_done", 0)), 5, "5 часов отработано")
+	t.ok(game.feature_unlocked("shield"), "после 5 часов shield открыт")
+	t.ok(game.meta_unlocks.has("survive_hour_5"), "survive_hour_5 в meta_unlocks")
+	t.ok(game.run_meta_awards.has("survive_hour_5"), "run_meta_awards: survive_hour_5 за текущий забег")
+	t.eq(game.run_meta_awards.size(), 2, "run_meta_awards: 2 награды, без дублей")
+
+	# 9 часов → complete_run выдаётся в end_hour до _finish_run.
+	for i in range(4):
+		game.end_hour()
+	t.eq(int(game.stats.get("hours_done", 0)), 9, "9 часов отработано")
+	t.eq(str(game.phase), "results", "9-й час завершает забег")
+	t.ok(game.meta_unlocks.has("complete_run"), "complete_run выдан на 9-м часе")
+	t.ok(game.feature_unlocked("minigame_advanced"), "после 9 часов minigame_advanced открыт")
+	t.ok(game.run_meta_awards.has("complete_run"), "run_meta_awards: complete_run за текущий забег")
+	t.eq(game.run_meta_awards.size(), 3, "run_meta_awards: все 3 награды, без дублей")
+	t.ok(game.run_meta_awards.has("survive_hour_3") and game.run_meta_awards.has("survive_hour_5"),
+		"run_meta_awards хранит все награды забега")
+
+	# Идемпотентность: повторный вызов ничего не дублирует.
+	var size_before: int = game.meta_unlocks.size()
+	var again: Array = game.award_meta_for_run(9)
+	t.eq(again.size(), 0, "повторный award_meta_for_run(9) ничего не выдаёт")
+	t.eq(game.meta_unlocks.size(), size_before, "meta_unlocks не растёт при повторе")
+	t.ok(again.is_empty(), "awarded пуст при повторе")
+
+	# Мета переживает reset_run и start_new_run.
+	game.reset_run()
+	t.ok(game.run_meta_awards.is_empty(), "reset_run очищает run_meta_awards")
+	t.ok(game.feature_unlocked("search"), "reset_run: search остаётся открыт")
+	t.ok(game.feature_unlocked("shield"), "reset_run: shield остаётся открыт")
+	t.ok(game.feature_unlocked("minigame_advanced"), "reset_run: minigame_advanced остаётся открыт")
+	game.start_new_run(12)
+	t.eq(int(game.stats.get("hours_done", 0)), 0, "новый забег: часы сброшены")
+	t.ok(game.run_meta_awards.is_empty(), "start_new_run очищает run_meta_awards")
+	t.ok(game.feature_unlocked("search"), "start_new_run: search остаётся открыт")
+	t.ok(game.feature_unlocked("shield"), "start_new_run: shield остаётся открыт")
+	t.ok(game.feature_unlocked("minigame_advanced"), "start_new_run: minigame_advanced остаётся открыт")
+	game.free()
+
+
+func _has_unlock_toast(toasts: Array) -> bool:
+	for text in toasts:
+		if str(text).contains("Открыто"):
+			return true
+	return false

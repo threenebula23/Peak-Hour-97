@@ -242,6 +242,13 @@ func _test_full_run() -> void:
 	_ok(int(result.get("best", 0)) >= int(result.get("score", 0)), "best >= score")
 	_ok(not _last_run.is_empty(), "run_finished пришёл с данными")
 	_eq(int(_last_run.get("score", -1)), int(result.get("score", 0)), "сигнал = run_result()")
+	# Награды выданы по ходу часов, но итоговый экран должен их показать.
+	var unlocked: Array = result.get("unlocked", [])
+	_ok(unlocked.has("complete_run"), "unlocked: complete_run на победе")
+	_ok(unlocked.has("survive_hour_3") and unlocked.has("survive_hour_5"),
+		"unlocked: все награды текущего забега")
+	_eq(unlocked.size(), 3, "unlocked без дублей после победы")
+	_eq((_last_run.get("unlocked", []) as Array).size(), 3, "unlocked в сигнале run_finished")
 
 
 func _test_save_load() -> void:
