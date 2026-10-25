@@ -25,6 +25,12 @@ var toast_layer: ToastLayer
 
 var tree: TreePanel
 var grid: FileGrid
+## Маскот-туториал (scripts/ui/tutorial_mascot.gd).
+var mascot: TutorialMascot = null
+## Кнопка «МАГАЗИН» в строке меню: видна только в подготовке и после открытия.
+var _shop_btn: Button90 = null
+## Кнопка «НАЧАТЬ ЧАС»: акцентная и только в подготовке.
+var _start_btn: Button90 = null
 
 var packets: Array[PacketCard] = []
 var requests: Array[RequestCard] = []
@@ -57,12 +63,20 @@ var _modal_game: Control = null
 
 ## Туториал первого часа показывается один раз за запуск.
 var _tutorial_shown := false
-const TUTORIAL_TOASTS := [
-	"ПЕРЕТАЩИ ПАКЕТ В ПАПКУ",
-	"СОБЕРИ ФАЙЛЫ В ЗАПРОСЕ",
-	"TCP ТРЕБУЕТ СОЕДИНЕНИЯ",
+var _tutorial_intro_shown := false
+var _tutorial_after_shown := false
+## Шаги первого часа: текст, номер шага и задержка от старта часа.
+const TUTORIAL_STEPS := [
+	{"text": "Перетащи пакет в папку", "step": 1, "delay": 2.0},
+	{"text": "Собери файлы в запрос", "step": 2, "delay": 20.0},
+	{"text": "TCP: нажми Соединиться и попади три раза", "step": 3, "delay": 40.0},
 ]
-const TUTORIAL_DELAYS := [1.0, 8.0, 16.0]
+const TUTORIAL_STEP_SECONDS := 7.0
+
+## --- Автообновление подготовки по сигналам FileRegistry -------------------
+## Реестр, к которому подключены сигналы (меняется после load/new_run).
+var _bound_registry = null
+var _registry_refresh_queued := false
 ## Последние применённые настройки: Game.start_new_run очищает stats,
 ## поэтому кэшируем их здесь и возвращаем в stats после нового забега.
 var _settings_cache: Dictionary = {}
@@ -96,8 +110,11 @@ func _ready() -> void:
 	controller.phase_changed.connect(_on_phase)
 	_build_modals()
 	_apply_saved_settings()
+	_init_mascot()
+	_bind_registry_signals()
 	main_menu.set_has_save(controller.has_save())
 	main_menu.visible = true
+	_update_shop_visibility()
 	if _demo_requested():
 		call_deferred("_start_demo")
 
@@ -197,6 +214,8 @@ func _resume_game() -> void:
 func _open_settings() -> void:
 	if settings_modal == null:
 		return
+	if mascot != null:
+		mascot.hide_message()
 	var calm := true
 	if _backdrop != null:
 		calm = not _backdrop.visible
@@ -297,10 +316,8 @@ func _build_modals() -> void:
 	main_menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	main_menu.new_run.connect(_start_new_run)
 	main_menu.continue_run.connect(_continue_run)
-	main_menu.settings.connect(func() -> void:
-		_toast("НАСТРОЙКИ — В РАЗРАБОТКЕ", "info"))
-	main_menu.about.connect(func() -> void:
-		_toast("PEAK HOUR 97 · ВЕРСИЯ 0.1.0", "info"))
+	main_menu.settings.connect(_open_settings)
+	main_menu.about.connect(_show_about)
 	main_menu.visible = true
 
 	shop_modal = ShopModal.new()
@@ -369,6 +386,10 @@ func _start_new_run() -> void:
 		return
 	_hour_ui_shown = false
 	_tutorial_shown = false
+	_tutorial_intro_shown = false
+	_tutorial_after_shown = false
+	if mascot != null:
+		mascot.hide_message()
 	if hour_result_modal != null:
 		hour_result_modal.visible = false
 	if run_result_modal != null:
@@ -377,6 +398,8 @@ func _start_new_run() -> void:
 	# new_run сбрасывает stats — возвращаем настройки, чтобы они жили между забегами.
 	if not _settings_cache.is_empty() and Game.stats != null:
 		Game.stats["settings"] = _settings_cache.duplicate(true)
+	# Game.start_new_run создаёт новый FileRegistry — переподключаем сигналы.
+	_bind_registry_signals()
 	main_menu.visible = false
 	_refresh_prep()
 
@@ -435,6 +458,8 @@ func _continue_run() -> void:
 	if not controller.continue_run():
 		_toast("СОХРАНЕНИЕ НЕ НАЙДЕНО", "warn")
 		return
+	# load_game восстанавливает реестр — сигналы старого больше не нужны.
+	_bind_registry_signals()
 	_apply_saved_settings()
 	main_menu.visible = false
 	_refresh_prep()
@@ -447,8 +472,7 @@ func _refresh_prep() -> void:
 	var d: Dictionary = controller.prep_data()
 	var sections: Array = d.get("sections", [])
 	tree.set_data(sections)
-	tree_window.set_title("ДИСКИ", "%d СЕКЦИЙ · %d ПАПОК" % [sections.size(),
-		_count_folders(sections)])
+	tree_window.set_title("ДИСКИ", "%d ПАПОК" % _count_folders(sections))
 
 	var folder_id := ""
 	var folder_name := ""
@@ -467,10 +491,14 @@ func _refresh_prep() -> void:
 		_current_files = []
 		grid.set_files([])
 		files_window.set_title("ФАЙЛЫ · ПУСТО", "0 ОБЪЕКТОВ")
+		if workspace != null:
+			workspace.title_right = "0 ОБЪЕКТОВ"
 	else:
 		tree.select_folder(folder_id)
 		_show_folder(folder_id, folder_name, section_id, d)
 	_update_status(d)
+	_update_shop_visibility()
+	_maybe_show_prep_tutorial()
 
 
 func _count_folders(sections: Array) -> int:
@@ -492,6 +520,169 @@ func _show_folder(folder_id: String, folder_name: String, section_id: String, d:
 	var files: Array = (d.get("files", {}) as Dictionary).get(folder_id, [])
 	_current_files = files.duplicate()
 	_apply_file_filter()
+
+
+# --------------------------------------------------------------------------
+# Маскот-туториал (БАЙТ)
+# --------------------------------------------------------------------------
+
+func _init_mascot() -> void:
+	mascot = TutorialMascot.new()
+	mascot.name = "TutorialMascot"
+	# Компактный БАЙТ: 64 px робот + облачко 210 px, в свободном низу сетки.
+	mascot.bubble_width = 210.0
+	mascot.set_robot_scale(0.67)
+	add_child(mascot)
+	mascot.position = Vector2(548, 492)
+	mascot.visible = false
+	# Маскот живёт под модалками, но над рабочим столом.
+	if modal_root != null:
+		move_child(mascot, modal_root.get_index())
+
+
+## В headless маскот не показываем: он не должен влиять на тесты.
+func _tutorial_enabled() -> bool:
+	return mascot != null and DisplayServer.get_name() != "headless"
+
+
+func _maybe_show_prep_tutorial() -> void:
+	if not _tutorial_enabled() or controller == null:
+		return
+	if controller.phase != GAME_CONTROLLER.PHASE_PREP:
+		return
+	if not _tutorial_intro_shown:
+		_tutorial_intro_shown = true
+		mascot.set_step(0)
+		mascot.show_message("Привет, я БАЙТ. Час пик начинается с приёма пакетов.", 8.0)
+		return
+	var hours_done := int(Game.stats.get("hours_done", 0)) if Game.stats != null else 0
+	if _tutorial_after_shown or Game.hour <= 1 or hours_done <= 0:
+		return
+	_tutorial_after_shown = true
+	mascot.set_step(0)
+	if Game.feature_unlocked("shop"):
+		mascot.show_message("Магазин открылся — загляни в «МАГАЗИН» в строке меню.", 7.0)
+	else:
+		mascot.show_message("Дальше будет сложнее. Держи SLA выше нуля.", 7.0)
+
+
+## Шаг туториала часа 1; вызывается по таймеру и не блокирует игру.
+func _show_tutorial_step(index: int) -> void:
+	if not _tutorial_enabled() or controller == null:
+		return
+	if controller.phase != GAME_CONTROLLER.PHASE_HOUR or Game.hour != 1:
+		return
+	if index < 0 or index >= TUTORIAL_STEPS.size():
+		return
+	var step: Dictionary = TUTORIAL_STEPS[index]
+	mascot.set_step(int(step.get("step", index + 1)))
+	mascot.show_message(str(step.get("text", "")), TUTORIAL_STEP_SECONDS)
+
+
+# --------------------------------------------------------------------------
+# Автообновление подготовки по сигналам FileRegistry
+# --------------------------------------------------------------------------
+
+## Переподключить registry_changed к актуальному реестру Game.
+func _bind_registry_signals() -> void:
+	var reg = Game.registry
+	if reg == _bound_registry:
+		return
+	if _bound_registry != null and is_instance_valid(_bound_registry):
+		if _bound_registry.has_signal("registry_changed") \
+				and _bound_registry.registry_changed.is_connected(_on_registry_changed):
+			_bound_registry.registry_changed.disconnect(_on_registry_changed)
+	_bound_registry = reg
+	if reg != null and reg.has_signal("registry_changed") \
+			and not reg.registry_changed.is_connected(_on_registry_changed):
+		reg.registry_changed.connect(_on_registry_changed)
+
+
+func _on_registry_changed() -> void:
+	# Сигнал приходит пачками (file + folder + registry) — склеиваем в один кадр.
+	if _registry_refresh_queued:
+		return
+	_registry_refresh_queued = true
+	call_deferred("_apply_registry_refresh")
+
+
+func _apply_registry_refresh() -> void:
+	_registry_refresh_queued = false
+	if controller == null or not is_inside_tree():
+		return
+	var d: Dictionary = controller.prep_data()
+	var folder_id := str(grid.folder_id) if grid != null else ""
+	var files_map: Dictionary = d.get("files", {})
+	if not folder_id.is_empty() and files_map.has(folder_id):
+		_refresh_tree_counts(d)
+		_refresh_current_folder(d, folder_id)
+	elif controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		# Текущей папки больше нет — безопасно перерисовать подготовку.
+		_refresh_prep()
+	else:
+		_refresh_tree_counts(d)
+
+
+## Обновить только сетку текущей папки, не пересоздавая дерево.
+func _refresh_current_folder(d: Dictionary, folder_id: String) -> void:
+	var files_map: Dictionary = d.get("files", {})
+	_current_files = (files_map.get(folder_id, []) as Array).duplicate()
+	var meta := _folder_meta(d, folder_id)
+	if not meta.is_empty():
+		var folder_name := str(meta.get("name", ""))
+		var section_id := str(meta.get("section", ""))
+		var letter := section_id.left(1).to_upper()
+		if letter.is_empty():
+			letter = "C"
+		grid.set_folder(folder_id, folder_name.to_upper(),
+			"%s: \\ %s" % [letter, folder_name.to_upper()])
+	# set_files заново строит FileCard с актуальным state (attached/locked/…).
+	_apply_file_filter()
+
+
+func _refresh_tree_counts(d: Dictionary) -> void:
+	if tree == null:
+		return
+	var sections: Array = d.get("sections", [])
+	var known: Dictionary = {}
+	for sec in sections:
+		for fol in sec.get("folders", []):
+			known[str(fol.get("id", ""))] = int(fol.get("count", 0))
+	var current: Dictionary = {}
+	for e in tree.get("_rows"):
+		var row = e["row"]
+		if row != null and not row.is_section:
+			current[str(row.folder_id)] = true
+	var same := known.size() == current.size()
+	if same:
+		for id in known.keys():
+			if not current.has(id):
+				same = false
+				break
+	if not same:
+		var selected := str(grid.folder_id) if grid != null else ""
+		tree.set_data(sections)
+		if known.has(selected):
+			tree.select_folder(selected)
+	for id in known.keys():
+		if same:
+			tree.update_count(str(id), int(known[id]))
+	if tree_window != null:
+		tree_window.set_title("ДИСКИ", "%d ПАПОК" % _count_folders(sections))
+
+
+# --------------------------------------------------------------------------
+# Магазин: доступен только в подготовке и после открытия (час 2)
+# --------------------------------------------------------------------------
+
+func _update_shop_visibility() -> void:
+	if _shop_btn == null:
+		return
+	var in_prep: bool = controller != null \
+		and controller.phase == GAME_CONTROLLER.PHASE_PREP
+	_shop_btn.visible = in_prep and Game.feature_unlocked("shop")
+	if _start_btn != null:
+		_start_btn.visible = in_prep
 
 
 # --------------------------------------------------------------------------
@@ -532,6 +723,8 @@ func _update_files_title() -> void:
 		else:
 			hint = "%d ИЗ %d ОБЪЕКТОВ" % [shown, total]
 	files_window.set_title("ФАЙЛЫ · %s" % grid.folder_name, hint)
+	if workspace != null:
+		workspace.title_right = "%d ОБЪЕКТОВ" % total
 
 
 ## Фильтр текущей папки по подстроке имени (регистронезависимо).
@@ -571,8 +764,10 @@ func _update_status(d: Dictionary) -> void:
 	var sla := int(round(float(d.get("sla", 0.0))))
 	var hour := int(d.get("hour", 1))
 	var tcp_max := _tcp_max(d.get("upgrades", {}))
+	var max_sla := maxi(1, int(Game.MAX_SLA))
 	status_bar.set_metric("money", "$ %d" % int(d.get("money", 0)))
-	status_bar.set_metric("sla", "%d / 200" % sla, clampf(float(sla) / 200.0, 0.0, 1.0))
+	status_bar.set_metric("sla", "%d / %d" % [sla, max_sla],
+		clampf(float(sla) / float(max_sla), 0.0, 1.0))
 	status_bar.set_metric("hour", "ЧАС %d" % hour, float(hour - 1) / 9.0)
 	status_bar.set_metric("tcp", "0 / %d" % tcp_max, 0.0)
 	status_bar.set_metric("buffer", "0 / 4", 0.0)
@@ -608,8 +803,8 @@ func _clear_hour_panels() -> void:
 	slot_cells.clear()
 	if slot_count_label != null:
 		slot_count_label.text = "0/%d" % _tcp_max(Game.upgrades)
-	receive_window.set_title(_padded_title("ПРИЁМ"), "0 ПАКЕТОВ · БУФЕР 0/4")
-	send_window.set_title(_padded_title("ОТПРАВКА"), "0 ЗАПРОСОВ · КАНАЛ 0%")
+	receive_window.set_title(_padded_title("ПРИЁМ"), "0 ПАКЕТОВ")
+	send_window.set_title(_padded_title("ОТПРАВКА"), "0 ЗАПРОСОВ")
 	_update_shield_visuals({})
 
 
@@ -628,14 +823,19 @@ func _on_phase(phase: StringName) -> void:
 		GAME_CONTROLLER.PHASE_HOUR_RESULT:
 			# Час закончен: _process больше не тикает (phase != hour).
 			_hour_ui_shown = false
+			if mascot != null:
+				mascot.hide_message()
 			_open_hour_result()
 		GAME_CONTROLLER.PHASE_RUN_RESULT:
 			_hour_ui_shown = false
+			if mascot != null:
+				mascot.hide_message()
 			if hour_result_modal != null:
 				hour_result_modal.visible = false
 			_show_run_result()
 		_:
 			pass
+	_update_shop_visibility()
 
 
 ## Настоящий экран часа: карточки пакетов/запросов, слоты и статус.
@@ -644,28 +844,26 @@ func _show_hour() -> void:
 		_refresh_hour()
 		return
 	_hour_ui_shown = true
+	if mascot != null:
+		mascot.hide_message()
 	_clear_hour_panels()
 	_connect_hour_signals()
 	_refresh_hour()
+	_update_shop_visibility()
 	_toast("ЧАС %d НАЧАЛСЯ" % Game.hour, "success")
 
 
-## Подсказки первого часа: три тоста с задержкой, один раз за запуск.
+## Подсказки первого часа: три шага маскота с задержкой, один раз за запуск.
 func _maybe_show_tutorial() -> void:
-	if _tutorial_shown:
+	if _tutorial_shown or not _tutorial_enabled():
 		return
 	if Game.hour != 1:
 		return
 	_tutorial_shown = true
-	for i in TUTORIAL_TOASTS.size():
-		var timer := get_tree().create_timer(float(TUTORIAL_DELAYS[i]))
-		timer.timeout.connect(_tutorial_toast.bind(str(TUTORIAL_TOASTS[i])))
-
-
-func _tutorial_toast(text: String) -> void:
-	if controller == null or controller.phase != GAME_CONTROLLER.PHASE_HOUR:
-		return
-	_toast(text, "warn")
+	for i in TUTORIAL_STEPS.size():
+		var step: Dictionary = TUTORIAL_STEPS[i]
+		var timer := get_tree().create_timer(float(step.get("delay", 0.0)))
+		timer.timeout.connect(_show_tutorial_step.bind(i))
 
 
 ## Сигналы контроллера, которые нужны UI часа (подключаются один раз).
@@ -772,12 +970,9 @@ func _refresh_hour() -> void:
 	_refresh_hour_titles(packet_data, request_data, status)
 
 
-func _refresh_hour_titles(packets_data: Array, requests_data: Array, status: Dictionary) -> void:
-	receive_window.set_title(_padded_title("ПРИЁМ"), "%d ПАКЕТОВ · БУФЕР %d/%d" % [
-		packets_data.size(), int(status.get("buffer_used", 0)),
-		int(status.get("buffer_max", 0))])
-	send_window.set_title(_padded_title("ОТПРАВКА"), "%d ЗАПРОСОВ · КАНАЛ %d%%" % [
-		requests_data.size(), int(round(float(status.get("channel_percent", 0.0))))])
+func _refresh_hour_titles(packets_data: Array, requests_data: Array, _status: Dictionary) -> void:
+	receive_window.set_title(_padded_title("ПРИЁМ"), "%d ПАКЕТОВ" % packets_data.size())
+	send_window.set_title(_padded_title("ОТПРАВКА"), "%d ЗАПРОСОВ" % requests_data.size())
 
 
 # --------------------------------------------------------------------------
@@ -1158,7 +1353,9 @@ func _refresh_hour_status(status: Dictionary) -> void:
 		clampf(float(used) / float(max_slots), 0.0, 1.0))
 	status_bar.set_metric("channel", "%d%%" % int(round(percent)),
 		clampf(percent / 100.0, 0.0, 1.0))
-	status_bar.set_metric("sla", "%d / 200" % sla, clampf(float(sla) / 200.0, 0.0, 1.0))
+	var max_sla := maxi(1, int(Game.MAX_SLA))
+	status_bar.set_metric("sla", "%d / %d" % [sla, max_sla],
+		clampf(float(sla) / float(max_sla), 0.0, 1.0))
 	status_bar.set_metric("buffer", "%d / %d" % [buffer_used, buffer_max],
 		clampf(float(buffer_used) / float(buffer_max), 0.0, 1.0))
 	status_bar.set_metric("money", "$ %d" % int(status.get("money", 0)))
@@ -1193,7 +1390,7 @@ func _open_hour_result() -> void:
 		"missed": int(report.get("attacks_failed", 0)),
 		"sla_delta": int(round(float(report.get("sla_delta", 0.0)))),
 		"sla": int(round(sla)),
-		"sla_max": 200,
+		"sla_max": maxi(1, int(Game.MAX_SLA)),
 	})
 
 
@@ -1227,8 +1424,12 @@ func _show_run_result() -> void:
 		"hours_total": GAME_CONTROLLER.HOURS_PER_RUN,
 		"money": int(r.get("money", 0)),
 		"sla": int(round(float(r.get("sla", 0.0)))),
-		"sla_max": 200,
+		"sla_max": maxi(1, int(Game.MAX_SLA)),
+		"unlocked": (r.get("unlocked", []) as Array).duplicate(),
 	})
+	var unlocked: Array = r.get("unlocked", [])
+	if not unlocked.is_empty():
+		_toast("ОТКРЫТО: %s" % ", ".join(unlocked), "success")
 
 
 func _run_reason_text(reason: String) -> String:
@@ -1277,7 +1478,7 @@ func _build() -> void:
 	title_bar.title = "PEAK HOUR 97"
 	title_bar.title_logo = true
 	title_bar.icon_kind = "app"
-	title_bar.title_hint = "ДИСПЕТЧЕР ФАЙЛОВОГО ОБМЕНА · УЗЕЛ 7 · СМЕНА 3"
+	title_bar.title_hint = "УЗЕЛ 7 · СМЕНА 3"
 	title_bar.accent_line = true
 	title_bar.title_only = true
 	title_bar.close_enabled = false
@@ -1299,11 +1500,9 @@ func _build() -> void:
 	var menu_defs := [
 		{"caption": "ФАЙЛ", "x": 6.0, "w": 48.0, "items": ["Новая папка", "Открыть папку", "Сохранить отчёт",
 			"-", "Параметры узла", "-", "Выход"]},
-		{"caption": "ПРАВКА", "x": 54.0, "w": 62.0, "items": ["Отменить", "Повторить", "-", "Вырезать",
-			"Копировать", "Вставить", "-", "Выделить все"]},
-		{"caption": "ВИД", "x": 118.0, "w": 44.0, "items": ["Дерево папок", "Список файлов", "Строка состояния",
+		{"caption": "ВИД", "x": 60.0, "w": 44.0, "items": ["Дерево папок", "Список файлов", "Строка состояния",
 			"-", "Обновить"]},
-		{"caption": "СПРАВКА", "x": 164.0, "w": 72.0, "items": ["Руководство оператора", "Горячие клавиши",
+		{"caption": "СПРАВКА", "x": 110.0, "w": 72.0, "items": ["Руководство оператора", "Горячие клавиши",
 			"-", "О программе"]},
 	]
 	for d in menu_defs:
@@ -1336,6 +1535,7 @@ func _build() -> void:
 	menu_bar.add_child(date_lbl)
 	date_lbl.position = Vector2(852, 1)
 	date_lbl.size = Vector2(140, 18)
+	date_lbl.visible = false
 
 	var clock := Label.new()
 	clock.name = "Clock"
@@ -1353,10 +1553,12 @@ func _build() -> void:
 	var shop := Button90.new()
 	shop.name = "ShopButton"
 	shop.caption = "МАГАЗИН"
+	shop.flat_style = true
 	shop.size = Vector2(82, 18)
 	menu_bar.add_child(shop)
 	shop.position = Vector2(1078, 1)
 	shop.pressed.connect(_on_shop)
+	_shop_btn = shop
 
 	var start := Button90.new()
 	start.name = "StartHourButton"
@@ -1366,20 +1568,21 @@ func _build() -> void:
 	menu_bar.add_child(start)
 	start.position = Vector2(1164, 1)
 	start.pressed.connect(_on_start_hour)
+	_start_btn = start
 
 	# рабочая область (8,48,840,548) — утопленная группа
 	workspace = Panel90.new()
 	workspace.name = "Workspace"
 	workspace.kind = Panel90.Kind.GROUP
-	workspace.title = "РАБОЧАЯ ОБЛАСТЬ · ДИСК C:"
-	workspace.title_right = "СВОБОДНО 8,5 МБ · 12 ОБЪЕКТОВ"
+	workspace.title = "ДИСК C:"
+	workspace.title_right = "0 ОБЪЕКТОВ"
 	_place(self, workspace, Rect2(8, 48, 840, 548))
 
 	# окно дерева (16,72,240,516)
 	tree_window = WindowFrame.new()
 	tree_window.name = "TreeWindow"
 	tree_window.title = "ДИСКИ"
-	tree_window.title_hint = "3 СЕКЦИИ · 6 ПАПОК"
+	tree_window.title_hint = "6 ПАПОК"
 	tree_window.icon_kind = "tree"
 	_place(workspace, tree_window, Rect2(8, 24, 240, 516))
 
@@ -1405,7 +1608,7 @@ func _build() -> void:
 	receive_window = WindowFrame.new()
 	receive_window.name = "ReceiveWindow"
 	receive_window.title = _padded_title("ПРИЁМ")
-	receive_window.title_hint = "5 ПАКЕТОВ · БУФЕР 3/4"
+	receive_window.title_hint = "5 ПАКЕТОВ"
 	receive_window.icon_kind = "inbox"
 	_place(self, receive_window, Rect2(856, 48, 416, 264))
 	_build_receive_scroll()
@@ -1414,7 +1617,7 @@ func _build() -> void:
 	send_window = WindowFrame.new()
 	send_window.name = "SendWindow"
 	send_window.title = _padded_title("ОТПРАВКА")
-	send_window.title_hint = "4 ЗАПРОСА · КАНАЛ 45%"
+	send_window.title_hint = "4 ЗАПРОСА"
 	send_window.icon_kind = "outbox"
 	_place(self, send_window, Rect2(856, 320, 416, 276))
 	_build_shields()
@@ -1602,7 +1805,7 @@ func _apply_mock() -> void:
 
 	grid.set_folder("inbox", "ПРИЁМ", "C: \\ ПРИЁМ")
 	grid.set_files(_files_for("inbox"))
-	files_window.set_title("ФАЙЛЫ · ПРИЁМ", "12 ОБЪЕКТОВ · 1,8 МБ")
+	files_window.set_title("ФАЙЛЫ · ПРИЁМ", "12 ОБЪЕКТОВ")
 
 	var pk := _mock_packets()
 	var y := 1.0
@@ -2171,13 +2374,61 @@ func _new_folder_in(folder_id: String) -> void:
 	if Game.registry == null:
 		_toast("ХРАНИЛИЩЕ НЕДОСТУПНО", "error")
 		return
-	var folder = Game.registry.create_folder(section_id, "Новая")
+	if _section_folder_count(section_id) >= 12:
+		_toast("В СЕКЦИИ УЖЕ 12 ПАПОК", "warn")
+		return
+	# Имя генерируется из пула Data и делается уникальным внутри секции.
+	var folder_name := _unique_folder_name(section_id, Data.folder_name())
+	var folder = Game.registry.create_folder(section_id, folder_name)
 	if folder == null:
 		_toast("НЕ УДАЛОСЬ СОЗДАТЬ ПАПКУ", "error")
 		return
+	if controller != null:
+		controller.save()
 	_refresh_prep()
 	_on_folder_selected(str(folder.id))
 	_toast("СОЗДАНА ПАПКА «%s»" % str(folder.name), "success")
+
+
+## Уникальное имя в секции: «Имя», «Имя 2», «Имя 3», … с обрезкой до 16.
+func _unique_folder_name(section_id: String, base: String) -> String:
+	var clean := base.strip_edges()
+	if clean.is_empty():
+		clean = "Разное"
+	if clean.length() > 16:
+		clean = clean.substr(0, 16)
+	if not _folder_name_taken(section_id, clean):
+		return clean
+	var index := 2
+	while index < 100:
+		var suffix := " %d" % index
+		var stem := clean.substr(0, maxi(1, 16 - suffix.length()))
+		var candidate := (stem + suffix).strip_edges()
+		if not _folder_name_taken(section_id, candidate):
+			return candidate
+		index += 1
+	return clean.substr(0, 16)
+
+
+func _folder_name_taken(section_id: String, candidate: String) -> bool:
+	if Game.registry == null:
+		return false
+	var probe := candidate.to_lower()
+	for folder in Game.registry.folders.values():
+		if str(folder.section) == section_id \
+				and str(folder.name).to_lower() == probe:
+			return true
+	return false
+
+
+func _section_folder_count(section_id: String) -> int:
+	if Game.registry == null:
+		return 0
+	var n := 0
+	for folder in Game.registry.folders.values():
+		if str(folder.section) == section_id:
+			n += 1
+	return n
 
 
 func _section_of_folder(folder_id: String) -> String:
@@ -2196,6 +2447,15 @@ func _section_of_folder(folder_id: String) -> String:
 func _on_shop() -> void:
 	if shop_modal == null:
 		return
+	# Магазин доступен только в подготовке и после открытия (час 2).
+	if controller == null or controller.phase != GAME_CONTROLLER.PHASE_PREP:
+		_toast("МАГАЗИН ДОСТУПЕН В ПОДГОТОВКЕ", "warn")
+		return
+	if not Game.feature_unlocked("shop"):
+		_toast("МАГАЗИН ОТКРОЕТСЯ ПОСЛЕ ПЕРВОГО ЧАСА", "warn")
+		return
+	if mascot != null:
+		mascot.hide_message()
 	shop_modal.open(Game.money, Game.upgrades)
 
 
@@ -2211,6 +2471,9 @@ func _on_shop_buy(id: String) -> void:
 func _on_start_hour() -> void:
 	if controller == null:
 		return
+	if controller.phase != GAME_CONTROLLER.PHASE_PREP:
+		_toast("ЧАС УЖЕ ИДЁТ", "warn")
+		return
 	if not controller.start_hour():
 		_toast("ЧАС НЕ МОЖЕТ НАЧАТЬСЯ", "warn")
 		return
@@ -2221,12 +2484,6 @@ func _on_start_hour() -> void:
 func _toast(text: String, kind: String = "info") -> void:
 	if toast_layer != null:
 		toast_layer.toast(text, kind)
-
-
-func _status_hint() -> void:
-	var t := get_tree().create_timer(0.8)
-	t.timeout.connect(func() -> void:
-		_toast("УЗЕЛ 7 НА СВЯЗИ · БУФЕР 3/4 · КАНАЛ 45%", "info"))
 
 
 # --------------------------------------------------------------------------

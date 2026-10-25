@@ -37,6 +37,7 @@ func _init() -> void:
 
 	_main._start_new_run()
 	await process_frame
+	_test_shop_and_meta()
 	_main._on_start_hour()
 	await process_frame
 	_eq(_controller.phase, &"hour", "фаза контроллера — hour")
@@ -52,6 +53,45 @@ func _init() -> void:
 	print("")
 	print("Проверок: %d, провалов: %d" % [_checks, _fails])
 	_finish()
+
+
+## Магазин: закрыт до часа 2; позиции search/shield — только по мета-наградам.
+func _test_shop_and_meta() -> void:
+	_eq(int(_game.hour), 1, "подготовка первого часа")
+	_ok(not _game.feature_unlocked("shop"), "магазин закрыт на часе 1")
+	_main._on_shop()
+	_ok(not _main.shop_modal.visible, "клик по МАГАЗИНУ на часе 1 не открывает окно")
+
+	# Мета-награда ещё не получена — поиск закрыт и отсутствует в каталоге.
+	_ok(not _game.feature_unlocked("search"), "поиск закрыт до meta survive_hour_3")
+	_ok(not _shop_has("shop_search"), "shop_search отсутствует в доступном каталоге")
+	_ok(not _shop_has("shop_shield"), "shop_shield отсутствует в доступном каталоге")
+	_ok(_shop_has("shop_sla"), "shop_sla доступен всегда")
+
+	# Открываем час 2 → магазин доступен, мета-награда открывает поиск.
+	_game.hour = 2
+	_main._update_shop_visibility()
+	_ok(_main._shop_btn.visible, "на часе 2 кнопка МАГАЗИН видна")
+	_main._on_shop()
+	_ok(_main.shop_modal.visible, "магазин открывается в подготовке часа 2")
+	_main.shop_modal.close()
+	_ok(not _main.shop_modal.visible, "магазин закрывается по X")
+	_ok(_game.feature_unlocked("shop"), "магазин открыт прогрессией часа 2")
+
+	_game.meta_unlocks["survive_hour_3"] = true
+	_ok(_game.feature_unlocked("search"), "meta survive_hour_3 открывает поиск")
+	_ok(_shop_has("shop_search"), "shop_search появился в каталоге после meta")
+	_game.hour = 1
+	_main._update_shop_visibility()
+
+
+func _shop_has(id: String) -> bool:
+	if _controller == null or _controller.shop == null:
+		return false
+	for item in _controller.shop.available_items():
+		if str(item.get("id", "")) == id:
+			return true
+	return false
 
 
 func _test_receive_scroll() -> void:

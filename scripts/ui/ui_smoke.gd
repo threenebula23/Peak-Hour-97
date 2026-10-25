@@ -193,7 +193,10 @@ func _check_prep() -> void:
 		str(sb.get_metric("channel").get("value", "")),
 		str(sb.get_metric("hour").get("value", ""))])
 	_check(money.contains("$ 150"), "статус: счёт «$ 150» (сейчас «%s»)" % money)
-	_check(sla.contains("200 / 200"), "статус: SLA «200 / 200» (сейчас «%s»)" % sla)
+	_check(sla.contains("128 / 200"), "статус: SLA «128 / 200» (сейчас «%s»)" % sla)
+	var shop_btn = _main.get("_shop_btn")
+	_check(shop_btn != null and not bool(shop_btn.visible),
+		"в первом приготовлении кнопка МАГАЗИН скрыта")
 	_check(str(sb.get_metric("tcp").get("value", "")).begins_with("0 /"),
 		"статус: TCP «0 / N»")
 	_check(str(sb.get_metric("buffer").get("value", "")).begins_with("0 /"),
@@ -239,6 +242,9 @@ func _check_hour() -> void:
 	_check(hour.contains("ЧАС"), "статус[час]: подпись «ЧАС N» (сейчас «%s»)" % hour)
 	_check(money.contains("$"), "статус[час]: счёт в долларах")
 	_check(sla.contains("/ 200"), "статус[час]: SLA из 200")
+	var shop_btn = _main.get("_shop_btn")
+	_check(shop_btn != null and not bool(shop_btn.visible),
+		"во время часа кнопка МАГАЗИН скрыта")
 
 	var recv: WindowFrame = _main.get_node("ReceiveWindow")
 	var send: WindowFrame = _main.get_node("SendWindow")

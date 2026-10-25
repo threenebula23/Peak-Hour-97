@@ -61,6 +61,7 @@ func _init() -> void:
 	await process_frame
 	_eq(_controller.phase, &"hour", "фаза контроллера — hour")
 
+	_test_connection_fail()
 	_test_tcp_packet()
 	_test_udp_packet()
 	_test_request_send()
@@ -77,6 +78,46 @@ func _init() -> void:
 
 
 # --- сценарии ---------------------------------------------------------------
+
+## Провал соединения закрывает модалку; автоповтора нет — нужно нажать снова.
+func _test_connection_fail() -> void:
+	var pid: String = _director.spawn_packet_now("text", "tcp")
+	_ok(not pid.is_empty(), "пакет для провала соединения заспавнен")
+	if pid.is_empty():
+		return
+	_main._on_packet_connect(pid)
+	var conn = _find_modal(CONNECTION_SCRIPT)
+	_ok(conn != null, "модалка соединения открыта")
+	_eq(int(_director.slots.used_count()), 1, "слот занят до провала")
+
+	# Модалка сама сообщает о провале: директор освобождает слот, Main удаляет окно.
+	_director._on_connection_finished(false, pid)
+	_main._on_modal_game_finished(false, pid, conn)
+	_eq(str(_director.active_packets[pid].state), "waiting", "пакет снова ждёт")
+	_eq(int(_director.slots.used_count()), 0, "слот освобождён после провала")
+	_ok(_main._modal_game == null, "модалка закрыта после провала")
+	_ok(_find_modal(CONNECTION_SCRIPT) == null, "модалка не висит в дереве")
+
+	# Никакого автоповтора: без нового нажатия соединение не начинается.
+	_main._refresh_hour()
+	_ok(_find_modal(CONNECTION_SCRIPT) == null, "автоповтора соединения нет")
+
+	# Повторное нажатие снова открывает модалку и доводит до успеха.
+	_main._on_packet_connect(pid)
+	var conn2 = _find_modal(CONNECTION_SCRIPT)
+	_ok(conn2 != null, "повторное нажатие открывает соединение снова")
+	if conn2 == null:
+		return
+	_eq(int(_director.slots.used_count()), 1, "слот снова занят")
+	_director._on_connection_finished(true, pid)
+	_main._on_modal_game_finished(true, pid, conn2)
+	_eq(str(_director.active_packets[pid].state), "connected", "повторное соединение успешно")
+	# Убираем пакет из приёма, чтобы не мешал следующим сценариям.
+	if _director.active_packets.has(pid):
+		_director.active_packets.erase(pid)
+		if _director.slots != null:
+			_director.slots.release_by_entity(pid)
+
 
 func _test_tcp_packet() -> void:
 	var pid: String = _director.spawn_packet_now("text", "tcp")

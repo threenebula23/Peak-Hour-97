@@ -49,6 +49,14 @@ func _init() -> void:
 		_finish()
 		return
 
+	# Атаки открываются прогрессией: junk/ddos — час 2, phishing — 3,
+	# ransomware — 4. Ставим час 4, чтобы проверить все виды.
+	_game.hour = 4
+	_ok(_game.feature_unlocked("attack_junk"), "junk-атаки открыты (час 2)")
+	_ok(_game.feature_unlocked("attack_ddos"), "DDoS-атаки открыты (час 2)")
+	_ok(_game.feature_unlocked("attack_phishing"), "phishing-атаки открыты (час 3)")
+	_ok(_game.feature_unlocked("attack_ransomware"), "ransomware-атаки открыты (час 4)")
+
 	_ok(_main._shield_receive != null and _main._shield_send != null, "щиты ПРИЁМ/ОТПРАВКА созданы")
 
 	_folder_id = _first_folder_id()

@@ -395,8 +395,16 @@ func _finish_run(reason: String) -> void:
 	paused = false
 	modal_open = false
 	game.phase = PHASE_RESULTS
+	# Мета-прогресс: награды за число отработанных часов (переживают новый забег).
+	var hours_done := int(game.stats.get("hours_done", 0)) if game.stats is Dictionary else 0
+	var unlocked: Array = []
+	if game.has_method("award_meta_for_run"):
+		unlocked = game.award_meta_for_run(hours_done)
 	last_run_result = _make_run_result(str(reason))
-	# Сохраняем забег вместе с best_score (лежит в stats).
+	last_run_result["unlocked"] = unlocked.duplicate()
+	last_run_result["meta_unlocks"] = (game.meta_unlocks as Dictionary).duplicate(true) \
+		if game.meta_unlocks is Dictionary else {}
+	# Сохраняем забег вместе с best_score (лежит в stats) и мета-открытиями.
 	game.save_game()
 	phase_changed.emit(phase)
 	run_finished.emit(last_run_result)
