@@ -42,8 +42,9 @@
 - UI v2 «Kaleidos», маскот **БАЙТ** и короткий туториал первого часа.
 - Ambient машинного зала: 4 WAV, автозапуск после первого жеста, mute/пауза/
   громкость; генератор `audio/generate_ambient.py`.
-- VHS-эффект только в главном меню (настройки → «ЭКРАН»); игровой UI остаётся
-  чистым, без CRT на весь интерфейс.
+- Процедурный VHS только в главном меню (настройки → «ЭКРАН»): скан-линии,
+  зерно, виньетка и полоса; рисуется кодом, не блокирует ввод, текст резкий.
+  Игровой UI остаётся чистым, без CRT на весь интерфейс.
 - Handjet + Press Start 2P, 18 SFX + фоновый `hum`.
 
 Ограничения:
@@ -143,7 +144,6 @@ peak-hour/
 ├─ data/                      # balance.json, strings_ru.json, names_ru.json
 ├─ art/fonts/                 # Handjet, Press Start 2P + OFL
 ├─ audio/                     # sfx/, music/, amb/, generate_*py
-├─ shaders/                   # vhs.gdshader (только главное меню)
 ├─ tests/                     # headless-наборы
 ├─ docs/                      # GDD, DECISIONS, UI_REFRESH, screenshots
 └─ build/                     # артефакты экспорта (gitignored)

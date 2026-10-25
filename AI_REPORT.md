@@ -23,8 +23,9 @@ MR-ревью — агент **oracle** (`opencode-go/deepseek-v4.1-flash`): dry
 - **UI v2:** Kaleidos, маскот **БАЙТ**, туториал.
 - **Ambient:** 4 WAV (`audio/amb`, PSU/fan/room/seek), генератор
   `generate_ambient.py`, autoload после первого жеста, mute/пауза/громкость.
-- **VHS:** `shaders/vhs.gdshader` + `vhs_overlay.gd`, только главное меню,
-  чекбокс в настройках, HEADLESS без рендера.
+- **VHS:** процедурный `vhs_overlay.gd` (`RefCounted`) в `MainMenu._draw`;
+  скан-линии/зерно/виньетка, без shader/screen texture, ввод не блокирует,
+  текст резкий; только меню, чекбокс в настройках, HEADLESS без рендера.
 - **Баланс/мета:** SLA, 10 апгрейдов, таймеры, канал, мета 3/5/9.
 - **Аудит:** calm-фон, Esc итогов, уничтожение, тосты/fullscreen.
 - **Тесты/доки/звук:** unit/fuzz/интеграция/полный забег; `docs/`;
