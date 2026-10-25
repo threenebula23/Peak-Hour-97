@@ -13,10 +13,10 @@ extends MiniGame
 const GAME_ID := "phishing"
 const TITLE_RU := "ПАСПОРТ"
 
-const ISSUE_RECT := Rect2(142.0, 274.0, 166.0, 30.0)
-const DENY_RECT := Rect2(332.0, 274.0, 166.0, 30.0)
-const FILE_RECT := Rect2(24.0, 62.0, 286.0, 206.0)
-const PASS_RECT := Rect2(330.0, 62.0, 286.0, 206.0)
+const ISSUE_RECT := Rect2(142.0, 262.0, 166.0, 30.0)
+const DENY_RECT := Rect2(332.0, 262.0, 166.0, 30.0)
+const FILE_RECT := Rect2(24.0, 62.0, 286.0, 196.0)
+const PASS_RECT := Rect2(330.0, 62.0, 286.0, 196.0)
 const STAMP_TTL := 0.12
 
 const TIERS := {
@@ -604,5 +604,6 @@ func _draw_footer_hint() -> void:
 	var labels: Array = []
 	for check in checks:
 		labels.append(str(CHECK_LABELS.get(str(check), str(check))))
-	_draw_label("СВЕРЬТЕ: " + " · ".join(labels), Vector2(18.0, 350.0), 10,
-		Theme90.SHADE, 604.0)
+	# Подсказка — в полосе между кнопками (y=292) и футером (y=320).
+	_draw_label(Theme90.fit(Theme90.ui(), "СВЕРЬТЕ: " + " · ".join(labels), 10, 604.0),
+		Vector2(18.0, 298.0), 10, Theme90.SHADE, 604.0)

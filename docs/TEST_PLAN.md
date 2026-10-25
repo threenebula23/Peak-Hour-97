@@ -1,5 +1,9 @@
 # TEST_PLAN — матрица тестов PEAK HOUR
 
+> **Исторический документ v1.** Актуальная матрица и запуск —
+> `scripts/run_all_tests.sh` + README §Тесты; числа v3 — `data/balance.json`,
+> GDD v3.
+
 > Числовые данные — только `data/balance.json` и `docs/DECISIONS.md`.
 > Юнит-Runner — headless-прогон `tests/run_tests.gd`
 > (`godot --headless --path . --script tests/run_tests.gd`).

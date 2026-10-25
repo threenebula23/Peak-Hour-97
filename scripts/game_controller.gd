@@ -38,6 +38,7 @@ const HOURS_PER_RUN := 9
 const FOLDER_CAPACITY := 16
 
 const HOUR_DIRECTOR_SCRIPT := preload("res://scripts/core/hour_director.gd")
+const CONNECTION_GAME_SCRIPT := preload("res://scripts/minigames/connection_game.gd")
 const SHOP_SCRIPT := preload("res://scripts/systems/shop.gd")
 const SAVE_SCRIPT := preload("res://scripts/systems/save_system.gd")
 const ECONOMY := preload("res://scripts/core/economy.gd")
@@ -399,28 +400,38 @@ func _on_hour_toast(text: String) -> void:
 	toast.emit(text)
 
 
-func _on_show_connection(game_node) -> void:
-	modal_open = true
-	show_connection.emit(game_node)
+## HourDirector эмитит трио (request_id, hour, successes): ConnectionGame
+## создаёт контроллер, а Main только монтирует готовую ноду в modal_root.
+func _on_show_connection(request_id: String, hour: int, successes: int) -> void:
+	var zone_level := 0
+	if game != null and game.has_method("level"):
+		# Бонус зоны соединения привязан к уровню лота «Регламент обработки».
+		zone_level = maxi(0, int(game.level("timer_level")))
+	var node = CONNECTION_GAME_SCRIPT.new()
+	node.start(int(hour), int(successes), zone_level, str(request_id))
+	# Через set_modal_open(), иначе HourDirector не узнаёт о модалке и час
+	# продолжает спавнить пакеты/запросы под ней.
+	set_modal_open(true)
+	show_connection.emit(node)
 
 
 func _on_show_minigame(game_node) -> void:
-	modal_open = true
+	set_modal_open(true)
 	show_minigame.emit(game_node)
 
 
 func _on_minigame_closed(req_id: String) -> void:
-	modal_open = false
+	set_modal_open(false)
 	minigame_closed.emit(req_id)
 
 
 func _on_show_attack_minigame(game_node, kind: String) -> void:
-	modal_open = true
+	set_modal_open(true)
 	show_attack_minigame.emit(game_node, kind)
 
 
 func _on_attack_resolved(kind: String, success: bool, tier: int) -> void:
-	modal_open = false
+	set_modal_open(false)
 	attack_resolved.emit(kind, success, tier)
 
 
@@ -487,7 +498,9 @@ func _reset_director_state() -> void:
 	if hour_director == null:
 		return
 	hour_director.reset_carry()
-	hour_director.start_hour(1)
+	# Подготовка перед H1: seed-файл создаём, но активный запрос/резервации
+	# не оставляем — иначе игрок не видит запрос, а файл уже занят.
+	hour_director.reset_for_prep()
 	hour_director.running = false
 	hour_director.paused = false
 	hour_director.set_modal_open(false)

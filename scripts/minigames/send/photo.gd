@@ -11,13 +11,11 @@ const INSET := 4.0
 const SIM_DT := 1.0 / 120.0
 const TWITCH_RATE := 1.25
 const TIERS := {
-	1: {"speed": 90.0, "frame_w": 220.0, "frame_h": 150.0, "shots": 3,
-		"switch_min": 0.8, "switch_max": 1.2, "turn_rate": 210.0},
-	2: {"speed": 140.0, "frame_w": 180.0, "frame_h": 120.0, "shots": 4,
+	1: {"speed": 140.0, "frame_w": 180.0, "frame_h": 120.0, "shots": 4,
 		"switch_min": 0.6, "switch_max": 1.0, "turn_rate": 260.0},
-	3: {"speed": 200.0, "frame_w": 150.0, "frame_h": 100.0, "shots": 5,
+	2: {"speed": 200.0, "frame_w": 150.0, "frame_h": 100.0, "shots": 5,
 		"switch_min": 0.5, "switch_max": 0.8, "turn_rate": 300.0},
-	4: {"speed": 260.0, "frame_w": 120.0, "frame_h": 80.0, "shots": 6,
+	3: {"speed": 260.0, "frame_w": 120.0, "frame_h": 80.0, "shots": 6,
 		"switch_min": 0.35, "switch_max": 0.65, "turn_rate": 340.0},
 }
 
@@ -47,10 +45,25 @@ func _setup() -> void:
 	_last_capture_ok = false
 
 
+func _goal_text() -> String:
+	return "НАВЕДИТЕ РАМКУ НА КЛИЕНТА · ЛКМ / ПРОБЕЛ — СНИМОК"
+
+
+func _progress_ratio() -> float:
+	var shots := int(params.get("shots", 1))
+	if shots <= 0:
+		return 0.0
+	return clampf(float(_shots_taken) / float(shots), 0.0, 1.0)
+
+
+func _result_stats() -> String:
+	return "УДАЧНЫХ %d ИЗ %d" % [_captures, int(params.get("shots", 0))]
+
+
 # --- параметры/чистая математика ------------------------------------------
 
 static func tier_params(p_tier: int) -> Dictionary:
-	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 4), TIERS[1]) as Dictionary).duplicate(true)
+	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 3), TIERS[1]) as Dictionary).duplicate(true)
 	var row := MiniGame.data_minigame_tier("photo", p_tier)
 	if row.is_empty():
 		return base
@@ -289,11 +302,6 @@ func _draw_game() -> void:
 	var font := Theme90.ui()
 	var shots := int(params.get("shots", 3))
 	var inside := capture_success(state["pos"], _frame_pos, _frame_size())
-	_draw_label("СКАН КЛИЕНТА · КАДР %d / %d" % [_shots_taken, shots],
-		Vector2(24.0, 34.0), 10, Theme90.NAVY, 280.0)
-	_draw_label("УДАЧНЫХ %d · ОСТАЛОСЬ %d" % [_captures, shots - _shots_taken],
-		Vector2(320.0, 34.0), 10, Theme90.SHADE, 280.0,
-		HORIZONTAL_ALIGNMENT_RIGHT)
 
 	draw_style_box(Theme90.box(Theme90.DARK, Color(0, 0, 0, 0), 4, 1), SCAN)
 	# Мягкий фон скана: окно/стол, на игру не влияет.
@@ -303,6 +311,12 @@ func _draw_game() -> void:
 		Color(1, 1, 1, 0.16), 2.0)
 	draw_rect(Rect2(SCAN.end - Vector2(170, 102), Vector2(120, 72)),
 		Color(0.65, 0.58, 0.45, 0.12))
+	# Статус рисуется поверх тёмного скана, иначе его закрывает фон.
+	_draw_label("СКАН КЛИЕНТА · КАДР %d / %d" % [_shots_taken, shots],
+		Vector2(40.0, 47.0), 10, Theme90.PAPER_HI, 280.0)
+	_draw_label("УДАЧНЫХ %d · ОСТАЛОСЬ %d" % [_captures, shots - _shots_taken],
+		Vector2(320.0, 47.0), 10, Theme90.ACCENT_LIGHT, 270.0,
+		HORIZONTAL_ALIGNMENT_RIGHT)
 
 	var bust_pos: Vector2 = state["pos"]
 	_draw_bust(bust_pos)
@@ -331,10 +345,8 @@ func _draw_game() -> void:
 			16, Theme90.SUCCESS if _last_capture_ok else Theme90.ERROR, 120.0,
 			HORIZONTAL_ALIGNMENT_CENTER)
 
-	_draw_label("ВЕДИТЕ РАМКУ МЫШЬЮ · ЛКМ / ПРОБЕЛ — СНИМОК",
-		Vector2(24.0, 344.0), 10, Theme90.SHADE, 430.0)
 	_draw_label("рамка %d×%d" % [roundi(_frame_size().x), roundi(_frame_size().y)],
-		Vector2(466.0, 344.0), 10, Theme90.SHADE, 156.0,
+		Vector2(466.0, 344.0), 10, Theme90.DARK, 156.0,
 		HORIZONTAL_ALIGNMENT_RIGHT)
 
 

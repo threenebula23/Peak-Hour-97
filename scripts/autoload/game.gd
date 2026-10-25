@@ -19,8 +19,8 @@ const START_MONEY := 50
 const START_SLA := 60.0
 const HOURS_PER_RUN := 9
 ## Жёсткий кап SLA (main.gd показывает его в статус-баре). Рабочий кап —
-## sla_cap(): 60 + 35 * sla_level, не выше MAX_SLA.
-const MAX_SLA := 200.0
+## sla_cap(): 60 + 40 * sla_level, не выше MAX_SLA.
+const MAX_SLA := 220.0
 
 const REGISTRY_SCRIPT := preload("res://scripts/core/file_registry.gd")
 const SAVE_SCRIPT := preload("res://scripts/systems/save_system.gd")
@@ -38,18 +38,18 @@ const LOT_EFFECT_KEYS := {
 	"request_timer": "timer_level",
 }
 
-const FALLBACK_LOT_DIMS := [[5, 4], [6, 4], [6, 5], [7, 5], [7, 6], [8, 6]]
+const FALLBACK_LOT_DIMS := [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
 
 ## Резерв, если Data ещё не готов (id → лот минимально необходимых полей).
 const FALLBACK_SHOP := {
-	"lot_slots": {"id": "lot_slots", "name_ru": "Порты коммутатора", "effect": "connection_slots", "max_level": 4, "prices": [120, 300, 650, 1200]},
-	"lot_speed": {"id": "lot_speed", "name_ru": "Оптоволокно", "effect": "transfer_speed", "max_level": 6, "prices": [90, 130, 180, 250, 340, 450]},
-	"lot_sla": {"id": "lot_sla", "name_ru": "Резервный ИБП", "effect": "sla_cap", "max_level": 4, "prices": [120, 260, 480, 800]},
-	"lot_shield": {"id": "lot_shield", "name_ru": "Заземление", "effect": "shield_charge", "max_level": 3, "prices": [150, 400, 800]},
-	"lot_money": {"id": "lot_money", "name_ru": "Корпоративный контракт", "effect": "money_mult", "max_level": 8, "prices": [80, 110, 150, 200, 260, 340, 440, 560]},
-	"lot_folder": {"id": "lot_folder", "name_ru": "Складской стеллаж", "effect": "folder_cells", "max_level": 5, "prices": [80, 180, 360, 650, 1000]},
-	"lot_channel": {"id": "lot_channel", "name_ru": "Пропускная способность", "effect": "channel_capacity", "max_level": 6, "prices": [70, 100, 140, 190, 250, 330]},
-	"lot_timer": {"id": "lot_timer", "name_ru": "Регламент обработки", "effect": "request_timer", "max_level": 5, "prices": [70, 110, 160, 230, 320]},
+	"lot_slots": {"id": "lot_slots", "name_ru": "Порты коммутатора", "effect": "connection_slots", "value": 1, "max_level": 4, "prices": [90, 200, 400, 700]},
+	"lot_speed": {"id": "lot_speed", "name_ru": "Оптоволокно", "effect": "transfer_speed", "value": 0.10, "max_level": 6, "prices": [55, 75, 100, 135, 180, 245]},
+	"lot_sla": {"id": "lot_sla", "name_ru": "Резервный ИБП", "effect": "sla_cap", "value": 40, "max_level": 4, "prices": [80, 160, 270, 430]},
+	"lot_shield": {"id": "lot_shield", "name_ru": "Заземление", "effect": "shield_charge", "value": 1, "max_level": 3, "prices": [100, 220, 410]},
+	"lot_money": {"id": "lot_money", "name_ru": "Корпоративный контракт", "effect": "money_mult", "value": 0.05, "max_level": 8, "prices": [70, 95, 130, 170, 220, 285, 365, 465]},
+	"lot_folder": {"id": "lot_folder", "name_ru": "Складской стеллаж", "effect": "folder_cells", "value": 1, "max_level": 5, "prices": [50, 100, 180, 290, 440]},
+	"lot_channel": {"id": "lot_channel", "name_ru": "Пропускная способность", "effect": "channel_capacity", "value": 6, "buffer_value": 1, "max_level": 6, "prices": [45, 70, 95, 130, 175, 230]},
+	"lot_timer": {"id": "lot_timer", "name_ru": "Регламент обработки", "effect": "request_timer", "value": 7, "max_level": 5, "prices": [45, 75, 115, 165, 230]},
 }
 
 var money: int = START_MONEY
@@ -236,8 +236,8 @@ func set_lot_level(id: String, new_level: int) -> int:
 	if not agg.is_empty():
 		upgrades[agg] = lvl
 	if effect == "sla_cap" and lvl > old_level:
-		# Кап уже вырос (sla_cap() читает новый уровень), добавляем +35 сразу.
-		var gain := _lot_value(def, 35.0) * float(lvl - old_level)
+		# Кап уже вырос (sla_cap() читает новый уровень), добавляем +40 сразу.
+		var gain := _lot_value(def, 40.0) * float(lvl - old_level)
 		sla = clampf(sla + gain, 0.0, sla_cap())
 		sla_changed.emit(sla)
 	elif effect == "shield_charge" and lvl > old_level:
@@ -251,19 +251,20 @@ func set_lot_level(id: String, new_level: int) -> int:
 
 func sla_cap() -> float:
 	var base := _const("sla_base", START_SLA)
-	var step := _const("sla_per_level", 35.0)
+	var step := _lot_effect_value("lot_sla", "value", _const("sla_per_level", 40.0))
 	var hard := _const("sla_hard_cap", MAX_SLA)
 	return clampf(base + step * float(level("sla_level")), base, hard)
 
 
 func money_mult() -> float:
-	var step := _const("money_mult_step", 0.05)
+	var step := _lot_effect_value("lot_money", "value", _const("money_mult_step", 0.05))
 	return 1.0 + step * float(level("money_level"))
 
 
-## pow(0.92, speed_level) — множитель времени передачи.
+## pow(0.90, speed_level) — множитель времени передачи (10% за уровень).
 func speed_mult() -> float:
-	return pow(0.92, float(maxi(0, level("speed_level"))))
+	var cut := clampf(_lot_effect_value("lot_speed", "value", 0.10), 0.01, 0.9)
+	return pow(1.0 - cut, float(maxi(0, level("speed_level"))))
 
 
 func folder_dims() -> Vector2i:
@@ -285,21 +286,21 @@ func connection_slots() -> int:
 
 func channel_capacity() -> float:
 	var base := _const("channel_capacity", 10.0)
-	var step := _const("channel_per_level", 6.0)
+	var step := _lot_effect_value("lot_channel", "value", _const("channel_per_level", 6.0))
 	return base + step * float(level("channel_level"))
 
 
 func buffer_limit() -> int:
 	var base := int(_const("buffer_base", 6.0))
-	var step := int(_const("buffer_per_level", 1.0))
+	var step := int(_lot_effect_value("lot_channel", "buffer_value", _const("buffer_per_level", 1.0)))
 	var cap := int(_const("buffer_max", 12.0))
 	return clampi(base + step * level("channel_level"), base, cap)
 
 
 func request_timer() -> float:
 	var base := _const("request_timer", 30.0)
-	var step := _const("request_timer_per_level", 5.0)
-	var cap := _const("request_timer_max", 55.0)
+	var step := _lot_effect_value("lot_timer", "value", _const("request_timer_per_level", 7.0))
+	var cap := _const("request_timer_max", 65.0)
 	return clampf(base + step * float(level("timer_level")), base, cap)
 
 
@@ -428,6 +429,23 @@ func load_game() -> bool:
 	if not reg.from_dict(raw_registry):
 		push_warning("Game: не удалось восстановить registry")
 		return false
+	# runtime-резервы под запросы не переживают загрузку: сами запросы не
+	# сохраняются, поэтому file.required_by/attached_request и location
+	# "attached" после load указывали бы на несуществующий запрос. Такой файл
+	# нельзя ни переместить, ни удалить — он навсегда занимает клетку.
+	for file in reg.files.values():
+		file.required_by = ""
+		file.attached_request = ""
+		if String(file.location) == "attached":
+			file.location = &"folder" if not String(file.folder_id).is_empty() else &"registry"
+		# _repair_after_load уже разложил файл по папкам/клеткам. Если папки
+		# (или её bookkeeping) нет, файл должен быть видимым в реестре, а не
+		# числиться в несуществующем месте.
+		if String(file.location) == "folder":
+			var folder = reg.folders.get(String(file.folder_id), null)
+			if folder == null or not folder.file_ids.has(file.id):
+				file.folder_id = ""
+				file.location = &"registry"
 	registry = reg
 
 	upgrades = _dict_of(data.get("upgrades", {}))
@@ -614,6 +632,14 @@ func _const(key: String, fallback_value: float) -> float:
 func _lot_value(def: Dictionary, fallback_value: float) -> float:
 	if def.has("value"):
 		return float(def.get("value"))
+	return float(fallback_value)
+
+
+## Значение поля лота (source of truth для эффекта), fallback — константа.
+func _lot_effect_value(id: String, field: String, fallback_value: float) -> float:
+	var def := _lot_def(id)
+	if def.has(field):
+		return float(def.get(field))
 	return float(fallback_value)
 
 

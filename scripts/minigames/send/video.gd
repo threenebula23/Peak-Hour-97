@@ -1,16 +1,15 @@
 extends MiniGame
 ## «Раскадровка» (video). Разложить кадры по слотам.
 ##
-## T1 3/3 (силуэт), T2 4/4 (таймкод), T3 5 карточек/4 слота (1 скрытый
-## брак), T4 6 карточек/5 слотов (1 брак + 1 зеркальный кадр).
+## T1 4/4 (таймкод), T2 5 карточек/4 слота (1 скрытый брак),
+## T3 6 карточек/5 слотов (1 брак + 1 зеркальный кадр).
 ## Таймкоды случайны для каждой раздачи, брак дублирует ровно один реальный
 ## таймкод и отличается силуэтом.
 
 const TIERS := {
-	1: {"cards": 3, "slots": 3, "decoy": false, "mirror": false, "hint": "shape"},
-	2: {"cards": 4, "slots": 4, "decoy": false, "mirror": false, "hint": "timecode"},
-	3: {"cards": 5, "slots": 4, "decoy": true, "mirror": false, "hint": "ghost"},
-	4: {"cards": 6, "slots": 5, "decoy": true, "mirror": true, "hint": "timecode"},
+	1: {"cards": 4, "slots": 4, "decoy": false, "mirror": false, "hint": "timecode"},
+	2: {"cards": 5, "slots": 4, "decoy": true, "mirror": false, "hint": "ghost"},
+	3: {"cards": 6, "slots": 5, "decoy": true, "mirror": true, "hint": "timecode"},
 }
 const SHAPES := ["circle", "triangle", "square", "diamond", "cross"]
 const COLORS := ["accent", "warn", "success", "error", "navy"]
@@ -46,10 +45,27 @@ func _setup() -> void:
 	_build_slot_rects()
 
 
+func _goal_text() -> String:
+	return "РАЗЛОЖИТЕ КАДРЫ ПО СЛОТАМ · КАДР → СЛОТ · ОТПРАВИТЬ"
+
+
+func _progress_ratio() -> float:
+	var slots := int(generated.get("slots", 0))
+	if slots <= 0:
+		return 0.0
+	return clampf(float(_occupied_slots()) / float(slots), 0.0, 1.0)
+
+
+func _result_stats() -> String:
+	var c := _counts()
+	return "ВЕРНО %d ИЗ %d · ОШИБОК %d · БРАК %d" % [int(c["correct"]),
+		int(generated.get("slots", 0)), int(c["wrong"]), int(c["decoys"])]
+
+
 # --- параметры/чистая логика ----------------------------------------------
 
 static func tier_params(p_tier: int) -> Dictionary:
-	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 4), TIERS[1]) as Dictionary).duplicate(true)
+	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 3), TIERS[1]) as Dictionary).duplicate(true)
 	var row := MiniGame.data_minigame_tier("video", p_tier)
 	if row.is_empty():
 		return base
@@ -147,7 +163,7 @@ static func generate(p_tier: int, seed: int) -> Dictionary:
 			tray[safe_idx] = tmp
 
 	return {
-		"tier": clampi(p_tier, 1, 4),
+		"tier": clampi(p_tier, 1, 3),
 		"slots": slots,
 		"cards": tray,
 		"card_count": tray.size(),
@@ -206,7 +222,7 @@ static func decoy_info(data: Dictionary) -> Dictionary:
 func _build_slot_rects() -> void:
 	_slot_rects.clear()
 	var slots := int(generated.get("slots", 3))
-	var area := Rect2(40.0, 54.0, 560.0, 128.0)
+	var area := Rect2(40.0, 62.0, 560.0, 128.0)
 	var gap := 10.0
 	var w := (area.size.x - gap * float(maxi(0, slots - 1))) / float(maxi(1, slots))
 	for i in range(slots):
@@ -314,7 +330,7 @@ func _draw_game() -> void:
 		Theme90.ACCENT, 260.0)
 	_draw_label("РАЗМЕЩЕНО %d / %d · ОШИБОК %d · БРАК %d" % [
 		_occupied_slots(), slots, int(c["wrong"]), int(c["decoys"])],
-		Vector2(300.0, 46.0), 10, Theme90.SHADE, 300.0,
+		Vector2(300.0, 46.0), 10, Theme90.DARK, 300.0,
 		HORIZONTAL_ALIGNMENT_RIGHT)
 
 	var slot_shapes: Array = generated.get("slot_shapes", [])
@@ -334,7 +350,7 @@ func _draw_game() -> void:
 			_draw_card(_cards[occupant], Rect2(rect.position + Vector2(8, 28),
 				rect.size - Vector2(16, 36)), true, hint)
 			_draw_label("КЛИК — ВЕРНУТЬ", Vector2(rect.position.x, rect.end.y - 14.0),
-				10, Theme90.SHADE, rect.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+				10, Theme90.DARK, rect.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 			continue
 		Theme90.draw_dashed_box(self, Rect2(rect.position + Vector2(8, 28),
 			rect.size - Vector2(16, 36)), Theme90.BORDER_SOFT, 3.0, 1.0)
@@ -353,7 +369,7 @@ func _draw_game() -> void:
 			else:
 				_draw_centered(str(ghost.get("timecode", "")),
 					Rect2(rect.position.x, rect.end.y - 30.0, rect.size.x, 20.0),
-					10, Theme90.SHADE)
+					10, Theme90.DARK)
 
 	_recompute_tray()
 	for entry in _tray_rects:
@@ -365,8 +381,6 @@ func _draw_game() -> void:
 		if int(entry["card"]) == _selected:
 			draw_rect(rect.grow(3.0), Theme90.NAVY_DEEP, false, 2.0)
 
-	_draw_label("КЛИК ПО КАДРУ, ЗАТЕМ ПО СЛОТУ · КЛИК ПО СЛОТУ — ВЕРНУТЬ КАДР",
-		Vector2(24.0, 344.0), 10, Theme90.SHADE, 430.0)
 	_draw_action_button(ACTION_RECT, "ОТПРАВИТЬ", true, true)
 
 

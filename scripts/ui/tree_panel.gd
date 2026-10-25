@@ -127,13 +127,44 @@ func set_data(sections: Array) -> void:
 	call_deferred("_bind_drag_controller")
 
 
+func _plural_folders(n: int) -> String:
+	var n10 := n % 10
+	var n100 := n % 100
+	if n10 == 1 and n100 != 11:
+		return "папка"
+	if n10 >= 2 and n10 <= 4 and (n100 < 12 or n100 > 14):
+		return "папки"
+	return "папок"
+
+
+func _plural_files(n: int) -> String:
+	var n10 := n % 10
+	var n100 := n % 100
+	if n10 == 1 and n100 != 11:
+		return "файл"
+	if n10 >= 2 and n10 <= 4 and (n100 < 12 or n100 > 14):
+		return "файла"
+	return "файлов"
+
+
+func _plural_cells(n: int) -> String:
+	var n10 := n % 10
+	var n100 := n % 100
+	if n10 == 1 and n100 != 11:
+		return "клетка"
+	if n10 >= 2 and n10 <= 4 and (n100 < 12 or n100 > 14):
+		return "клетки"
+	return "клеток"
+
+
 func _section_free_text(sec: Dictionary) -> String:
 	var raw = sec.get("free_text", null)
 	if raw is String:
 		return str(raw)
 	var cells_raw = sec.get("free_cells", sec.get("free", null))
 	if cells_raw is int or cells_raw is float:
-		return "свободно %d клеток" % int(cells_raw)
+		var free_cells := int(cells_raw)
+		return "свободно %d %s" % [free_cells, _plural_cells(free_cells)]
 	if cells_raw is String:
 		return str(cells_raw)
 	return ""
@@ -161,7 +192,7 @@ func _pick_int(fol: Dictionary, keys: Array, fallback: int) -> int:
 
 
 func _folder_tooltip(files: int, occupied: int, total: int) -> String:
-	return "%d файлов · %d из %d клеток" % [files, occupied, total]
+	return "%d %s · %d из %d клеток" % [files, _plural_files(files), occupied, total]
 
 
 func _apply_layout() -> void:
@@ -235,14 +266,12 @@ func update_stats(folder_id: String, files: int, occupied: int, total: int) -> v
 func footer_text() -> String:
 	var folders := 0
 	var files := 0
-	var occupied := 0
 	for e in _rows:
 		var row: FolderRow = e["row"]
 		if not row.is_section:
 			folders += 1
 			files += row.files_count
-			occupied += row.count
-	return "%d папок · %d файлов · %d клеток занято" % [folders, files, occupied]
+	return "%d %s · %d %s" % [folders, _plural_folders(folders), files, _plural_files(files)]
 
 
 func _on_toggle(folder_id: String) -> void:

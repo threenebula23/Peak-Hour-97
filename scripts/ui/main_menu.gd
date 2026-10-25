@@ -9,6 +9,7 @@ extends Control
 
 signal new_run
 signal continue_run
+signal tutorial_requested
 signal settings
 signal about
 
@@ -29,6 +30,7 @@ var vhs = null
 
 var _btn_continue: Button90
 var _btn_new: Button90
+var _btn_tutorial: Button90
 var _btn_settings: Button90
 var _btn_about: Button90
 
@@ -72,6 +74,12 @@ func _build() -> void:
 	_btn_new = _make_button("Новый забег")
 	_btn_new.accent = true
 	_btn_new.pressed.connect(func() -> void: new_run.emit())
+
+	# Обучение — вторичное действие сразу под «Новый забег»: та же форма,
+	# чуть меньше кегль и высота, чтобы не спорить с главным CTA.
+	_btn_tutorial = _make_button("ОБУЧЕНИЕ")
+	_btn_tutorial.caption_size = 12
+	_btn_tutorial.pressed.connect(func() -> void: tutorial_requested.emit())
 
 	_btn_settings = _make_button(_tr("btn.settings", "Настройки"))
 	# визуально «активная» кнопка: логику подключит main.gd
@@ -125,11 +133,12 @@ func _layout() -> void:
 	var w := _window()
 	var px := w.position.x + 660.0
 	var py := w.position.y + 112.0
-	var buttons: Array[Button90] = [_btn_continue, _btn_new, _btn_settings, _btn_about]
+	var buttons: Array[Button90] = [_btn_continue, _btn_new, _btn_tutorial,
+		_btn_settings, _btn_about]
 	for b in buttons:
 		if b != null:
 			b.position = Vector2(px, py)
-			b.size = Vector2(300, 38)
+			b.size = Vector2(300, 34 if b == _btn_tutorial else 38)
 		py += 52.0
 
 

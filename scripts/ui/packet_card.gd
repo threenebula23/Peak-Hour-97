@@ -120,11 +120,8 @@ func _display_name() -> String:
 
 
 func _update_tooltip() -> void:
-	var shape_line := "%s · %s" % [_display_name(), cells_text().to_lower()]
-	if state == "loading":
-		tooltip_text = "%s\n%d КБ · %s · загрузка в папку" % [shape_line, size_kb, protocol]
-	else:
-		tooltip_text = "%s\n%d КБ · %s · перетащите в папку" % [shape_line, size_kb, protocol]
+	# Полное имя одной строкой (без переноса): ОС-подсказка не обрезает его.
+	tooltip_text = "%s · %s · %s" % [_display_name(), FileCard.type_title(type), protocol]
 
 
 func _process(delta: float) -> void:
@@ -149,8 +146,12 @@ func _draw() -> void:
 
 	_draw_shape_preview(Rect2(4, 10, 30, 30))
 
-	Theme90.text(self, f, Vector2(40, 2), Theme90.fit(f, _display_name(), 12, 168), 12,
-		Theme90.INK, 168)
+	# Иконка типа 14×14 сразу слева от имени файла.
+	if not type.is_empty():
+		Theme90.draw_file_icon(self, Rect2(40, 2, 14, 14), type)
+
+	Theme90.text(self, f, Vector2(57, 2), Theme90.fit(f, _display_name(), 13, 151), 13,
+		Theme90.INK, 151)
 
 	# бейдж протокола
 	var badge := Rect2(214, 4, 30, 13)

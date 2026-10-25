@@ -18,7 +18,7 @@ const COLS := 3
 const CARD_W := 190.0
 const CARD_GAP := 8.0
 const GRID_TOP := 58.0
-const GRID_BOTTOM := 306.0
+const GRID_BOTTOM := 294.0
 const VERIFY_RECT := Rect2(466.0, 320.0, 156.0, 28.0)
 
 const TIERS := {
@@ -533,14 +533,9 @@ func _card_rect(index: int) -> Rect2:
 
 
 func _draw_game() -> void:
-	var font := Theme90.ui()
-	var hints: Array = _data.get("hints", [])
 	var marked_count := _marked.size()
 	_draw_label("ОТМЕЧЕНО: %d" % marked_count, Vector2(24.0, 44.0), 12,
 		Theme90.INK, 180.0)
-	var hint_text := "· ".join(hints) if not hints.is_empty() else "СНИМАЙТЕ ТОЛЬКО МУСОР"
-	_draw_label(Theme90.fit(font, hint_text, 10, 360.0), Vector2(226.0, 46.0), 10,
-		Theme90.SHADE, 380.0, HORIZONTAL_ALIGNMENT_RIGHT)
 
 	for i in range(_cards.size()):
 		_draw_card(i)
@@ -637,10 +632,11 @@ func _draw_card(index: int) -> void:
 
 func _draw_footer_hint() -> void:
 	var hints: Array = _data.get("hints", [])
-	if hints.is_empty():
-		return
-	_draw_label("ПОДСКАЗКИ: " + " · ".join(hints), Vector2(18.0, 350.0), 10,
-		Theme90.SHADE, 604.0)
+	var text := "ПОДСКАЗКИ: " + " · ".join(hints) if not hints.is_empty() \
+		else "СНИМАЙТЕ ТОЛЬКО МУСОР"
+	# Полная подсказка — в полосе между сеткой (y=294) и футером (y=320).
+	_draw_label(Theme90.fit(Theme90.ui(), text, 10, 604.0),
+		Vector2(18.0, 298.0), 10, Theme90.SHADE, 604.0)
 
 
 # --- служебное -------------------------------------------------------------

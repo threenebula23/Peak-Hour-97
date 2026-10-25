@@ -9,6 +9,19 @@ extends SceneTree
 const GC := preload("res://scripts/game_controller.gd")
 const SM := preload("res://scripts/systems/save_system.gd")
 
+
+## Минимальная заглушка мини-игры отправки: только сигнал finished.
+class FakeSend:
+	extends Node
+	signal finished(quality: float)
+
+
+## Заглушка ConnectionGame для проверки промаха: Main читает `missed`.
+class FakeConnection:
+	extends Node
+	var missed := true
+
+
 var _checks: int = 0
 var _fails: int = 0
 var _case: String = ""
@@ -52,6 +65,7 @@ func _init() -> void:
 
 	_test_empty_continue()
 	_test_new_run()
+	_test_second_new_run_seed()
 	_test_table_return_success()
 	_test_table_return_block()
 	_test_hour_start_and_modal()
@@ -61,6 +75,9 @@ func _init() -> void:
 	_test_reroll_reset()
 	_test_full_run()
 	_test_save_load()
+	_test_send_modal_freeze()
+	await _test_destroy_reserved_folder()
+	await _test_connection_failure_toast()
 	_finish()
 
 
@@ -91,6 +108,48 @@ func _test_new_run() -> void:
 	_eq(int(prep.get("hour", 0)), 1, "prep_data.hour")
 	var sections = prep.get("sections", [])
 	_ok(sections is Array and not (sections as Array).is_empty(), "есть секции")
+
+
+## BUG A: второй «Новый забег» должен иметь seed в подготовке, как первый.
+## Регрессия: reset_for_prep() сбрасывал requests_spawned ПОСЛЕ start_hour(1),
+## поэтому seed H1 создавался только в первом забеге.
+func _test_second_new_run_seed() -> void:
+	_set_case("second_new_run_seed")
+	_c.new_run(9001)
+	_eq(String(_c.phase), "prep", "забег 1: new_run → prep")
+	_eq(_game.registry.files.size(), 1, "забег 1: в подготовке 1 seed-файл")
+	_ok(_c.start_hour(), "забег 1: старт H1")
+	var hd = _c.hour_director
+	hd.set_time_scale(1.0)
+	var h1_req := false
+	for i in range(50):
+		_c.tick(0.1)
+		if not hd.active_requests.is_empty():
+			h1_req = true
+			break
+	_ok(h1_req, "забег 1: H1 выдал запрос")
+	_ok(int(hd.requests_spawned) > 0, "забег 1: requests_spawned > 0 после часа")
+
+	_set_case("second_new_run_seed/run2")
+	_c.new_run(9002)
+	_eq(String(_c.phase), "prep", "забег 2: new_run → prep")
+	_eq(_game.registry.files.size(), 1, "забег 2: в подготовке 1 seed-файл")
+	var seed_files: Array = _game.registry.files.values()
+	_ok(seed_files.size() == 1 and str(seed_files[0].required_by) == "",
+		"забег 2: seed без required_by")
+	_ok(hd.active_requests.is_empty(), "забег 2: нет активных запросов")
+	_ok(seed_files.size() == 1 and String(seed_files[0].location) == "folder",
+		"забег 2: seed лежит в папке")
+
+	_ok(_c.start_hour(), "забег 2: старт H1")
+	_eq(_game.registry.files.size(), 1, "забег 2: старт H1 не создал второй seed")
+	var h1_req2 := false
+	for i in range(50):
+		_c.tick(0.1)
+		if not hd.active_requests.is_empty():
+			h1_req2 = true
+			break
+	_ok(h1_req2, "забег 2: H1 снова выдал запрос")
 
 
 func _test_table_return_success() -> void:
@@ -157,8 +216,9 @@ func _test_hour_start_and_modal() -> void:
 	_ok(not packet_id.is_empty(), "пакет создан")
 	_c.tick(0.1)
 	var hd_data: Dictionary = _c.hour_data()
-	_eq((hd_data.get("packets", []) as Array).size(), 1, "hour_data: 1 пакет")
-	_eq((hd_data.get("requests", []) as Array).size(), 1, "hour_data: 1 запрос")
+	# H1-бутстрап: к этому моменту уже есть стартовый пакет и запрос.
+	_eq((hd_data.get("packets", []) as Array).size(), 2, "hour_data: 2 пакета (ботстрап + тест)")
+	_eq((hd_data.get("requests", []) as Array).size(), 2, "hour_data: 2 запроса (ботстрап + тест)")
 	var req_data: Dictionary = (hd_data.get("requests", []) as Array)[0]
 	_eq(int(req_data.get("required_count", 0)), 1, "hour_data: required_count")
 	_eq(int(req_data.get("missing", -1)), 1, "hour_data: missing = 1")
@@ -301,6 +361,169 @@ func _test_save_load() -> void:
 	_ok(int(_game.hour) >= 1, "continue_run восстановил час")
 
 
+## BUG 1: открытие мини-игры отправки через контроллер обязано поднять
+## modal_open и в HourDirector; пакетный таймер стоит под модалкой.
+func _test_send_modal_freeze() -> void:
+	_set_case("send_modal_freeze")
+	_c.new_run(731)
+	_ok(_c.start_hour(), "старт часа для модалки отправки")
+	var hd = _c.hour_director
+	_c.tick(0.1)
+	var packet_id := ""
+	if not hd.active_packets.is_empty():
+		packet_id = str(hd.active_packets.keys()[0])
+	_ok(not packet_id.is_empty(), "пакет для проверки таймера есть")
+	var packet = hd.get_packet(packet_id)
+	var folder_id := _first_folder_id()
+	var file = _game.registry.create_file("Модалка отправки", "text", folder_id)
+	_ok(file != null, "файл создан")
+	if file == null or packet == null:
+		return
+	var req_id := str(hd._create_request(1, "udp", [str(file.id)], true))
+	_ok(not req_id.is_empty(), "UDP-запрос создан")
+	_ok(hd.attach_file(req_id, str(file.id)), "файл прикреплён")
+	var holder := {"game": null}
+	hd.send_game_factory = func(_id, _tier, _seed, _ctx):
+		var g := FakeSend.new()
+		holder["game"] = g
+		return g
+	_ok(hd.start_send(req_id), "мини-игра отправки открыта")
+	_ok(bool(_c.modal_open), "controller.modal_open = true")
+	_ok(bool(hd.modal_open), "director.modal_open = true (BUG 1)")
+	var t_before := float(packet.time_left)
+	for i in range(10):
+		_c.tick(0.1)
+	_approx(float(packet.time_left), t_before, 0.0001,
+		"пакетный таймер заморожен под мини-игрой отправки")
+	var fake = holder.get("game")
+	_ok(fake != null, "подменная мини-игра создана")
+	if fake != null:
+		fake.finished.emit(0.8)
+		await process_frame
+	_ok(not bool(_c.modal_open), "controller.modal_open = false после закрытия")
+	_ok(not bool(hd.modal_open), "director.modal_open = false после закрытия")
+	t_before = float(packet.time_left)
+	for i in range(10):
+		_c.tick(0.1)
+	_ok(float(packet.time_left) < t_before, "пакетный таймер снова идёт после закрытия")
+	hd._cleanup_request(req_id, true)
+	hd._remove_packet(packet_id)
+	hd.send_game_factory = Callable()
+
+
+## BUG 3c: папка, где остался только зарезервированный файл, не уничтожается
+## и НЕ списывает SLA. Обычные файлы в той же папке по-прежнему удаляются.
+func _test_destroy_reserved_folder() -> void:
+	_set_case("destroy_reserved_folder")
+	var packed := load("res://scenes/Main.tscn") as PackedScene
+	if packed == null:
+		_ok(false, "Main.tscn загружается")
+		return
+	var main = packed.instantiate()
+	root.add_child(main)
+	await process_frame
+	main._start_new_run()
+	await process_frame
+	var folder_id := ""
+	var section = _game.registry.sections.get("C")
+	if section != null and section.folder_ids.size() >= 2:
+		folder_id = str(section.folder_ids[1])
+	_ok(not folder_id.is_empty(), "вторая папка для теста найдена")
+	if folder_id.is_empty():
+		return
+	var reserved = _game.registry.create_file("Резерв destroy", "text", folder_id)
+	_ok(reserved != null, "зарезервированный файл создан")
+	if reserved == null:
+		return
+	var rid := str(reserved.id)
+	reserved.required_by = "req_destroy_test"
+	var sla_before := float(_game.sla)
+	main._destroy_folder_contents(folder_id)
+	_ok(_game.registry.files.has(rid), "зарезервированный файл пережил уничтожение папки")
+	_approx(float(_game.sla), sla_before, 0.001,
+		"папка только из резерва: SLA не списан")
+	_eq(str(_game.registry.files[rid].location), "folder",
+		"зарезервированный файл не помечен malicious")
+
+	# Контроль: обычный файл рядом — уничтожается, SLA −5.
+	var normal = _game.registry.create_file("Обычный destroy", "text", folder_id)
+	_ok(normal != null, "обычный файл создан")
+	if normal == null:
+		return
+	main._destroy_folder_contents(folder_id)
+	_ok(not _game.registry.files.has(str(normal.id)), "обычный файл уничтожен")
+	_ok(_game.registry.files.has(rid), "резерв остался нетронутым")
+	_approx(float(_game.sla), sla_before - 5.0, 0.001,
+		"реальное удаление списало SLA −5")
+	main.queue_free()
+	await process_frame
+
+
+## BUG B: неуспешное TCP-соединение даёт РОВНО один тост
+## «СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО» (от HourDirector), а не два (директор + Main).
+func _test_connection_failure_toast() -> void:
+	_set_case("connection_failure_toast")
+	var packed := load("res://scenes/Main.tscn") as PackedScene
+	if packed == null:
+		_ok(false, "Main.tscn загружается")
+		return
+	var main = packed.instantiate()
+	root.add_child(main)
+	await process_frame
+	main._start_new_run()
+	await process_frame
+	var director = main.controller.hour_director
+	if director == null:
+		_ok(false, "hour_director доступен")
+		main.queue_free()
+		return
+	var folder_id := ""
+	for section in _game.registry.sections.values():
+		if not section.folder_ids.is_empty():
+			folder_id = str(section.folder_ids[0])
+			break
+	_ok(not folder_id.is_empty(), "папка для TCP-запроса найдена")
+	if folder_id.is_empty():
+		main.queue_free()
+		return
+	main._on_start_hour()
+	await process_frame
+	_eq(String(main.controller.phase), "hour", "час запущен (сигналы UI подключены)")
+	var file = _game.registry.create_file("conn_fail", "text", folder_id)
+	_ok(file != null, "файл для TCP-запроса создан")
+	if file == null:
+		main.queue_free()
+		return
+	var rid := str(director._create_request(1, "tcp", [str(file.id)], false))
+	_ok(not rid.is_empty(), "TCP-запрос создан")
+	var req = director.active_requests.get(rid)
+	if req == null:
+		_ok(false, "TCP-запрос активен")
+		main.queue_free()
+		return
+	req.connecting = true
+	var fail_before := _count_toasts(main, "СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО")
+	var sla_before := float(_game.sla)
+	var fake := FakeConnection.new()
+	main._on_connection_finished(false, rid, fake)
+	await process_frame
+	_eq(_count_toasts(main, "СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО") - fail_before, 1,
+		"неуспешное соединение: ровно 1 тост (BUG B)")
+	_approx(float(_game.sla), sla_before - 4.0, 0.001,
+		"штраф за промах −4 SLA сохранён")
+
+	# Успешный тост Main остаётся (директор его не дублирует).
+	req.connecting = true
+	var ok_before := _count_toasts(main, "СОЕДИНЕНИЕ УСТАНОВЛЕНО")
+	main._on_connection_finished(true, rid, null)
+	await process_frame
+	_eq(_count_toasts(main, "СОЕДИНЕНИЕ УСТАНОВЛЕНО") - ok_before, 1,
+		"успешное соединение: тост Main сохранён")
+	director._cleanup_request(rid, true)
+	main.queue_free()
+	await process_frame
+
+
 # --- служебное -------------------------------------------------------------
 
 func _finish_current_hour() -> void:
@@ -342,6 +565,17 @@ func _has_toast(fragment: String) -> bool:
 		if str(text).contains(fragment):
 			return true
 	return false
+
+
+## Считает реально показанные UI-тосты Main, содержащие fragment.
+func _count_toasts(main, fragment: String) -> int:
+	var count := 0
+	if main == null or main.toast_layer == null:
+		return count
+	for item in main.toast_layer._items:
+		if is_instance_valid(item) and str(item.txt).contains(fragment):
+			count += 1
+	return count
 
 
 # --- обработчики -----------------------------------------------------------

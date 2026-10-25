@@ -5,10 +5,9 @@ extends MiniGame
 ## учитывается не более одного раза.
 
 const TIERS := {
-	1: {"words": 11, "aliens": 1, "lines": 2, "types": ["foreign"]},
-	2: {"words": 15, "aliens": 2, "lines": 2, "types": ["foreign", "deformed"]},
-	3: {"words": 19, "aliens": 3, "lines": 3, "types": ["foreign", "deformed", "semantic"]},
-	4: {"words": 24, "aliens": 4, "lines": 3, "types": ["foreign", "deformed", "semantic", "archaic"]},
+	1: {"words": 15, "aliens": 2, "lines": 2, "types": ["foreign", "deformed"]},
+	2: {"words": 19, "aliens": 3, "lines": 3, "types": ["foreign", "deformed", "semantic"]},
+	3: {"words": 24, "aliens": 4, "lines": 3, "types": ["foreign", "deformed", "semantic", "archaic"]},
 }
 
 const NORMAL := [
@@ -65,10 +64,26 @@ func _setup() -> void:
 	_build_layout()
 
 
+func _goal_text() -> String:
+	return "НАЙДИТЕ ЧУЖИЕ СЛОВА И НАЖМИТЕ «ОТПРАВИТЬ»"
+
+
+func _progress_ratio() -> float:
+	var aliens := int(generated.get("aliens", 0))
+	if aliens <= 0:
+		return 0.0
+	return clampf(float(_found) / float(aliens), 0.0, 1.0)
+
+
+func _result_stats() -> String:
+	return "НАЙДЕНО %d/%d · ЛОЖНЫХ %d" % [_found,
+		int(generated.get("aliens", 0)), _false_positive_count()]
+
+
 # --- параметры/чистая логика ----------------------------------------------
 
 static func tier_params(p_tier: int) -> Dictionary:
-	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 4), TIERS[1]) as Dictionary).duplicate(true)
+	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 3), TIERS[1]) as Dictionary).duplicate(true)
 	var row := MiniGame.data_minigame_tier("text", p_tier)
 	if row.is_empty():
 		return base
@@ -166,7 +181,7 @@ static func generate(p_tier: int, seed: int) -> Dictionary:
 		if bool(w["alien"]):
 			alien_count += 1
 	return {
-		"tier": clampi(p_tier, 1, 4),
+		"tier": clampi(p_tier, 1, 3),
 		"words": words,
 		"count": words.size(),
 		"aliens": alien_count,
@@ -272,9 +287,16 @@ func _build_layout() -> void:
 			break
 
 	var line_h := float(size_px) + 13.0
-	var row_gap := maxf(6.0, (panel.size.y - 30.0 - line_h * float(rows_count))
-		/ float(maxi(1, rows_count - 1)))
-	var y := panel.position.y + 14.0
+	# Первая строка ниже заголовка записки, а не поверх него.
+	var header_h := 24.0
+	var top := panel.position.y + header_h + 2.0
+	var avail := panel.size.y - header_h - 10.0
+	var gap := 10.0
+	if rows_count > 1:
+		gap = clampf((avail - line_h * float(rows_count)) / float(rows_count - 1),
+			10.0, 46.0)
+	var block_h := line_h * float(rows_count) + gap * float(maxi(0, rows_count - 1))
+	var y := top + maxf(0.0, (avail - block_h) * 0.5)
 	for r in range(counts.size()):
 		var row_list := _row_words(r, counts)
 		var widths: Array = []
@@ -295,7 +317,7 @@ func _build_layout() -> void:
 			})
 			x += ww + 7.0
 		_layout.append(row_layout)
-		y += line_h + row_gap
+		y += line_h + gap
 	_layout.append(size_px)
 
 
@@ -374,19 +396,19 @@ func _draw_game() -> void:
 	var font := Theme90.ui()
 	var fp := _false_positive_count()
 	_draw_label("ПИСЬМО КЛИЕНТА · ЗАДАНИЕ 97", Vector2(24.0, 46.0), 10,
-		Theme90.ACCENT, 260.0)
+		Theme90.NAVY, 260.0)
 	_draw_label("НАЙДЕНО %d / %d · ЛОЖНЫХ %d" % [_found,
 		int(generated.get("aliens", 1)), fp], Vector2(300.0, 46.0), 10,
-		Theme90.SUCCESS if _found >= int(generated.get("aliens", 1)) else Theme90.SHADE,
+		Theme90.SUCCESS if _found >= int(generated.get("aliens", 1)) else Theme90.DARK,
 		300.0, HORIZONTAL_ALIGNMENT_RIGHT)
 
 	var panel := Rect2(28.0, 62.0, 584.0, 232.0)
 	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER, 4, 1,
 		Theme90.SHADOW), panel)
-	draw_rect(Rect2(panel.position.x + 18.0, panel.position.y + 12.0,
+	draw_rect(Rect2(panel.position.x + 18.0, panel.position.y + 23.0,
 		panel.size.x - 36.0, 1.0), Theme90.HAIRLINE)
 	_draw_label("СЛУЖЕБНАЯ ЗАПИСКА · НАЙДИТЕ ЧУЖИЕ СЛОВА", Vector2(panel.position.x + 20.0,
-		panel.position.y + 20.0), 10, Theme90.SHADE, panel.size.x - 40.0)
+		panel.position.y + 7.0), 10, Theme90.DARK, panel.size.x - 40.0)
 
 	var size_px := 12
 	if not _layout.is_empty() and typeof(_layout[_layout.size() - 1]) == TYPE_INT:
@@ -421,7 +443,5 @@ func _draw_game() -> void:
 					Vector2(rect.end.x - 2.0, rect.get_center().y + 5.0),
 					Theme90.SUCCESS, 1.5)
 	_draw_label("КЛИК ПО СЛОВУ — ПОМЕТИТЬ · ПОВТОРНЫЙ КЛИК — СНЯТЬ",
-		Vector2(24.0, 300.0), 10, Theme90.SHADE, 400.0)
-	_draw_label("ЧУЖИЕ: ИНОСТРАННЫЕ, С ОШИБКОЙ, НЕУМЕСТНЫЕ, УСТАРЕВШИЕ",
-		Vector2(24.0, 344.0), 10, Theme90.SHADE, 430.0)
+		Vector2(24.0, 300.0), 10, Theme90.DARK, 400.0)
 	_draw_action_button(ACTION_RECT, ACTION_LABEL, true, true)

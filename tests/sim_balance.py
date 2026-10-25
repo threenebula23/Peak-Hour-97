@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""PEAK HOUR v2 balance simulator (pure Python 3, no third-party deps).
+"""PEAK HOUR v3 balance simulator (pure Python 3, no third-party deps).
 
 Reads ``data/balance.json`` from the repository and models hours H1-H9:
 file budget/spawn window, type weights, request cap/active limit/request mix,
@@ -68,12 +68,18 @@ HUMAN_ATTACH_PER_FILE = 1.0
 MINIGAME_BASE = 7.0         # no timer: competent player still needs time
 MINIGAME_PER_TIER = 1.5
 PROTOCOL = "tcp"            # production default; TCP is +15% payout
+TCP_CONNECT_SEC = 4.2       # production TCP connection minigame, competent player
+TCP_CONNECT_FAIL = 0.04     # 4% missed TCP connection
+TCP_CONNECT_FAIL_SLA = 4.0  # and -4 SLA
 CHECK_TOL = 0.20            # +-20% per hour
 PURCHASE_ROI_MIN = 0.5      # regular prep: buy while predicted value >= 0.5x price
 FINAL_PREP_ROI_MIN = 0.0    # before H9 there is no future shop: spend on any positive ROI
 
 TARGETS = {int(h): float(HOURS[h]["income_target"]) for h in HOURS}
-MAX_SLA = float(CONST.get("sla_hard_cap", 200))
+BAND_LOW = int(sum(TARGETS.values()))
+BAND_HIGH = 8500
+BAND_TEXT = f"{BAND_LOW:,} - {BAND_HIGH:,}".replace(",", " ")
+MAX_SLA = float(CONST.get("sla_hard_cap", 220))
 SLA_REGEN = float(CONST.get("sla_regen_per_hour", 15))
 
 # type helpers
@@ -87,6 +93,17 @@ MINIGAME_COEFF = {t: int(TYPES[t]["minigame_coeff"]) for t in TYPES}
 
 ACHIEVABLE_SUMS = [int(v) for v in BALANCE["minigames"]["selection"]["achievable_sums"]]
 SEND_ORDER = list(BALANCE["minigames"]["selection"]["order"])
+SEL = BALANCE["minigames"]["selection"]
+TIER_MAX_RANK = [int(v) for v in SEL.get("tier_max_rank", [7, 13])]
+RANK_GAMES = list(SEL.get(
+    "rank_games",
+    ["text", "sound", "dots", "photo", "maze", "dots", "photo", "video",
+     "dots", "text", "video", "maze", "photo", "sound", "video", "text",
+     "maze", "sound", "video", "sound", "photo", "dots", "dots", "maze",
+     "maze", "photo", "video"],
+))
+FOLDER_NEW_COST = int(CONST.get("folder_new_cost", 180))
+SHIELD_REWARD_SCALE = float(ATTACKS.get("shield_reward_scale", 0.7))
 
 
 def clamp(value: float, low: float, high: float) -> float:
@@ -140,18 +157,24 @@ def weighted_index(rng: random.Random, values: list[str], weights: list[float]) 
 
 
 def send_minigame_for(types: list[str]) -> dict[str, int | str]:
-    """Dense-sum selection from balance.json (B4), not the old idx = S - 1."""
-    total = sum(MINIGAME_COEFF.get(t, 1) for t in types)
+    """Economy.selection_for_sum: 27 dense sums, 3 tiers, direct rank table."""
+    total = sum(MINIGAME_COEFF.get(str(t).lower(), 1) for t in types)
+    if total <= 0:
+        return {"id": "dots", "tier": 1, "index": 0, "sum": 0}
     rank = 0
     for i, value in enumerate(ACHIEVABLE_SUMS):
         if value <= total:
             rank = i
         else:
             break
-    count = len(ACHIEVABLE_SUMS)
-    tier = int(clamp(1 + math.floor(rank * 4.0 / count), 1, 4))
+    if rank > TIER_MAX_RANK[1]:
+        tier = 3
+    elif rank > TIER_MAX_RANK[0]:
+        tier = 2
+    else:
+        tier = 1
     return {
-        "id": SEND_ORDER[rank % len(SEND_ORDER)],
+        "id": RANK_GAMES[min(rank, len(RANK_GAMES) - 1)],
         "tier": tier,
         "index": rank,
         "sum": total,
@@ -273,6 +296,7 @@ class Simulation:
         self.levels: dict[str, int] = {str(lot["id"]): 0 for lot in SHOP}
         self.lot_stats: dict[str, LotStat] = {str(lot["id"]): LotStat() for lot in SHOP}
         self.total_spent = 0
+        self.folder_spend = 0
         self.earned = 0
         self.carry = 0
         self.stored_types: list[str] = []
@@ -305,32 +329,35 @@ class Simulation:
     def slot_limit(self) -> int:
         return int(clamp(1 + self.levels["lot_slots"], 1, int(CONST.get("slots_max", 5))))
 
+    def lot_value(self, lot_id: str, fallback: float) -> float:
+        return float(SHOP_BY_ID[lot_id].get("value", fallback))
+
     def transfer_speed_mult(self) -> float:
-        return float(0.92) ** self.levels["lot_speed"]
+        cut = float(clamp(self.lot_value("lot_speed", 0.10), 0.01, 0.9))
+        return float(1.0 - cut) ** self.levels["lot_speed"]
 
     def channel_capacity(self) -> float:
         return float(CONST.get("channel_capacity", 10)) + \
-            float(CONST.get("channel_per_level", 6)) * self.levels["lot_channel"]
+            self.lot_value("lot_channel", 6.0) * self.levels["lot_channel"]
 
     def buffer_limit(self) -> int:
-        return int(clamp(int(CONST.get("buffer_base", 6)) + self.levels["lot_channel"],
-                         int(CONST.get("buffer_base", 6)),
-                         int(CONST.get("buffer_max", 12))))
+        base = int(CONST.get("buffer_base", 6))
+        step = int(self.lot_value("lot_channel", 1.0))
+        return int(clamp(base + step * self.levels["lot_channel"],
+                         base, int(CONST.get("buffer_max", 12))))
 
     def request_timer(self) -> float:
-        return float(clamp(float(CONST.get("request_timer", 30)) +
-                           float(CONST.get("request_timer_per_level", 5)) *
-                           self.levels["lot_timer"],
-                           float(CONST.get("request_timer", 30)),
-                           float(CONST.get("request_timer_max", 55))))
+        base = float(CONST.get("request_timer", 30))
+        return float(clamp(base + self.lot_value("lot_timer", 7.0) * self.levels["lot_timer"],
+                           base, float(CONST.get("request_timer_max", 65))))
 
     def sla_cap(self) -> float:
-        return float(clamp(float(CONST.get("sla_base", 60)) +
-                           float(CONST.get("sla_per_level", 35)) * self.levels["lot_sla"],
-                           float(CONST.get("sla_base", 60)), MAX_SLA))
+        base = float(CONST.get("sla_base", 60))
+        return float(clamp(base + self.lot_value("lot_sla", 40.0) * self.levels["lot_sla"],
+                           base, MAX_SLA))
 
     def money_mult(self) -> float:
-        return 1.0 + 0.05 * self.levels["lot_money"]
+        return 1.0 + self.lot_value("lot_money", 0.05) * self.levels["lot_money"]
 
     def folder_cells(self) -> int:
         dims = GRID.get("folder_dims") or [[5, 4]]
@@ -351,7 +378,7 @@ class Simulation:
 
     # --- prep -------------------------------------------------------------
     def prepare_folders(self, hour: int, files_budget: int, occupied: int = 0) -> None:
-        """Competent player pre-creates free folders (spec 2.1: up to 12)."""
+        """Competent player buys free folders for folder_new_cost (spec 2.1)."""
         weights = HOURS[hour]["type_weights"]
         avg_cells = sum(float(weights.get(t, 0.0)) * CELLS[t] for t in TYPE_ORDER)
         expected = occupied + files_budget * max(1.0, avg_cells) * 0.9
@@ -359,6 +386,10 @@ class Simulation:
         max_folders = int(CONST.get("folders_max", 6))
         guard = 0
         while cap < expected * 1.15 and self.folders < max_folders and guard < 20:
+            if FOLDER_NEW_COST > self.money:
+                break
+            self.money -= FOLDER_NEW_COST
+            self.folder_spend += FOLDER_NEW_COST
             self.folders += 1
             cap = self.cell_capacity()
             guard += 1
@@ -422,11 +453,12 @@ class Simulation:
         penalty = max(0.0, self.last_metrics["channel_penalty"])
 
         if effect == "money_mult":
-            # Relative payout gain of the next +5% level.
-            return 0.05 * proj / (1.0 + 0.05 * level)
+            # Relative payout gain of the next level (shop[].value).
+            step = self.lot_value("lot_money", 0.05)
+            return step * proj / (1.0 + step * level)
         if effect == "transfer_speed":
-            # 8% shorter transfers only matter when the pipe is the bottleneck.
-            return 0.08 * proj * busy * 0.5
+            # 10% shorter transfers only matter when the pipe is the bottleneck.
+            return self.lot_value("lot_speed", 0.10) * proj * busy * 0.5
         if effect == "connection_slots":
             base = 0.06 if wait_sec > 0.5 else 0.02
             return proj * base / (1.0 + 0.35 * (self.slot_limit() - 1))
@@ -439,11 +471,12 @@ class Simulation:
         if effect == "sla_cap":
             return proj * (0.12 if self.last_metrics["sla_ratio"] < 0.5 else 0.003)
         if effect == "shield_charge":
-            # One auto-block per hour, 50% reward, no fail penalty.
+            # One auto-block per hour, shield_reward_scale of the reward, no penalty.
             remaining_attacks = sum(int(HOURS[h].get("attacks", 0))
                                     for h in range(hour, RUN_HOURS + 1))
             avg_fail = 25.0 + 5.0 * max(0, hour - 2) / 2.0
-            return min(float(remaining_attacks), float(hours_left)) * 0.5 * avg_fail
+            return min(float(remaining_attacks), float(hours_left)) * \
+                SHIELD_REWARD_SCALE * avg_fail
         return 0.0
 
     def buy_best_roi(self, hour: int, offers: list[str]) -> None:
@@ -534,7 +567,9 @@ class Simulation:
         requests_spawned = 0
         next_spawn_t = 0.0
         spawn_interval = 225.0 / max(1, files_budget)
-        next_spawn_t = spawn_interval * self.rng.uniform(1.0 - SPAWN_JITTER, 1.0 + SPAWN_JITTER)
+        if hour > 1:
+            next_spawn_t = spawn_interval * self.rng.uniform(
+                1.0 - SPAWN_JITTER, 1.0 + SPAWN_JITTER)
         request_accum = 0.0
         request_interval = max(0.5, float(hour_def.get("send_interval", 20.0)))
 
@@ -633,6 +668,11 @@ class Simulation:
                 duration += RECV_TIME.get(file.type, 3.0) * self.transfer_speed_mult() * factor
                 if str(request.protocol).lower() == "udp":
                     duration *= float(PAYOUT.get("udp_time_mult", 0.8))
+            if str(request.protocol).lower() == "tcp":
+                # Production TCP: connection minigame before the send minigame.
+                duration += TCP_CONNECT_SEC
+                if self.rng.random() < TCP_CONNECT_FAIL:
+                    self.sla = max(0.0, self.sla - TCP_CONNECT_FAIL_SLA)
             request.state = "sending"
             request.send_left = max(0.1, duration)
             request.send_start_left = request.timer_left
@@ -676,8 +716,8 @@ class Simulation:
                 self.shield_charges -= 1
                 self.attacks_shielded += 1
                 self.attacks_blocked += 1
-                reward = int(round(float(row["reward_money"]) * 0.5))
-                reward_sla = float(row["reward_sla"]) * 0.5
+                reward = int(round(float(row["reward_money"]) * SHIELD_REWARD_SCALE))
+                reward_sla = float(row["reward_sla"]) * SHIELD_REWARD_SCALE
                 self.money += reward
                 self.earned += reward
                 attack_income += reward
@@ -715,7 +755,7 @@ class Simulation:
             if mode is not None and mode.state == "attaching" and now >= mode.attach_end:
                 request = mode
                 request.state = "minigame"
-                request.mini_end = now + MINIGAME_BASE + MINIGAME_PER_TIER * request.tier
+                request.mini_end = now + MINIGAME_BASE + MINIGAME_PER_TIER * (request.tier + 1)
             if mode is not None and mode.state == "minigame" and now >= mode.mini_end:
                 request = mode
                 mode = None
@@ -948,8 +988,8 @@ def analytical_rows() -> list[dict[str, float]]:
         allowed = [t for t in TYPE_ORDER if weights.get(t, 0.0) > 0.0]
         max_base_file = max(BASE_PAY[t] for t in allowed)
         max_recv_file = max(RECV_FEE[t] for t in allowed)
-        # Upper bound: request cap x 3 files, limited by the hour file budget.
-        max_files = min(files_budget, cap * 3)
+        # Upper bound: request cap x 4 files, limited by the hour file budget.
+        max_files = min(files_budget, cap * 4)
         max_base = max_files * max_base_file
         max_income = max_base * 1.4 + max_files * max_recv_file
         rows.append({
@@ -997,12 +1037,12 @@ def fmt_money(value: float) -> str:
 
 
 def suggested_caps(hour_means: dict[int, float]) -> dict[int, int]:
-    """Linear cap correction; H1 keeps cap 2 because the spec allows 1-2 requests."""
+    """Linear cap correction for every hour outside +/-20%."""
     caps: dict[int, int] = {}
     for hour in range(1, RUN_HOURS + 1):
         cap = int(HOURS[hour]["request_cap"])
         mean = hour_means.get(hour)
-        if hour == 1 or not mean:
+        if not mean:
             caps[hour] = cap
             continue
         if abs(mean - TARGETS[hour]) / TARGETS[hour] > CHECK_TOL:
@@ -1063,7 +1103,7 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
         for row in sim.hourly:
             per_hour[row.hour].append(row)
 
-    lines.append("# PEAK HOUR v2 - balance simulation report")
+    lines.append("# PEAK HOUR v3 - balance simulation report")
     lines.append("")
     lines.append(f"Generated by `tests/sim_balance.py` from `data/balance.json`.")
     lines.append(f"Seeds: **{len(runs)}**, hours: **{RUN_HOURS}**, dt: **{DT} s**, "
@@ -1073,8 +1113,9 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
     lines.append("## Model assumptions")
     lines.append("")
     lines.append("- Spawn: file budget from `hours[].files` (+ carry), spawn only during "
-                 "75% of the hour (225 s), interval 225/budget with +/-20% jitter. "
-                 "A full buffer freezes spawns without burning the budget.")
+                 "75% of the hour (225 s), interval 225/budget with +/-20% jitter; H1 "
+                 "spawns its first packet at t=0. A full buffer freezes spawns without "
+                 "burning the budget.")
     lines.append("- Types: `hours[].type_weights` only; zero weight never spawns.")
     lines.append("- Unsent files persist across hours (the folder is not cleared); only "
                  "files consumed by a successful send disappear. Unspawned budget is carried "
@@ -1085,33 +1126,38 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
                  "when no files exist.")
     lines.append(f"- Player: competent, attaches after {HUMAN_ATTACH_BASE:g} s + "
                  f"{HUMAN_ATTACH_PER_FILE:g} s/file, plays a no-timer send minigame for "
-                 f"{MINIGAME_BASE:g} + {MINIGAME_PER_TIER:g}*tier seconds. The minigame "
-                 "pauses packet spawn/loading but not other request timers (production order).")
-    lines.append("- Timers: request `30 + 5*timer_level` (cap 55), packet 20 s. "
+                 f"{MINIGAME_BASE:g} + {MINIGAME_PER_TIER:g}*(tier+1) seconds "
+                 f"(3 tiers). TCP adds {TCP_CONNECT_SEC:g} s connection time and "
+                 f"{TCP_CONNECT_FAIL * 100:.0f}% of attempts miss it "
+                 f"(-{TCP_CONNECT_FAIL_SLA:g} SLA). "
+                 "The minigame pauses packet spawn/loading but not other request timers "
+                 "(production order).")
+    lines.append("- Timers: request `30 + 7*timer_level` (cap 65), packet 20 s. "
                  "Timers pause in the player's own minigame and in the out-slot queue; "
                  "payout uses `time_left` snapshotted at send start.")
-    lines.append("- Transfers: `base_time_sec * 0.92^speed_level * max(1, load/capacity)`; "
+    lines.append("- Transfers: `base_time_sec * 0.90^speed_level * max(1, load/capacity)`; "
                  "slots are shared by receive and send; files are consumed on successful send.")
     lines.append("- Payout: exact `round(base_sum * speed * quality * multi * protocol * "
-                 "streak * money_mult)`; recv_fee is added on receive and is not multiplied.")
-    lines.append("- Folder: `grid.folder_dims[folder_level]`, 2 free folders at start, "
-                 "up to `constants.folders_max` (6) free folders created in prep. "
-                 "The spec allows up to 12; using 6 is the conservative reading and still "
-                 "makes `lot_folder` nearly worthless. Fragmentation is not modelled; cell "
-                 "capacity/occupancy is.")
+                 "streak * money_mult)`; TCP x1.15, UDP x0.85; recv_fee is added on receive "
+                 "and is not multiplied.")
+    lines.append("- Folder: `grid.folder_dims[folder_level]`, 2 free folders at start; "
+                 f"each extra folder costs `constants.folder_new_cost` ({FOLDER_NEW_COST} $) "
+                 "in prep, up to `constants.folders_max` (6). `lot_folder` buys more cells; "
+                 "fragmentation is not modelled, cell capacity/occupancy is.")
     lines.append("- Shop: 3 weighted offers after each hour, `last_offer` x0.5, pity x1.5, "
                  "no rerolls (locks are irrelevant), at least one affordable offer; buy the "
                  "best affordable predicted-ROI lot while ROI >= 0.5 before H9, and any "
                  "positive ROI in the final prep (there is no shop after H9).")
-    lines.append("- ROI proxy: `money` = 5% of projected remaining income; `slots`/`speed`/"
-                 "`channel`/`timer`/`folder`/`sla`/`shield` use measured bottlenecks from the "
-                 "previous hour. It is deterministic, not an oracle.")
+    lines.append("- ROI proxy: `money` = next `shop[].value` step of projected remaining "
+                 "income; `slots`/`speed`/`channel`/`timer`/`folder`/`sla`/`shield` use "
+                 "measured bottlenecks from the previous hour. It is deterministic, not an "
+                 "oracle.")
     lines.append("")
     lines.append("## Analytical check (B1)")
     lines.append("")
     lines.append("Expected base_sum assumes the full `request_cap` is reachable and the "
                  "request mix/type weights are independent. `max income` is the hard upper "
-                 "bound (cap x 3 files, best allowed type, multiplier 1.4, recv fees).")
+                 "bound (cap x 4 files, best allowed type, multiplier 1.4, recv fees).")
     lines.append("")
     lines.append("| H | files | cap | act | E[n] | E[base/file] | E[base/req] | eff.reqs | "
                  "E[base] | E[payout@1.15] | @1.25 | @1.40 | max base | max income | target | verdict |")
@@ -1189,6 +1235,7 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
     total_recv = statistics.fmean([sum(r.recv_income for r in sim.hourly) for sim in runs])
     total_attack = statistics.fmean([sum(r.attack_income for r in sim.hourly) for sim in runs])
     total_spent = statistics.fmean([sim.total_spent for sim in runs])
+    folder_spend = statistics.fmean([sim.folder_spend for sim in runs])
     money_end = statistics.fmean([sim.money for sim in runs])
     total_done = statistics.fmean([sim.requests_done for sim in runs])
     total_received = statistics.fmean([sim.files_received for sim in runs])
@@ -1205,10 +1252,11 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
     lines.append("")
     lines.append(f"- Mean total income: **{fmt_money(total_income)} $** "
                  f"(payout {fmt_money(total_payout)} + recv_fee {fmt_money(total_recv)} "
-                 f"+ attacks {fmt_money(total_attack)}). Spec band: 7 300-8 500 $.")
+                 f"+ attacks {fmt_money(total_attack)}). Spec band: {BAND_TEXT} $.")
     lines.append(f"- Mean shop spend: **{fmt_money(total_spent)} $** = "
-                 f"**{tree_pct:.1f}%** of the 13 100 $ tree (target 55-65%). "
-                 f"Mean money left after H9: **{fmt_money(money_end)} $**.")
+                 f"**{tree_pct:.1f}%** of the {fmt_money(TOTAL_TREE)} $ tree (target 55-65%). "
+                 f"Mean money left after H9: **{fmt_money(money_end)} $**. "
+                 f"Mean folder spend: **{fmt_money(folder_spend)} $**.")
     lines.append(f"- Mean requests done: **{total_done:.1f}**; files received "
                  f"**{total_received:.1f}**, sent **{total_sent:.1f}**, left unsent "
                  f"**{total_left:.1f}**.")
@@ -1255,15 +1303,6 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
             cap = int(HOURS[hour]["request_cap"])
             mean = stats["mean"]
             target = stats["target"]
-            if hour == 1:
-                lines.append(f"- **H1**: mean {mean:.0f} $ vs target {target:.0f} $ "
-                             f"({stats['dev']:+.1f}%). The 2-request cap is the spec "
-                             "constraint; 2 requests x ~1.3 files average cannot reach 90 $. "
-                             "Suggest lowering `hours[1].income_target` **90 -> 65** "
-                             "(still inside the §0.1 60-120 band) or raising H1 "
-                             "text/sound `base_pay` by ~1.3x. Do not raise `request_cap`: "
-                             "3 completed requests violates the H1 acceptance rule.")
-                continue
             suggested = int(clamp(round(cap * target / max(1.0, mean)), 1,
                                   int(HOURS[hour]["files"])))
             if caps:
@@ -1292,22 +1331,21 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
                 f"H{h}={int(HOURS[h]['request_cap'])}" for h in range(1, RUN_HOURS + 1)) + ".")
             lines.append("- Suggested caps from this run: " + ", ".join(
                 f"H{h}={local_caps[h]}" for h in range(1, RUN_HOURS + 1)) + ".")
-            lines.append("- H2 stays 5 and H3 uses 5, above the §2.4 reference 3/4: "
-                         "the spec caps produce roughly 126 $ / 260 $ in this model, far "
-                         "below the 220 $ / 380 $ targets. H4=5 matches the spec.")
+            lines.append("- H2-H4 caps are the numbers from `hours[].request_cap`; the "
+                         "simulated means above show whether the spec reference caps "
+                         "[2, 3, 4, 5, 6, 7, 8, 9, 10] should be revisited.")
         else:
             lines.append("- H2-H4 are inside +/-20%; no early-cap change required by this run.")
         lines.append("")
-        if total_income < 7300.0 or total_income > 8500.0:
-            cap_failures = [h for h in hour_stats if h != 1 and not hour_stats[h]["ok"]]
+        if total_income < BAND_LOW or total_income > BAND_HIGH:
+            cap_failures = [h for h in hour_stats if not hour_stats[h]["ok"]]
             if cap_failures:
-                lines.append(f"- Total income {total_income:.0f} $ is outside 7 300-8 500 $, "
-                             "but most of the gap is explained by the inflated H3-H8 caps "
-                             "above. Re-run after applying those caps before touching "
-                             "`base_pay`.")
+                lines.append(f"- Total income {total_income:.0f} $ is outside {BAND_TEXT} $, "
+                             "but most of the gap is explained by the hourly caps above. "
+                             "Re-run after applying those caps before touching `base_pay`.")
             else:
-                scale = 7800.0 / max(1.0, total_income)
-                lines.append(f"- Total income {total_income:.0f} $ is outside 7 300-8 500 $. "
+                scale = (BAND_LOW + BAND_HIGH) * 0.5 / max(1.0, total_income)
+                lines.append(f"- Total income {total_income:.0f} $ is outside {BAND_TEXT} $. "
                              f"Global `base_pay` scale for the band: **x{scale:.2f}** "
                              f"(or adjust `income_target` instead).")
         if tree_pct < 55.0 or tree_pct > 65.0:
@@ -1329,11 +1367,9 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
         lines.append("### Money lot price curve")
         lines.append("")
         lines.append(f"- `lot_money` ROI proxy is **{money[6]:.2f}** and it takes "
-                     f"**{money[7]:.1f}%** of spend. The early 80/110/150 prices are "
-                     "front-loaded: +5% of remaining income is worth far more than the "
-                     "price. Suggested curve if you want later levels to compete: "
-                     "**[120, 170, 230, 300, 390, 500, 640, 800]** (total 3 150 $ instead "
-                     "of 2 140 $). This is a recommendation only.")
+                     f"**{money[7]:.1f}%** of spend. The early prices are front-loaded: "
+                     "one `+money_mult` step of remaining income is worth more than the "
+                     "first levels cost. This is a recommendation only.")
         lines.append("")
 
     # Dead-lot checks.
@@ -1347,14 +1383,15 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
         lines.append("")
         for lot_id, effect, levels, _buys, _spend, _value, roi, _share in dead:
             if effect == "folder_cells":
-                hint = ("Cap free folders or make the grid the binding resource; with 2-6 "
-                        "free folders the lot has almost no marginal value.")
+                hint = ("Each extra folder costs folder_new_cost and the lot raises the "
+                        "cell ceiling; check whether cells are actually the bottleneck.")
             elif effect == "sla_cap":
-                hint = ("SLA rarely binds for a competent player (2/240 defeats). Either "
-                        "lower the price/raise the effect or make timeouts hurt more.")
+                hint = (f"SLA binds only in {defeated}/{len(runs)} runs. Either lower the "
+                        "price/raise the effect or make timeouts hurt more.")
             elif effect == "shield_charge":
                 hint = ("q=0.85 clears every attack threshold, so auto-blocks only add "
-                        "50% rewards. Lower the price or raise attack rewards/fail costs.")
+                        f"{SHIELD_REWARD_SCALE * 100:.0f}% rewards. Lower the price or raise "
+                        "attack rewards/fail costs.")
             else:
                 hint = "Strengthen the effect or lower the price."
             lines.append(f"- `{lot_id}` ({effect}): mean level {levels:.2f}, ROI {roi:.2f}. "
@@ -1373,9 +1410,7 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
         if money_row:
             lines.append(f"- `lot_money` ROI is **{money_row[6]:.2f}** "
                          f"(spend share {money_row[7]:.1f}%). It is a good buy but not "
-                         "front-loaded enough to justify a new price curve from this run; "
-                         "if you want one anyway, [120, 170, 230, 300, 390, 500, 640, 800] "
-                         "is the mild version (total 3 150 $).")
+                         "front-loaded enough to justify a new price curve from this run.")
         lines.append("")
 
     if projection and caps:
@@ -1383,17 +1418,16 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
         lines.append("")
         lines.append("Suggested `request_cap` vector: **[" +
                      ", ".join(str(caps[h]) for h in range(1, RUN_HOURS + 1)) + "]**; "
-                     "H1 `income_target` **90 -> 65** (marked *). "
                      f"Projection seeds: {projection['seeds']}.")
         lines.append("")
         lines.append("| H | current cap | suggested cap | projected mean | target | dev | verdict |")
         lines.append("|---:|---:|---:|---:|---:|---:|---|")
         for hour in range(1, RUN_HOURS + 1):
             mean = float(projection["means"].get(hour, 0.0))
-            target_disp = 65.0 if hour == 1 else TARGETS[hour]
+            target_disp = TARGETS[hour]
             dev = (mean - target_disp) / target_disp * 100.0
             ok = abs(dev) <= CHECK_TOL * 100.0
-            target_text = f"{target_disp:.0f}" + ("*" if hour == 1 else "")
+            target_text = f"{target_disp:.0f}"
             lines.append(f"| {hour} | {int(HOURS[hour]['request_cap'])} | {caps[hour]} | "
                          f"{fmt_money(mean)} | {target_text} | {dev:+.1f}% | "
                          f"{'PASS' if ok else 'FAIL'} |")
@@ -1411,8 +1445,8 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
                                  "55-65% is reachable only near this ceiling."))
         lines.append("Note: recommended H9 cap can be lower than H8 because unsent files "
                      "persist across hours and raise the effective supply in H9.")
-        if abs(float(projection["total"]) - 7800.0) < 500.0:
-            lines.append("The projected total is inside the 7 300-8 500 $ band.")
+        if BAND_LOW <= float(projection["total"]) <= BAND_HIGH:
+            lines.append(f"The projected total is inside the {BAND_TEXT} $ band.")
         lines.append("")
 
     lines.append("## Verdict")
@@ -1424,14 +1458,13 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
             lines.append(f"- {failure}")
         if projection:
             projected_ok = all(
-                abs(float(projection["means"].get(h, 0.0)) -
-                    (65.0 if h == 1 else TARGETS[h])) /
-                (65.0 if h == 1 else TARGETS[h]) <= CHECK_TOL
+                abs(float(projection["means"].get(h, 0.0)) - TARGETS[h]) /
+                TARGETS[h] <= CHECK_TOL
                 for h in range(1, RUN_HOURS + 1))
-            if projected_ok and abs(float(projection["total"]) - 7800.0) < 500.0:
+            if projected_ok and BAND_LOW <= float(projection["total"]) <= BAND_HIGH:
                 lines.append("")
-                lines.append("The in-memory projection with the recommended caps and H1 "
-                             "target passes all nine hours and lands in the income band. "
+                lines.append("The in-memory projection with the recommended caps "
+                             "passes all nine hours and lands in the income band. "
                              "No data file was modified.")
     else:
         lines.append("**PASS** - every hour is inside +/-20% and no analytical cap is below "
@@ -1441,7 +1474,7 @@ def build_report(runs: list[Simulation], analytical: list[dict[str, float]],
 
 
 def main() -> int:
-    print("PEAK HOUR v2 - balance simulation (no Godot)")
+    print("PEAK HOUR v3 - balance simulation (no Godot)")
     print(f"data: {BALANCE_PATH}")
     print(f"seeds: {SEEDS}, hours: {RUN_HOURS}, dt: {DT}s, "
           f"q_send={Q_SEND}, q_attack={Q_ATTACK}, protocol={PROTOCOL.upper()}")
@@ -1513,6 +1546,7 @@ def main() -> int:
 
     total_income = statistics.fmean([sum(r.income for r in sim.hourly) for sim in runs])
     total_spent = statistics.fmean([sim.total_spent for sim in runs])
+    folder_spend = statistics.fmean([sim.folder_spend for sim in runs])
     money_end = statistics.fmean([sim.money for sim in runs])
     total_done = statistics.fmean([sim.requests_done for sim in runs])
     total_received = statistics.fmean([sim.files_received for sim in runs])
@@ -1525,9 +1559,9 @@ def main() -> int:
     attacks_shielded = statistics.fmean([sim.attacks_shielded for sim in runs])
     tree_pct = total_spent / TOTAL_TREE * 100.0
     print("")
-    print(f"total income: {total_income:.0f} $ (spec 7300-8500)")
-    print(f"shop spend:   {total_spent:.0f} $ = {tree_pct:.1f}% of 13100 $ tree (target 55-65%); "
-          f"money left {money_end:.0f} $")
+    print(f"total income: {total_income:.0f} $ (spec {BAND_TEXT})")
+    print(f"shop spend:   {total_spent:.0f} $ = {tree_pct:.1f}% of {TOTAL_TREE} $ tree "
+          f"(target 55-65%); folder spend {folder_spend:.0f} $; money left {money_end:.0f} $")
     print(f"requests done: {total_done:.1f}; files received {total_received:.1f}, "
           f"sent {total_sent:.1f}, left unsent {total_left:.1f}")
     print(f"SLA end: {sla_end:.1f}; defeated runs: {defeated}")
@@ -1545,11 +1579,11 @@ def main() -> int:
         print("  caps: " + ", ".join(f"H{h}={caps[h]}" for h in range(1, RUN_HOURS + 1)))
         for hour in range(1, RUN_HOURS + 1):
             mean = float(projection["means"].get(hour, 0.0))
-            target_disp = 65.0 if hour == 1 else TARGETS[hour]
+            target_disp = TARGETS[hour]
             dev = (mean - target_disp) / target_disp * 100.0
             ok = abs(dev) <= CHECK_TOL * 100.0
             print(f"  H{hour}: mean {mean:.0f} vs target {target_disp:.0f}"
-                  f"{'*' if hour == 1 else ''} ({dev:+.1f}%) {'PASS' if ok else 'FAIL'}")
+                  f" ({dev:+.1f}%) {'PASS' if ok else 'FAIL'}")
         print(f"  total {float(projection['total']):.0f} $; "
               f"spend {float(projection['spend']):.0f} $ "
               f"({float(projection['spend']) / TOTAL_TREE * 100.0:.1f}% of tree)")
@@ -1572,23 +1606,20 @@ def main() -> int:
             if abs(mean - target) / target <= CHECK_TOL:
                 continue
             cap = int(HOURS[hour]["request_cap"])
-            if hour == 1:
-                print(f"  H1: keep cap 2, income_target 90 -> 65 (or +30% H1 base_pay); "
-                      f"mean {mean:.0f} vs target {target:.0f}")
-                continue
             suggested = int(clamp(round(cap * target / max(1.0, mean)), 1,
                                   int(HOURS[hour]["files"])))
             if caps:
                 suggested = int(caps.get(hour, suggested))
             print(f"  H{hour}: cap {cap} -> {suggested} (mean {mean:.0f} vs target {target:.0f})")
-        if total_income < 7300.0 or total_income > 8500.0:
-            cap_failures = [h for h in hour_means if h != 1 and
-                            abs(hour_means[h] - TARGETS[h]) / TARGETS[h] > CHECK_TOL]
+        if total_income < BAND_LOW or total_income > BAND_HIGH:
+            cap_failures = [h for h in hour_means
+                            if abs(hour_means[h] - TARGETS[h]) / TARGETS[h] > CHECK_TOL]
             if cap_failures:
-                print("  total: outside 7300-8500 mainly due to H3-H8 caps; "
+                print(f"  total: outside {BAND_TEXT} mainly due to hourly caps; "
                       "re-run after cap changes before scaling base_pay")
             else:
-                print(f"  total: scale base_pay by x{7800.0 / max(1.0, total_income):.2f} "
+                print(f"  total: scale base_pay by "
+                      f"x{(BAND_LOW + BAND_HIGH) * 0.5 / max(1.0, total_income):.2f} "
                       f"or adjust targets")
         if tree_pct < 55.0 or tree_pct > 65.0:
             ceiling = (total_income - statistics.fmean(

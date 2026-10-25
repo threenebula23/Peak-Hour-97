@@ -1,8 +1,59 @@
 extends SceneTree
 ## Dev-инструмент (не часть игры): снимает кадр сцены в PNG.
 ##
-## godot --path . --script scripts/ui/dev_capture.gd -- --scene=res://scenes/Main.tscn --out=/tmp/opencode/peak.png
-## godot --path . --script scripts/ui/dev_capture.gd -- --probe --out=/tmp/opencode/font_probe.png
+## Базовые примеры:
+##   godot --path . --script scripts/ui/dev_capture.gd -- --scene=res://scenes/Main.tscn --out=/tmp/opencode/peak.png
+##   godot --path . --script scripts/ui/dev_capture.gd -- --probe --out=/tmp/opencode/font_probe.png
+##
+## Экраны игры (флаги сами запускают новый забег, если это нужно):
+##   ... -- --run --out=/tmp/opencode/prep.png
+##   ... -- --hour --seconds=8 --spawn=packet,request --out=/tmp/opencode/hour.png
+##   ... -- --minigame=dots --tier=2 --out=/tmp/opencode/dots.png
+##   ... -- --shop --out=/tmp/opencode/shop.png
+##   ... -- --tutorial --out=/tmp/opencode/tutorial.png
+##
+## Флаги:
+##   --scene=PATH      сцена для загрузки (по умолчанию res://scenes/Main.tscn)
+##   --out=PATH        куда сохранить PNG (по умолчанию /tmp/opencode/peak.png)
+##   --wait=N          сколько кадров ждать перед снимком (по умолчанию 10)
+##   --probe           отрисовать шрифтовой probe вместо Main
+##   --run             нажать «НОВЫЙ ЗАБЕГ» (Main._start_new_run)
+##   --hour            после --run начать час 1 (Main._on_start_hour)
+##   --seconds=N       сколько реальных секунд крутить час (по умолчанию 6) — нужен --hour
+##   --spawn=A,B       через HourDirector спавнить packet и/или request (нужен --hour)
+##   --folder=ID       открыть папку по id (как раньше); с --run без --folder
+##                     автоматически открывается первая папка
+##   --minigame=ID     dots|sound|text|video|photo|maze|junk|ddos|phishing|ransomware
+##   --tier=N          сложность мини-игры, 1..4 (по умолчанию 2)
+##   --seed=N          сид мини-игры (по умолчанию 12345)
+##   --shop            свернуть офферы для часа 2 и открыть ShopModal
+##   --tutorial        запустить забег и показать маскота-туториал
+##   --menu            контекстное меню 90-х (как раньше)
+##   --filemenu        выпадающее меню «ФАЙЛ» (как раньше)
+##   --toast           два демо-тоста (как раньше)
+##   --hover=x,y       навести курсор
+##   --press=x,y       нажать ЛКМ в точке (без отпускания)
+##   --drag=x1,y1,x2,y2  настоящий drag: press → motion ×8 → release
+##   --hold            с --drag: остановиться до release (кадр «в процессе»)
+##   --raw-coords      координаты --hover/--press/--drag заданы в пикселях окна,
+##                     а не в логических 1280×720 (аварийный режим совместимости)
+##
+## ПРОСТРАНСТВО КООРДИНАТ:
+##   Все координаты указателя (--hover/--press/--drag) — ЛОГИЧЕСКИЕ 1280×720,
+##   как в макете. Внутри они умножаются на реальный размер окна / 1280×720
+##   (обычно 1920×1080 → ×1.5). Скриншот всегда сохраняется в пикселях окна
+##   (обычно 1920×1080). --raw-coords отключает пересчёт.
+##
+## При ошибке (нет метода Main, пустая папка, мини-игра не создалась) скрипт
+## печатает причину и завершается с кодом 1, а не снимает меню молча.
+
+const LOGICAL_SIZE := Vector2(1280.0, 720.0)
+const SEND_GAMES: Array[String] = [
+	"dots", "sound", "text", "video", "photo", "maze",
+]
+const ATTACK_GAMES: Array[String] = [
+	"junk", "ddos", "phishing", "ransomware",
+]
 
 var _scene_path := "res://scenes/Main.tscn"
 var _out := "/tmp/opencode/peak.png"
@@ -15,6 +66,23 @@ var _press := Vector2(-1, -1)
 var _folder := ""
 var _filemenu := false
 var _main: Node = null
+
+var _run := false
+var _hour := false
+var _seconds := 6.0
+var _spawn: Array[String] = []
+var _minigame := ""
+var _tier := 2
+var _seed := 12345
+var _shop := false
+var _tutorial := false
+## [start, end] в логических координатах; пустой массив — drag не нужен.
+var _drag: Array[Vector2] = []
+var _hold := false
+var _raw_coords := false
+
+## Снимок делается только после того, как сцена и запрошенные экраны готовы.
+var _setup_done := false
 
 
 func _initialize() -> void:
@@ -33,51 +101,153 @@ func _initialize() -> void:
 			_filemenu = true
 		elif a == "--toast":
 			_toast = true
-		elif a.begins_with("--hover="):
-			var hp := a.substr(8).split(",")
-			_hover = Vector2(float(hp[0]), float(hp[1]))
+		elif a == "--run":
+			_run = true
+		elif a == "--hour":
+			_hour = true
+		elif a.begins_with("--seconds="):
+			_seconds = maxf(0.0, float(a.substr(10)))
+		elif a.begins_with("--spawn="):
+			_spawn.clear()
+			for raw in a.substr(8).split(",", false):
+				var token := raw.strip_edges().to_lower()
+				if token.is_empty():
+					continue
+				if token != "packet" and token != "request":
+					_fail("--spawn: неизвестный тип '%s' (ожидается packet или request)" % token)
+					return
+				_spawn.append(token)
 		elif a.begins_with("--folder="):
 			_folder = a.substr(9)
+		elif a.begins_with("--minigame="):
+			_minigame = a.substr(11).strip_edges().to_lower()
+		elif a.begins_with("--tier="):
+			_tier = clampi(int(a.substr(7)), 1, 4)
+		elif a.begins_with("--seed="):
+			_seed = int(a.substr(7))
+		elif a == "--shop":
+			_shop = true
+		elif a == "--tutorial":
+			_tutorial = true
+		elif a.begins_with("--hover="):
+			_hover = _parse_pair(a.substr(8))
+			if _hover.x < 0.0:
+				_fail("--hover: нужен формат x,y")
+				return
 		elif a.begins_with("--press="):
-			var pp := a.substr(8).split(",")
-			_press = Vector2(float(pp[0]), float(pp[1]))
+			_press = _parse_pair(a.substr(8))
+			if _press.x < 0.0:
+				_fail("--press: нужен формат x,y")
+				return
+		elif a.begins_with("--drag="):
+			var parts := a.substr(7).split(",", false)
+			if parts.size() != 4:
+				_fail("--drag: нужен формат x1,y1,x2,y2")
+				return
+			var p1 := _parse_pair("%s,%s" % [parts[0], parts[1]])
+			var p2 := _parse_pair("%s,%s" % [parts[2], parts[3]])
+			if p1.x < 0.0 or p2.x < 0.0:
+				_fail("--drag: координаты должны быть числами x1,y1,x2,y2")
+				return
+			_drag = [p1, p2]
+		elif a == "--hold":
+			_hold = true
+		elif a == "--raw-coords":
+			_raw_coords = true
+		elif a == "--help" or a == "-h":
+			_print_help()
+			quit(0)
+			return
+	if not _minigame.is_empty() and not SEND_GAMES.has(_minigame) \
+			and not ATTACK_GAMES.has(_minigame):
+		_fail("--minigame: '%s' не поддерживается (см. --help)" % _minigame)
+		return
+	if _hold and _drag.is_empty():
+		_fail("--hold имеет смысл только вместе с --drag")
+		return
 	if _probe:
 		root.add_child(Probe.new())
-	else:
-		var ps: PackedScene = load(_scene_path)
-		if ps == null:
-			push_error("cannot load " + _scene_path)
-			quit(1)
-			return
-		_main = ps.instantiate()
-		root.add_child(_main)
-		call_deferred("_after_ready")
+		_setup_done = true
+		return
+	var ps: PackedScene = load(_scene_path)
+	if ps == null:
+		_fail("cannot load " + _scene_path)
+		return
+	_main = ps.instantiate()
+	root.add_child(_main)
+	call_deferred("_after_ready")
 
 
 func _after_ready() -> void:
-	if _toast and _main != null and _main.has_method("_toast"):
+	# Дадим Main один-два кадра на _ready/_process и ленивые модалки.
+	await _frames(2)
+	if _main == null:
+		_fail("Main не загрузился")
+		return
+
+	if _toast and _main.has_method("_toast"):
 		_main.call("_toast", "СОЕДИНЕНИЕ УСТАНОВЛЕНО · договор_11.doc", "success")
 		_main.call("_toast", "КАПАЛ 45% · БУФЕР 3/4", "warn")
-	if not _folder.is_empty() and _main != null:
-		if _main.has_method("_on_folder_selected"):
-			_main.call("_on_folder_selected", _folder)
-	if _hover.x >= 0.0:
-		await create_timer(0.15).timeout
-		Input.warp_mouse(_hover)
-	if _press.x >= 0.0:
-		await create_timer(0.15).timeout
-		var ev := InputEventMouseButton.new()
-		ev.button_index = MOUSE_BUTTON_LEFT
-		ev.pressed = true
-		ev.position = _press
-		ev.global_position = _press
-		Input.parse_input_event(ev)
+
+	# Игровые экраны невозможны без забега: --hour/--shop/--tutorial/--minigame
+	# и --spawn сами включают его, чтобы команды из документации работали.
+	var need_run: bool = _run or _hour or _shop or _tutorial \
+		or not _minigame.is_empty() or not _spawn.is_empty()
+	if need_run:
+		if not _invoke_main("_start_new_run", [], "start_new_run"):
+			return
+		await _frames(4)
+
+	# --folder имеет приоритет; иначе после --run открываем первую папку,
+	# чтобы в кадре была сетка файлов, а не пустая панель.
+	if not _folder.is_empty():
+		if not _invoke_main("_on_folder_selected", [_folder]):
+			return
+		await _frames(2)
+	elif need_run:
+		if not _select_first_folder():
+			return
+		await _frames(2)
+
+	if _hour or not _spawn.is_empty():
+		# Новый забег начинается с пустого склада: без файлов HourDirector
+		# не сможет создать запросы. Кладём демо-файлы в первую папку.
+		if not _seed_demo_files():
+			return
+		if not _invoke_main("_on_start_hour"):
+			return
+		await _frames(3)
+		if not _spawn.is_empty() and not _spawn_cards():
+			return
+		if _seconds > 0.0:
+			# Настоящее время: HourDirector тикает из Main._process, пакеты и
+			# запросы успевают появиться и отрисоваться.
+			await create_timer(_seconds).timeout
+		await _frames(3)
+
+	if _shop:
+		if not _open_shop():
+			return
+		await _frames(3)
+
+	if _tutorial:
+		if not _show_tutorial():
+			return
+		await _frames(2)
+
+	if not _minigame.is_empty():
+		if not _show_minigame():
+			return
+		await _frames(6)
+
+	# Прежние сценарии меню/тостов/файлового меню.
 	if _filemenu and _main != null:
 		await create_timer(0.1).timeout
 		var menus: Dictionary = _main.get("_menus")
 		if menus.has("ФАЙЛ"):
 			var pm: PopupMenu = menus["ФАЙЛ"]
 			pm.popup(Rect2i(Vector2i(6, 44), Vector2i.ZERO))
+
 	if _menu:
 		await create_timer(0.1).timeout
 		ContextMenu90.show_items(_main, [
@@ -88,17 +258,345 @@ func _after_ready() -> void:
 			{"label": "Уничтожить содержимое", "id": "destroy", "danger": true},
 		], Vector2(120, 220), func(_id: String) -> void: pass)
 
+	if _hover.x >= 0.0:
+		await create_timer(0.15).timeout
+		Input.warp_mouse(_window_point(_hover))
+
+	if _press.x >= 0.0:
+		await create_timer(0.15).timeout
+		_send_button(_window_point(_press), true)
+
+	if not _drag.is_empty():
+		await _do_drag()
+
+	_setup_done = true
+
 
 func _process(_delta: float) -> bool:
-		_wait -= 1
-		if _wait > 0:
-			return false
-		var img := root.get_texture().get_image()
-		img.save_png(_out)
-		print("saved ", _out, " ", img.get_size())
-		quit()
+	if not _setup_done:
+		return false
+	_wait -= 1
+	if _wait > 0:
+		return false
+	if DisplayServer.get_name() == "headless":
+		_fail("headless-режим: скриншот невозможен, нужен реальный дисплей")
 		return true
+	var tex := root.get_texture()
+	if tex == null:
+		_fail("нет текстуры окна (headless? нужен реальный дисплей)")
+		return true
+	var img := tex.get_image()
+	if img == null:
+		_fail("не удалось получить изображение кадра")
+		return true
+	var err := img.save_png(_out)
+	if err != OK:
+		_fail("не удалось сохранить %s (ошибка %d)" % [_out, err])
+		return true
+	print("saved ", _out, " ", img.get_size())
+	quit()
+	return true
 
+
+# --------------------------------------------------------------------------
+# Шаги сценария
+# --------------------------------------------------------------------------
+
+## Вызвать метод Main; при отсутствии — внятная ошибка и код 1.
+func _invoke_main(method: String, args: Array = [], fallback: String = "") -> bool:
+	if _main == null:
+		_fail("Main не загружен")
+		return false
+	var target := method
+	if not _main.has_method(target):
+		if fallback.is_empty() or not _main.has_method(fallback):
+			_fail("Main не имеет метода %s()" % method)
+			return false
+		target = fallback
+	_main.callv(target, args)
+	return true
+
+
+func _select_first_folder() -> bool:
+	var folder_id := _first_folder_id()
+	if folder_id.is_empty():
+		_fail("в подготовке нет ни одной папки для --run")
+		return false
+	return _invoke_main("_on_folder_selected", [folder_id])
+
+
+func _first_folder_id() -> String:
+	var ctrl = _main.get("controller")
+	if ctrl == null or not ctrl.has_method("prep_data"):
+		return ""
+	var d: Dictionary = ctrl.call("prep_data")
+	for sec in d.get("sections", []):
+		var folders: Array = sec.get("folders", [])
+		if folders.is_empty():
+			continue
+		var folder_id := str(folders[0].get("id", ""))
+		if not folder_id.is_empty():
+			return folder_id
+	return ""
+
+
+func _folder_exists(folder_id: String) -> bool:
+	var ctrl = _main.get("controller")
+	if ctrl == null or not ctrl.has_method("prep_data"):
+		return false
+	var d: Dictionary = ctrl.call("prep_data")
+	for sec in d.get("sections", []):
+		for fol in sec.get("folders", []):
+			if str(fol.get("id", "")) == folder_id:
+				return true
+	return false
+
+
+## Демо-файлы для часа: без них запросы не спавнятся (реестр пуст).
+func _seed_demo_files() -> bool:
+	var game_node := root.get_node_or_null("Game")
+	if game_node == null:
+		_fail("автолоад Game недоступен")
+		return false
+	var registry = game_node.get("registry")
+	if registry == null or not registry.has_method("create_file"):
+		_fail("Game.registry.create_file() недоступен")
+		return false
+	var folder_id := _folder
+	if folder_id.is_empty() or not _folder_exists(folder_id):
+		folder_id = _first_folder_id()
+	if folder_id.is_empty():
+		_fail("некуда положить демо-файлы: нет папок")
+		return false
+	var demo := [["договор_97", "text"], ["смета_демо", "photo"],
+		["отчёт_демо", "video"]]
+	for pair in demo:
+		var file_name := str(pair[0])
+		if registry.has_method("find_by_name") \
+				and registry.call("find_by_name", file_name) != null:
+			continue
+		registry.call("create_file", file_name, str(pair[1]), folder_id)
+	if _main.has_method("_refresh_prep"):
+		_main.call("_refresh_prep")
+	return true
+
+
+func _spawn_cards() -> bool:
+	var ctrl = _main.get("controller")
+	if ctrl == null:
+		_fail("Main.controller недоступен")
+		return false
+	var director = ctrl.get("hour_director")
+	if director == null:
+		_fail("HourDirector недоступен")
+		return false
+	for token in _spawn:
+		if token == "packet":
+			if not director.has_method("spawn_packet_now"):
+				_fail("HourDirector.spawn_packet_now() отсутствует")
+				return false
+			var spawned := 0
+			for i in 3:
+				if not str(director.call("spawn_packet_now")).is_empty():
+					spawned += 1
+			if spawned == 0:
+				_fail("HourDirector не смог создать ни одного пакета")
+				return false
+		elif token == "request":
+			if not director.has_method("spawn_request_now"):
+				_fail("HourDirector.spawn_request_now() отсутствует")
+				return false
+			var spawned_req := 0
+			for i in 2:
+				var req_id := str(director.call("spawn_request_now"))
+				if req_id.is_empty():
+					# Страховка: один файл на запрос, если обычный ролл не прошёл.
+					req_id = str(director.call("spawn_request_now", 1))
+				if not req_id.is_empty():
+					spawned_req += 1
+			if spawned_req == 0:
+				_fail("HourDirector не смог создать ни одного запроса")
+				return false
+	if _main.has_method("_refresh_hour"):
+		_main.call("_refresh_hour")
+	return true
+
+
+func _open_shop() -> bool:
+	var ctrl = _main.get("controller")
+	if ctrl == null:
+		_fail("Main.controller недоступен")
+		return false
+	var shop = ctrl.get("shop")
+	if shop == null:
+		_fail("GameController.shop недоступен")
+		return false
+	var modal = _main.get("shop_modal")
+	if modal == null:
+		_fail("Main.shop_modal недоступен")
+		return false
+	if not modal.has_method("open_prep"):
+		_fail("ShopModal.open_prep() отсутствует")
+		return false
+	# Магазин в игре открывается в подготовке ПОСЛЕ часа 1. Main._on_shop()
+	# на часе 1 отказывает, поэтому крутим офферы для часа 2 и открываем
+	# модалку напрямую тем же API, что и игра.
+	if shop.has_method("refresh"):
+		shop.call("refresh", 2, _game_money())
+	var offers: Array = []
+	if shop.has_method("offers"):
+		offers = shop.call("offers")
+	if offers.is_empty():
+		_fail("магазин не выдал офферы для часа 2")
+		return false
+	modal.call("open_prep", shop, _game_money(), 2)
+	if not bool(modal.get("visible")):
+		_fail("ShopModal не открылся")
+		return false
+	return true
+
+
+func _show_tutorial() -> bool:
+	var mascot = _main.get("mascot")
+	if mascot == null or not mascot.has_method("show_message"):
+		_fail("Main.mascot/TutorialMascot.show_message() недоступен")
+		return false
+	var phase := ""
+	var ctrl = _main.get("controller")
+	if ctrl != null:
+		phase = str(ctrl.get("phase"))
+	if phase == "hour" and _main.has_method("_show_tutorial_step"):
+		_main.call("_show_tutorial_step", 0)
+	elif _main.has_method("_maybe_show_prep_tutorial"):
+		_main.call("_maybe_show_prep_tutorial")
+	if not bool(mascot.get("visible")):
+		# В headless авто-туториал выключен; для инструмента показываем явно.
+		mascot.call("show_message",
+			"Привет, я БАЙТ. Час пик начинается с приёма пакетов.", -1.0)
+	if not bool(mascot.get("visible")):
+		_fail("маскот-туториал не стал видимым")
+		return false
+	return true
+
+
+func _show_minigame() -> bool:
+	var game = null
+	if SEND_GAMES.has(_minigame):
+		game = MiniGameFactory.create_send(_minigame, _tier, _seed)
+	elif ATTACK_GAMES.has(_minigame):
+		game = MiniGameFactory.create_attack(_minigame, _tier, _seed)
+	if game == null:
+		_fail("MiniGameFactory не создал '%s' (tier %d)" % [_minigame, _tier])
+		return false
+	var host: Node = _main
+	var mr = _main.get("modal_root")
+	if mr != null:
+		host = mr
+	host.add_child(game)
+	if game is Control:
+		# См. Main._show_modal_game: фиксируем min-size, затем центрируем KEEP_SIZE.
+		var ctl := game as Control
+		ctl.size = ctl.get_combined_minimum_size()
+		ctl.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_KEEP_SIZE)
+	if game.has_method("start"):
+		game.call("start", _minigame, _tier, _seed)
+	if game is CanvasItem and not (game as CanvasItem).visible:
+		_fail("мини-игра '%s' создана, но не видима" % _minigame)
+		return false
+	return true
+
+
+# --------------------------------------------------------------------------
+# Ввод: логические 1280×720 → пиксели окна
+# --------------------------------------------------------------------------
+
+func _window_point(logical: Vector2) -> Vector2:
+	if _raw_coords:
+		return logical
+	var win := Vector2(DisplayServer.window_get_size())
+	if win.x <= 0.0 or win.y <= 0.0:
+		return logical
+	return Vector2(logical.x * win.x / LOGICAL_SIZE.x,
+		logical.y * win.y / LOGICAL_SIZE.y)
+
+
+func _send_button(pos: Vector2, pressed: bool) -> void:
+	var ev := InputEventMouseButton.new()
+	ev.button_index = MOUSE_BUTTON_LEFT
+	ev.pressed = pressed
+	ev.position = pos
+	ev.global_position = pos
+	ev.button_mask = MOUSE_BUTTON_MASK_LEFT if pressed else 0
+	Input.parse_input_event(ev)
+
+
+func _do_drag() -> void:
+	var start := _window_point(_drag[0])
+	var finish := _window_point(_drag[1])
+	_send_button(start, true)
+	await _frames(2)
+	var steps := 8
+	var prev := start
+	for i in range(1, steps + 1):
+		var p := start.lerp(finish, float(i) / float(steps))
+		if DisplayServer.get_name() != "headless":
+			# Держим и системный курсор рядом: hover-open папок смотрит на него.
+			Input.warp_mouse(p)
+		var motion := InputEventMouseMotion.new()
+		motion.position = p
+		motion.global_position = p
+		motion.relative = p - prev
+		motion.button_mask = MOUSE_BUTTON_MASK_LEFT
+		Input.parse_input_event(motion)
+		prev = p
+		await process_frame
+	if not _hold:
+		# --hold оставляет кнопку зажатой: снимок ловит середину drag'а.
+		_send_button(finish, false)
+		await _frames(2)
+
+
+func _frames(count: int) -> void:
+	for i in count:
+		await process_frame
+
+
+func _parse_pair(text: String) -> Vector2:
+	var parts := text.split(",", false)
+	if parts.size() != 2:
+		return Vector2(-1, -1)
+	if not parts[0].strip_edges().is_valid_float() \
+			or not parts[1].strip_edges().is_valid_float():
+		return Vector2(-1, -1)
+	return Vector2(float(parts[0]), float(parts[1]))
+
+
+func _game_money() -> int:
+	var node := root.get_node_or_null("Game")
+	if node == null:
+		return 0
+	return int(node.get("money"))
+
+
+func _fail(message: String) -> void:
+	printerr("dev_capture: ERROR: ", message)
+	push_error("dev_capture: " + message)
+	quit(1)
+
+
+func _print_help() -> void:
+	print("dev_capture.gd — снимок экрана PEAK HOUR 97")
+	print("  --run --hour --seconds=N --spawn=packet,request")
+	print("  --minigame=ID --tier=N --seed=N --shop --tutorial")
+	print("  --folder=ID --hover=x,y --press=x,y --drag=x1,y1,x2,y2 --hold")
+	print("  --menu --filemenu --toast --probe --out=PATH --wait=N")
+	print("  Координаты указателя — логические 1280x720; --raw-coords для пикселей окна.")
+	print("  Мини-игры: ", ", ".join(SEND_GAMES + ATTACK_GAMES))
+
+
+# --------------------------------------------------------------------------
+# Font probe
+# --------------------------------------------------------------------------
 
 class Probe:
 	extends Control
@@ -161,4 +659,3 @@ class Probe:
 		var i := 0 if eg == 1.0 else 1
 		var j := [0, 2, 8].find(esh)
 		return 360.0 + (i * 3 + j) * 26.0
-

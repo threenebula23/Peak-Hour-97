@@ -20,6 +20,9 @@ const STICK_H := 18.0
 const STICK_SPEEDS: Array[float] = [440.0, 340.0, 280.0]
 const FLASH_SEC := 0.8
 const CLICKS_REQUIRED := 3
+## Окно гасит клик, который открыл панель: кнопка «Соединиться» находится
+## вне модалки, но тот же/следующий event мог долететь уже до неё.
+const INPUT_GRACE_SEC := 0.35
 
 var hour: int = 1
 var successes: int = 0
@@ -36,6 +39,8 @@ var missed: bool = false
 var game_over: bool = false
 
 var _emitted: bool = false
+var _input_grace: float = 0.0
+var _armed: bool = false
 
 
 func _init() -> void:
@@ -49,7 +54,16 @@ func _init() -> void:
 
 
 func _ready() -> void:
+	# start() мог быть вызван до add_child: окно монтируется уже после клика,
+	# поэтому отсчёт grace начинаем заново в момент появления в дереве.
+	if running:
+		_input_grace = INPUT_GRACE_SEC
+		_armed = false
 	_center_on_screen()
+	# Main ставит модалку через PRESET_CENTER уже после add_child, а в Godot
+	# 4.7.2 этот пресет обнуляет offsets (окно уезжает в правый нижний угол).
+	# Повторяем центрирование в конце кадра, когда родитель уже modal_root.
+	call_deferred("_center_on_screen")
 	get_viewport().size_changed.connect(_center_on_screen)
 
 
@@ -64,6 +78,8 @@ func start(p_hour: int, p_successes: int, p_zone_level: int, p_request_id: Strin
 	running = true
 	missed = false
 	flash_left = 0.0
+	_input_grace = INPUT_GRACE_SEC
+	_armed = false
 	_reset_attempt()
 	visible = true
 	set_process(true)
@@ -118,6 +134,12 @@ func _process(delta: float) -> void:
 		return
 	# Вспышка идёт по реальному delta, движение палочек — с D11-капом 0.1.
 	var raw_dt := maxf(delta, 0.0)
+	# Grace тикает по реальному времени до игровой логики: клик, открывший
+	# панель, не должен успеть стать попыткой соединения.
+	if _input_grace > 0.0:
+		_input_grace = maxf(0.0, _input_grace - raw_dt)
+		if _input_grace <= 0.0:
+			_armed = true
 	if flash_left > 0.0:
 		flash_left = maxf(0.0, flash_left - raw_dt)
 		if flash_left <= 0.0:
@@ -140,19 +162,47 @@ func _process(delta: float) -> void:
 func _input(event: InputEvent) -> void:
 	if not running or game_over:
 		return
+	# Esc доступен всегда (в том числе в grace): отмена не должна штрафовать.
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.keycode == KEY_ESCAPE:
 			_mark_input_handled()
 			_finish(false)
 			return
-		if event.keycode == KEY_SPACE:
+		if event.keycode == KEY_SPACE or event.keycode == KEY_ENTER \
+				or event.keycode == KEY_KP_ENTER:
+			if _input_grace > 0.0:
+				# Тот же клик/нажатие, что открыло модалку, не считаем попыткой.
+				_mark_input_handled()
+				return
+			if not _armed:
+				return
 			_mark_input_handled()
 			_attempt_click()
 			return
 	if event is InputEventMouseButton:
-		if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+		if event.button_index != MOUSE_BUTTON_LEFT:
+			return
+		if _input_grace > 0.0:
+			# И press, и release в grace гасим: событие могло прийти от кнопки
+			# «СОЕДИНИТЬСЯ», которая находится вне окна модалки.
+			_mark_input_handled()
+			return
+		if event.pressed:
+			# Только свежее нажатие: отпускание кнопки ниже взводит _armed.
+			if not _armed:
+				return
+			# Клики вне окна 640×240 (карточка запроса, меню, статус-бар за
+			# модалкой) не должны считаться попыткой соединения: иначе промах
+			# закрывает панель, штрафует SLA и вешает кулдаун.
+			var local: Vector2 = event.position - global_position
+			if not Rect2(Vector2.ZERO, size).has_point(local):
+				return
 			_mark_input_handled()
 			_attempt_click()
+		else:
+			# Первое отпускание после grace тоже разрешает попытки (защита от
+			# зажатой кнопки/double-click).
+			_armed = true
 
 
 func _attempt_click() -> void:
@@ -266,11 +316,19 @@ func _draw() -> void:
 
 
 func _center_on_screen() -> void:
-	var viewport := get_viewport()
-	if viewport == null:
-		return
-	var screen := get_viewport_rect().size
-	position = ((screen - WINDOW_SIZE) * 0.5).floor()
+	# get_viewport_rect() — физический размер окна (1920×1080), а UI-канва
+	# логическая 1280×720. Центрируем по реальному родителю (modal_root),
+	# иначе модалка уезжает в правый нижний квадрант. Fallback — вьюпорт.
+	var area := Vector2.ZERO
+	if is_inside_tree() and get_parent() is Control:
+		area = (get_parent() as Control).size
+	if area.x <= 0.0 or area.y <= 0.0:
+		# Вне дерева (нода создана до add_child) вьюпорта ещё нет —
+		# центрируем позже в _ready()/повторном start().
+		if not is_inside_tree():
+			return
+		area = get_viewport_rect().size
+	position = ((area - size) * 0.5).floor()
 	position.x = maxf(0.0, position.x)
 	position.y = maxf(0.0, position.y)
 

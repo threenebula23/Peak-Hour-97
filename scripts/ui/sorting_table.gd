@@ -49,8 +49,10 @@ var _drag_active: bool = false
 var _last_drop_pos: Vector2 = Vector2.ZERO
 var _ghost_cells: Array = []
 var _ghost_origin: Vector2i = Vector2i(-1, -1)
+var _ghost_target: Vector2i = Vector2i(-1, -1)
 var _ghost_rotation: int = 0
 var _ghost_ok: bool = false
+var _ghost_auto: bool = false
 
 
 func _ready() -> void:
@@ -115,7 +117,7 @@ func file_count() -> int:
 
 func footer_text() -> String:
 	var total := _cols * _rows
-	return "%d %s · занято %d" % [total, FG.plural_cells(total), _cells_owner.size()]
+	return "%d %s" % [total, FG.plural_cells(total)]
 
 
 func grid_metrics() -> Dictionary:
@@ -183,6 +185,10 @@ func _cell_rect(c: int, r: int) -> Rect2:
 	return FG.cell_rect_pair(_grid_origin, _cell, GAP, c, r)
 
 
+func _shape_pos(cell_pos: Vector2i) -> Vector2:
+	return FG.shape_origin_pair(_grid_origin, _cell, GAP, cell_pos)
+
+
 func _file_at(pos: Vector2) -> String:
 	var c := FG.cell_at_rect(pos, _grid_origin, _cell, GAP, _cols, _rows)
 	if c.x < 0:
@@ -235,35 +241,59 @@ func _gui_input(event: InputEvent) -> void:
 				queue_redraw()
 			accept_event()
 		elif event.button_index == MOUSE_BUTTON_RIGHT:
+			if _drag_in_progress():
+				accept_event()
+				return
 			var id := _file_at(event.position)
 			if not id.is_empty():
 				context_requested.emit(id)
 				accept_event()
 
 
+func _drag_in_progress() -> bool:
+	if _drag_active:
+		return true
+	var dc := _existing_drag_controller()
+	if dc != null and dc.has_method("is_active"):
+		return bool(dc.is_active())
+	return _drop_active
+
+
 func _input(event: InputEvent) -> void:
-	if not _drag_active:
+	var vp := get_viewport()
+	if vp != null and vp.is_input_handled():
 		return
-	if event is InputEventKey and event.pressed and not event.echo \
-			and event.keycode == KEY_R:
+	var dc := _existing_drag_controller()
+	if dc == null or not dc.has_method("is_active") or not bool(dc.is_active()):
+		return
+	if FG.is_rotate_key(event) or FG.is_rotate_click(event):
 		_rotate_drag()
-		get_viewport().set_input_as_handled()
-	elif event is InputEventMouseButton and event.pressed \
-			and event.button_index == MOUSE_BUTTON_RIGHT:
-		_rotate_drag()
-		get_viewport().set_input_as_handled()
+		vp.set_input_as_handled()
 
 
 func _rotate_drag() -> void:
-	_drag_rotation = posmod(_drag_rotation + 1, 4)
+	var dc := _drag_controller()
+	if dc != null and dc.has_method("rotate_cw"):
+		_drag_rotation = int(dc.rotate_cw())
+	else:
+		_drag_rotation = posmod(_drag_rotation + 1, 4)
 	if _drop_active and not _drag_payload.is_empty():
 		_refresh_ghost(_last_drop_pos)
-	var dc := _drag_controller()
-	if dc != null and dc.preview() != null:
-		var p = dc.preview()
-		if p.has_method("setup") and p.get("shape_id") != null:
-			p.setup(p.file_type, p.shape_id, _drag_rotation, p.file_name, p.ext, p.cell_size)
 	queue_redraw()
+
+
+func _on_drag_rotation_changed(value: int) -> void:
+	_drag_rotation = posmod(int(value), 4)
+	if _drop_active and not _drag_payload.is_empty():
+		_refresh_ghost(_last_drop_pos)
+	queue_redraw()
+
+
+func _bind_rotation_signal(dc: Node) -> void:
+	if dc == null or not dc.has_signal("rotation_changed"):
+		return
+	if not dc.is_connected("rotation_changed", Callable(self, "_on_drag_rotation_changed")):
+		dc.connect("rotation_changed", Callable(self, "_on_drag_rotation_changed"))
 
 
 # --- drag source -----------------------------------------------------------
@@ -289,13 +319,14 @@ func _get_drag_data(at_position: Vector2) -> Variant:
 			str(file.name), str(file.ext),
 			clampf(minf(_cell.x, _cell.y) * 0.55, 28.0, 56.0))
 		preview.set_mode("shape")
-		dc.begin(preview, "shape")
+		dc.begin(preview, "shape", int(file.rotation))
 	queue_redraw()
 	return payload
 
 
 func _drag_controller() -> Node:
 	if drag_controller != null and is_instance_valid(drag_controller):
+		_bind_rotation_signal(drag_controller)
 		return drag_controller
 	if not is_inside_tree():
 		return null
@@ -305,15 +336,18 @@ func _drag_controller() -> Node:
 		dc.name = "DragControllerAuto"
 		get_tree().root.add_child(dc)
 	drag_controller = dc
+	_bind_rotation_signal(dc)
 	return dc
 
 
 func _existing_drag_controller() -> Node:
+	var dc: Node = null
 	if drag_controller != null and is_instance_valid(drag_controller):
-		return drag_controller
-	if not is_inside_tree():
-		return null
-	return get_tree().get_first_node_in_group("drag_controller")
+		dc = drag_controller
+	elif is_inside_tree():
+		dc = get_tree().get_first_node_in_group("drag_controller")
+	_bind_rotation_signal(dc)
+	return dc
 
 
 # --- drop target -----------------------------------------------------------
@@ -324,15 +358,23 @@ func _can_drop_data(at_position: Vector2, data: Variant) -> bool:
 	var payload: Dictionary = data
 	if str(payload.get("kind", "")) != "file":
 		return false
+	var dc := _drag_controller()
 	var key := "file:" + str(payload.get("id", ""))
 	if key != _drag_key:
 		_drag_key = key
-		_drag_rotation = posmod(int(payload.get("rotation", 0)), 4)
+		if dc != null and dc.has_method("is_active") and bool(dc.is_active()):
+			_drag_rotation = int(dc.rotation()) if dc.has_method("rotation") else \
+				posmod(int(payload.get("rotation", 0)), 4)
+		else:
+			_drag_rotation = posmod(int(payload.get("rotation", 0)), 4)
+			if dc != null and dc.has_method("set_rotation"):
+				dc.set_rotation(_drag_rotation)
+	elif dc != null and dc.has_method("rotation"):
+		_drag_rotation = int(dc.rotation())
 	_drop_active = true
 	_drag_payload = payload
 	_last_drop_pos = at_position
 	_refresh_ghost(at_position)
-	var dc := _drag_controller()
 	if dc != null:
 		dc.set_mode("shape")
 	return true
@@ -351,6 +393,8 @@ func _refresh_ghost(pos: Vector2) -> void:
 	_ghost_rotation = int(fit.get("rotation", _drag_rotation))
 	_ghost_origin = fit.get("origin", target)
 	_ghost_ok = bool(fit.get("ok", false))
+	_ghost_auto = bool(fit.get("auto", false))
+	_ghost_target = target
 	_ghost_cells = FR.shape_cells(shape_id, _ghost_rotation)
 	queue_redraw()
 
@@ -360,21 +404,27 @@ func _resolve_placement(payload: Dictionary, target: Vector2i,
 	var shape_id := str(payload.get("shape_id", "O1"))
 	if shape_id.is_empty():
 		shape_id = "O1"
+	var preferred := posmod(int(rotation), 4)
 	var ignore := str(payload.get("id", ""))
 	if target.x < 0 or target.y < 0:
-		var auto := _find_fit(shape_id, rotation, ignore)
+		var auto := _find_fit(shape_id, preferred, ignore)
 		if not auto.is_empty():
-			return {"ok": true, "origin": auto["origin"], "rotation": auto["rotation"]}
-		return {"ok": false, "origin": Vector2i(-1, -1), "rotation": posmod(rotation, 4)}
+			var auto_rot := int(auto["rotation"])
+			return {"ok": true, "origin": auto["origin"], "rotation": auto_rot,
+				"auto": auto_rot != preferred}
+		return {"ok": false, "origin": Vector2i(-1, -1), "rotation": preferred,
+			"auto": false}
 	for i in 4:
-		var rot := posmod(rotation + i, 4)
+		var rot := posmod(preferred + i, 4)
 		var origin := FG.anchor_origin(target, shape_id, rot)
 		if _can_place(shape_id, origin, rot, ignore):
-			return {"ok": true, "origin": origin, "rotation": rot}
+			return {"ok": true, "origin": origin, "rotation": rot,
+				"auto": rot != preferred}
 	return {
 		"ok": false,
-		"origin": FG.anchor_origin(target, shape_id, posmod(rotation, 4)),
-		"rotation": posmod(rotation, 4),
+		"origin": FG.anchor_origin(target, shape_id, preferred),
+		"rotation": preferred,
+		"auto": false,
 	}
 
 
@@ -411,8 +461,17 @@ func _drop_data(at_position: Vector2, data: Variant) -> void:
 	if str(payload.get("kind", "")) != "file":
 		_end_drop()
 		return
-	var target := FG.nearest_cell_rect(at_position, _grid_origin, _cell, GAP, _cols, _rows)
-	var fit := _resolve_placement(payload, target, _drag_rotation)
+	var target := FG.nearest_cell_rect(at_position, _grid_origin, _cell, GAP,
+		_cols, _rows)
+	var dc := _existing_drag_controller()
+	if dc != null and dc.has_method("rotation"):
+		_drag_rotation = int(dc.rotation())
+	var fit: Dictionary
+	if _ghost_target == target and not _ghost_cells.is_empty():
+		fit = {"ok": _ghost_ok, "origin": _ghost_origin,
+			"rotation": _ghost_rotation, "auto": _ghost_auto}
+	else:
+		fit = _resolve_placement(payload, target, _drag_rotation)
 	if not bool(fit.get("ok", false)):
 		_reject("СТОЛ ЗАПОЛНЕН")
 		_end_drop()
@@ -454,7 +513,10 @@ func _notify(text: String) -> void:
 func _end_drop() -> void:
 	_drop_active = false
 	_drag_key = ""
+	_drag_rotation = 0
 	_ghost_cells.clear()
+	_ghost_target = Vector2i(-1, -1)
+	_ghost_auto = false
 	mouse_default_cursor_shape = Control.CURSOR_ARROW
 	queue_redraw()
 
@@ -511,7 +573,7 @@ func _draw_grid_lines() -> void:
 
 func _draw_file(file) -> void:
 	var cells := FR.shape_cells(str(file.shape_id), int(file.rotation))
-	FILE_SHAPE.paint(self, _grid_origin, cells, _cell, {
+	FILE_SHAPE.paint(self, _shape_pos(Vector2i(file.origin)), cells, _cell, {
 		"type": str(file.type),
 		"name": str(file.name),
 		"ext": str(file.ext),
@@ -529,7 +591,7 @@ func _draw_ghost(f: Font) -> void:
 		return
 	var color := Theme90.SUCCESS if _ghost_ok else Theme90.ERROR
 	var fill := Color(color.r, color.g, color.b, 0.16)
-	FILE_SHAPE.paint(self, _grid_origin, _ghost_cells, _cell, {
+	FILE_SHAPE.paint(self, _shape_pos(_ghost_origin), _ghost_cells, _cell, {
 		"type": "text",
 		"alpha": 0.9,
 		"show_label": false,
@@ -539,11 +601,12 @@ func _draw_ghost(f: Font) -> void:
 	})
 	var b := FR.shape_bounds(_ghost_cells)
 	var step := _cell + Vector2(GAP, GAP)
-	var box := Rect2(_grid_origin + Vector2(float(_ghost_origin.x) * step.x,
-		float(_ghost_origin.y) * step.y), Vector2(
+	var box := Rect2(_shape_pos(_ghost_origin), Vector2(
 			float(b.x) * step.x - GAP, float(b.y) * step.y - GAP))
 	Theme90.draw_dashed_box(self, box.grow(2.0), color, 4.0, 1.2)
 	var hint := "ОТПУСТИТЕ · R ПОВОРОТ" if _ghost_ok else "СТОЛ ЗАПОЛНЕН · R ПОВОРОТ"
+	if _ghost_ok and _ghost_auto:
+		hint = "ОТПУСТИТЕ · АВТОПОВОРОТ · R ПОВОРОТ"
 	var hw := f.get_string_size(hint, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
 	var pill := Rect2(size.x - hw - 20.0, 6.0, hw + 14.0, 18.0)
 	draw_style_box(Theme90.box(Theme90.WHITE, color, 4, 1), pill)

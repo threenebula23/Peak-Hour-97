@@ -27,6 +27,8 @@ func _init() -> void:
 		return
 	_test_cell_sizes()
 	_test_hit_test()
+	_test_draw_offsets()
+	_test_input_helpers()
 	_test_labels_and_rotation()
 	_test_payload_and_edges()
 	_test_plural()
@@ -39,6 +41,8 @@ func _init() -> void:
 		_finish()
 		return
 	await _test_file_grid(registry, folder_id)
+	await _test_rotation_preference()
+	await _test_ghost_rotation()
 	await _test_sorting_table(registry)
 	await _test_drag_controller(folder_id)
 	await _test_file_shape()
@@ -90,6 +94,40 @@ func _test_hit_test() -> void:
 		Vector2i(-1, -1), "drop вне поля → auto-place")
 	var r := FG.cell_at_rect(Vector2(97, 95), o, Vector2(99, 86), 6.0, 4, 6)
 	_eq(r, Vector2i(0, 1), "прямоугольный hit-test стола")
+
+
+func _test_draw_offsets() -> void:
+	_set_case("draw offsets")
+	# BUG A: раньше paint() получал _grid_origin и все файлы падали в (0,0).
+	var origin := Vector2(12, 20)
+	var zero := FG.shape_origin(origin, 100.0, 6.0, Vector2i.ZERO)
+	var at_32 := FG.shape_origin(origin, 100.0, 6.0, Vector2i(3, 2))
+	_eq(zero, Vector2(12, 20), "origin (0,0) = grid origin")
+	_eq(at_32, Vector2(330, 232), "origin (3,2) = grid origin + 3/2 шага")
+	_ok(zero != at_32, "разные origin дают разные позиции рисования")
+	var cell_rect := FS.cell_pixel_rect(at_32, Vector2i.ZERO, 100.0, 6.0)
+	_eq(cell_rect, Rect2(327, 229, 106, 106),
+		"файл в (3,2) рисует клетку (3,2), а не (0,0)")
+	var table_pos := FG.shape_origin_pair(Vector2(9, 11), Vector2(99, 86), 6.0,
+		Vector2i(2, 4))
+	_eq(table_pos, Vector2(219, 379), "стол: origin (2,4) с прямоугольной клеткой")
+
+
+func _test_input_helpers() -> void:
+	_set_case("rotate input")
+	var key := InputEventKey.new()
+	key.physical_keycode = KEY_R
+	key.keycode = KEY_K  # русская раскладка даёт другую букву
+	key.pressed = true
+	_ok(FG.is_rotate_key(key), "R распознаётся по physical_keycode")
+	key.echo = true
+	_ok(not FG.is_rotate_key(key), "echo-повтор R игнорируется")
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_RIGHT
+	click.pressed = true
+	_ok(FG.is_rotate_click(click), "ПКМ распознаётся как поворот во время drag")
+	click.pressed = false
+	_ok(not FG.is_rotate_click(click), "отпускание ПКМ не вращает")
 
 
 func _test_labels_and_rotation() -> void:
@@ -165,7 +203,9 @@ func _test_file_grid(registry, folder_id: String) -> void:
 	_eq(grid.total_cells(), 20, "5×4 = 20 клеток")
 	_eq(grid.occupied_cells(), 0, "пустая папка: 0 клеток")
 	_eq(grid.file_count(), 0, "пустая папка: 0 файлов")
-	_eq(grid.footer_text(), "занято 0 из 20 · свободно 20", "пустой подвал")
+	_eq(grid.footer_text(), _footer(grid.stats()), "пустой подвал")
+	_eq(grid.footer_text(), "0 файлов · 20 клеток",
+		"подвал: файлы и клетки (с плюрализацией)")
 	var m: Dictionary = grid.grid_metrics()
 	_eq(float(m["cell"]), 104.0, "cell при 558×470 → 104")
 	_eq(int(m["cols"]), 5, "cols = 5")
@@ -180,8 +220,10 @@ func _test_file_grid(registry, folder_id: String) -> void:
 		grid.refresh()
 		_eq(grid.file_count(), 1, "после создания 1 файл")
 		_eq(grid.occupied_cells(), 1, "текст занимает 1 клетку")
-		_eq(grid.footer_text(), "занято 1 из 20 · свободно 19",
+		_eq(grid.footer_text(), _footer(grid.stats()),
 			"подвал после создания")
+		_eq(grid.footer_text(), "1 файл · 20 клеток",
+			"подвал: 1 файл, 20 клеток")
 		_eq(grid.hidden_count(), 0, "опасных файлов нет")
 
 		var selected: Array = []
@@ -229,6 +271,85 @@ func _test_file_grid(registry, folder_id: String) -> void:
 	grid.queue_free()
 
 
+## Поворот пользователя главнее: сначала requested, авто — только если не влез.
+func _test_rotation_preference() -> void:
+	_set_case("rotation preference")
+	var grid = FG.new()
+	grid.name = "TestRotationGrid"
+	grid.size = Vector2(558, 470)
+	root.add_child(grid)
+	await process_frame
+	grid._folder = null
+	var payload := {"kind": "file", "id": "probe", "shape_id": "I4H",
+		"rotation": 0, "from": "folder"}
+	var exact: Dictionary = grid._resolve_placement(payload, Vector2i(0, 0), 0)
+	_ok(bool(exact.get("ok", false)), "I4H влезает в (0,0) горизонтально")
+	_eq(int(exact.get("rotation", -1)), 0, "выбранный поворот сохранён")
+	_ok(not bool(exact.get("auto", true)), "без автоповорота auto = false")
+	var turned: Dictionary = grid._resolve_placement(payload, Vector2i(4, 0), 0)
+	_ok(bool(turned.get("ok", false)), "у правого края находится поворот")
+	_eq(int(turned.get("rotation", -1)), 1, "авто-поворот выбрал вертикаль")
+	_ok(bool(turned.get("auto", false)), "автоповорот помечен auto = true")
+	var kept: Dictionary = grid._resolve_placement(payload, Vector2i(0, 0), 1)
+	_eq(int(kept.get("rotation", -1)), 1, "requested=1 уважается, если влезает")
+	root.remove_child(grid)
+	grid.queue_free()
+
+
+## Ghost и drop используют поворот из DragController, а не из payload.
+func _test_ghost_rotation() -> void:
+	_set_case("ghost rotation")
+	var grid = FG.new()
+	grid.name = "TestGhostGrid"
+	grid.size = Vector2(558, 470)
+	root.add_child(grid)
+	await process_frame
+	var dc = DC.new()
+	dc.name = "TestGhostDragController"
+	root.add_child(dc)
+	await process_frame
+	grid.drag_controller = dc
+	var preview = FS.new()
+	preview.setup("text", "I4H", 0, "Договор", "txt", 20.0)
+	dc.begin(preview, "shape", 0)
+	var payload := {"kind": "file", "id": "probe", "shape_id": "I4H",
+		"rotation": 0, "from": "folder"}
+	var pos: Vector2 = grid._cell_rect(4, 0).get_center()
+	_ok(grid._can_drop_data(pos, payload), "can_drop у правого края")
+	_eq(int(grid._ghost_rotation), 1, "ghost сам повернулся у края")
+	_eq(int(grid._drag_rotation), 0, "requested поворот ещё 0")
+	dc.set_rotation(1)
+	_eq(int(grid._drag_rotation), 1, "rotation_changed обновил сетку")
+	_eq(int(grid._ghost_rotation), 1, "ghost показывает выбранный поворот")
+	_ok(not bool(grid._ghost_auto), "ручной поворот без auto")
+	grid._can_drop_data(pos, payload)
+	_eq(int(grid._drag_rotation), 1, "can_drop не сбрасывает поворот из payload")
+	# Ghost обязан честно показывать каждый из 4 выбранных поворотов.
+	var square_payload := {"kind": "file", "id": "probe2", "shape_id": "L3a",
+		"rotation": 0, "from": "folder"}
+	var center: Vector2 = grid._cell_rect(2, 2).get_center()
+	for rot in 4:
+		dc.set_rotation(rot)
+		_ok(grid._can_drop_data(center, square_payload),
+			"can_drop для поворота %d" % rot)
+		_eq(int(grid._ghost_rotation), rot, "ghost показывает поворот %d" % rot)
+		_eq(int(grid._drag_rotation), rot, "сетка приняла поворот %d" % rot)
+	var expected_rot := int(grid._ghost_rotation)
+	var dropped: Array = []
+	grid.packet_dropped.connect(func(_p: Dictionary, _origin: Vector2i,
+			rot: int) -> void: dropped.append(rot))
+	grid._drop_data(pos, {"kind": "packet", "id": "p", "shape_id": "I4H",
+		"rotation": 0, "from": "packet"})
+	_eq(dropped.size(), 1, "drop пакета эмитится")
+	if dropped.size() > 0:
+		_eq(int(dropped[0]), expected_rot, "drop сохранил поворот ghost")
+	dc.end()
+	root.remove_child(grid)
+	grid.queue_free()
+	root.remove_child(dc)
+	dc.queue_free()
+
+
 func _test_sorting_table(registry) -> void:
 	_set_case("SortingTable")
 	var table = ST.new()
@@ -240,7 +361,7 @@ func _test_sorting_table(registry) -> void:
 	await process_frame
 	_eq(table.total_cells(), 24, "стол 4×6 = 24 клетки")
 	_eq(table.occupied_cells(), 0, "пустой стол")
-	_eq(table.footer_text(), "24 клетки · занято 0", "подвал пустого стола")
+	_eq(table.footer_text(), "24 клетки", "подвал пустого стола")
 	var m: Dictionary = table.grid_metrics()
 	_eq(m["cell"], Vector2(99, 86), "cell стола 99×86")
 	_eq(int(m["cols"]), 4, "стол: 4 колонки")
@@ -252,7 +373,7 @@ func _test_sorting_table(registry) -> void:
 		table.refresh()
 		_eq(table.file_count(), 1, "на столе 1 файл")
 		_eq(table.occupied_cells(), 1, "на столе 1 клетка")
-		_eq(table.footer_text(), "24 клетки · занято 1", "подвал стола с файлом")
+		_eq(table.footer_text(), "24 клетки", "подвал стола с файлом")
 		var fit: Dictionary = table._resolve_placement({
 			"kind": "file", "id": str(file.id), "shape_id": "O1",
 			"rotation": 0, "from": "table",
@@ -320,12 +441,40 @@ func _test_drag_controller(folder_id: String) -> void:
 	_ok(dc.preview() == null, "end() освобождает превью")
 	dc.end()
 	_ok(dc.preview() == null, "повторный end() не падает")
+
+	var spin = FS.new()
+	spin.setup("text", "I4H", 2, "Договор", "txt", 20.0)
+	dc.begin(spin, "shape", 2)
+	_ok(dc.is_active(), "is_active() при живом превью")
+	_eq(dc.rotation(), 2, "begin(initial_rotation) сохраняет поворот")
+	var r1: int = int(dc.rotate_cw())
+	_eq(r1, 3, "rotate_cw() → 3")
+	await process_frame
+	_eq(int(dc.rotate_cw()), 0, "rotate_cw() 3 → 0 (posmod)")
+	_eq(spin.shape_rotation, 0, "поворот сразу применяется к превью")
+	dc.set_rotation(5)
+	_eq(dc.rotation(), 1, "set_rotation нормализует 5 → 1")
+	_eq(spin.shape_rotation, 1, "set_rotation обновляет превью")
+	# Пакет (PacketCard) зовёт begin() без третьего аргумента — поворот
+	# должен подхватиться из shape_rotation превью.
+	var packet_preview = FS.new()
+	packet_preview.setup("photo", "L3a", 3, "Пакет", "jpg", 20.0)
+	dc.begin(packet_preview, "shape")
+	_eq(dc.rotation(), 3, "пакет: поворот засеян из превью")
+	dc.end()
+	_eq(dc.rotation(), 0, "end() сбрасывает поворот")
+	_ok(not dc.is_active(), "is_active() false без превью")
 	root.remove_child(dc)
 	dc.queue_free()
 
 
 func _test_file_shape() -> void:
 	_set_case("FileShape")
+	_eq(FS.label_font_size(56.0), 12, "подпись < 72 px → 12")
+	_eq(FS.label_font_size(71.9), 12, "подпись 71.9 px → 12")
+	_eq(FS.label_font_size(72.0), 14, "подпись 72 px → 14")
+	_eq(FS.label_font_size(96.0), 14, "подпись 96 px → 14")
+	_eq(FS.label_font_size(96.1), 16, "подпись > 96 px → 16")
 	var shape = FS.new()
 	shape.setup("photo", "L3a", 0, "Фото", "jpg", 48.0)
 	_eq(shape.custom_minimum_size, Vector2(96, 96), "L3a bbox 2×2 при 48 px")
@@ -359,8 +508,8 @@ func _test_tree_panel() -> void:
 		],
 	}])
 	await process_frame
-	_eq(tree.footer_text(), "2 папок · 2 файлов · 5 клеток занято",
-		"подвал дерева: папки/файлы/клетки")
+	_eq(tree.footer_text(), "2 папки · 2 файла",
+		"подвал дерева: папки/файлы")
 	var section_row = null
 	var folder_row = null
 	for e in tree.get("_rows"):
@@ -377,7 +526,7 @@ func _test_tree_panel() -> void:
 		_eq(folder_row.count, 5, "FolderRow.count = занятые клетки")
 		_eq(folder_row.capacity, 20, "FolderRow.capacity = всего клеток")
 		_eq(folder_row.files_count, 2, "FolderRow.files_count = файлы")
-		_eq(folder_row.tooltip_text, "2 файлов · 5 из 20 клеток",
+		_eq(folder_row.tooltip_text, "2 файла · 5 из 20 клеток",
 			"тултип папки в клетках")
 		var opened: Array = []
 		tree.folder_selected.connect(func(id: String) -> void: opened.append(id))
@@ -395,13 +544,21 @@ func _test_tree_panel() -> void:
 		tree.update_stats("f1", 3, 7, 24)
 		_eq(folder_row.count, 7, "update_stats обновляет клетки")
 		_eq(folder_row.capacity, 24, "update_stats обновляет ёмкость")
-		_eq(tree.footer_text(), "2 папок · 3 файлов · 7 клеток занято",
+		_eq(tree.footer_text(), "2 папки · 3 файла",
 			"подвал после update_stats")
 	root.remove_child(tree)
 	tree.queue_free()
 
 
 # --- helpers ---------------------------------------------------------------
+
+## Подвал FileGrid v3: «N файлов · M клеток» (плюрализация клеток).
+func _footer(stats: Dictionary) -> String:
+	var total := int(stats.get("total", 0))
+	var files := int(stats.get("files", 0))
+	return "%d %s · %d %s" % [files, FG.plural_files(files), total,
+		FG.plural_cells(total)]
+
 
 func _first_folder_id(registry) -> String:
 	if registry == null:

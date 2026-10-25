@@ -3,8 +3,9 @@ extends RefCounted
 ## Палитра, шрифты и примитивы отрисовки UI. Версия 2 — «тёплая бумага»:
 ## тонкие 1 px контуры вместо 2 px фасок, мягкие тени, скругления 3–4 px.
 ##
-## Никаких внешних текстур: всё рисуется кодом. Единый источник цветов,
-## кеглей и StyleBox для всех UI-компонентов.
+## Почти всё рисуется кодом; исключение — пиксельные иконки файлов из
+## art/icons (их можно заменить или перегенерировать generate_icons.py).
+## Единый источник цветов, кеглей и StyleBox для всех UI-компонентов.
 
 # --- Палитра ---------------------------------------------------------------
 const PAPER := Color(0.913725, 0.901961, 0.866667)       # #E9E6DD
@@ -38,13 +39,17 @@ const BORDER_SOFT := Color(0.254902, 0.239216, 0.203922, 0.12)
 const HAIRLINE := Color(0.254902, 0.239216, 0.203922, 0.10)
 
 # --- Кегли ----------------------------------------------------------------
-const FS_MICRO := 10
-const FS_BODY := 12
-const FS_HEAD := 16
-const FS_LOGO := 24
+const FS_MICRO := 11
+const FS_BODY := 13
+const FS_HEAD := 17
+const FS_LOGO := 26
 
-const FONT_HANDJET := "res://art/fonts/Handjet-VF.ttf"
+## Основной шрифт — Golos Text: гуманистический, с полной кириллицей
+## (О/П/Ё/№), хорошо читается в мелких кеглях 10–14 px.
+const FONT_UI := "res://art/fonts/GolosText-VF.ttf"
 const FONT_LOGO := "res://art/fonts/PressStart2P-Regular.ttf"
+
+const ICON_DIR := "res://art/icons"
 
 const H := 24.0            # высота строки дерева / кнопки
 const SCROLLBAR := 14.0    # ширина скроллбара
@@ -52,6 +57,7 @@ const BEVEL := 1.0         # оставлено для совместимост�
 const RADIUS := 3          # базовое скругление карточек и кнопок
 
 static var _fonts: Dictionary = {}
+static var _icons: Dictionary = {}
 static var _dither: ImageTexture = null
 static var _boxes: Dictionary = {}
 
@@ -62,18 +68,19 @@ static func tag(name: String) -> int:
 	return TextServerManager.get_primary_interface().name_to_tag(name)
 
 
-## Handjet с фиксированными осями: wght 700, ELGR 2, ELSH 2.
-static func ui(weight: float = 700.0, elgr: float = 2.0, elsh: float = 2.0) -> FontVariation:
-	var key := "%d_%d_%d" % [weight, elgr, elsh]
+## Golos Text с осью wght (400–900), по умолчанию 600.
+## elgr/elsh оставлены в сигнатуре для совместимости со старыми вызовами
+## Handjet — у Golos Text таких осей нет, значения игнорируются.
+static func ui(weight: float = 600.0, _elgr: float = 1.0, _elsh: float = 1.0) -> FontVariation:
+	var w := clampf(weight, 400.0, 900.0)
+	var key := "ui_%d" % int(roundf(w))
 	if _fonts.has(key):
 		return _fonts[key]
-	var base: FontFile = load(FONT_HANDJET)
+	var base: FontFile = load(FONT_UI)
 	var fv := FontVariation.new()
 	fv.base_font = base
 	fv.variation_opentype = {
-		tag("wght"): weight,
-		tag("ELGR"): elgr,
-		tag("ELSH"): elsh,
+		tag("wght"): w,
 	}
 	_fonts[key] = fv
 	return fv
@@ -370,6 +377,59 @@ static func ext_color(cat: String) -> Color:
 		"program":
 			return NAVY
 	return ACCENT
+
+
+## Пиксельные иконки 32×32 из art/icons (generate_icons.py). Ключи — те же
+## имена типов, что и в FileShape (text/sound/photo/video), плюс folder/packet.
+const ICON_FILES := {
+	"text": "file_text",
+	"doc": "file_text",
+	"pdf": "file_text",
+	"sound": "file_sound",
+	"audio": "file_sound",
+	"photo": "file_photo",
+	"image": "file_photo",
+	"video": "file_video",
+	"folder": "folder",
+	"packet": "packet",
+}
+
+
+## Текстура иконки по типу (кэшируется). null — файла нет или тип неизвестен.
+static func file_icon(kind: String) -> Texture2D:
+	var key := kind.strip_edges().to_lower()
+	if _icons.has(key):
+		return _icons[key]
+	var tex: Texture2D = null
+	var file_name: String = str(ICON_FILES.get(key, ""))
+	if not file_name.is_empty():
+		var path := ICON_DIR + "/" + file_name + ".png"
+		if ResourceLoader.exists(path):
+			tex = load(path) as Texture2D
+	_icons[key] = tex
+	return tex
+
+
+## Рисует иконку по центру rect с ближайшей фильтрацией (пиксели остаются
+## резкими при 16/24/32 px). false — если текстуры нет, рисуйте draw_doc_icon.
+static func draw_file_icon(ci: CanvasItem, rect: Rect2, kind: String,
+		modulate: Color = Color.WHITE) -> bool:
+	var tex := file_icon(kind)
+	if tex == null:
+		return false
+	var s := minf(rect.size.x, rect.size.y)
+	if s <= 0.0:
+		return false
+	var side := roundf(s)
+	var top_left := (rect.position + (rect.size - Vector2(side, side)) * 0.5).round()
+	var target := Rect2(top_left, Vector2(side, side))
+	var prev := ci.texture_filter
+	if prev != CanvasItem.TEXTURE_FILTER_NEAREST:
+		ci.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	ci.draw_texture_rect(tex, target, false, modulate)
+	if prev != CanvasItem.TEXTURE_FILTER_NEAREST:
+		ci.texture_filter = prev
+	return true
 
 
 ## Документ с цветным глифом. ext (необязательный) выбирает значок по
@@ -983,7 +1043,7 @@ class DragGhost:
 				10, Theme90.SHADE)
 
 
-## Числовая строка: цифры — Press Start 2P (чистые 0), суффикс — Handjet.
+## Числовая строка: цифры — Press Start 2P (чистые 0), суффикс — Golos Text.
 ## Базовая линия суффикса совпадает с базовой линией цифр.
 static func num_line(ci: CanvasItem, top_left: Vector2, number: String, size: int, color: Color,
 		suffix: String = "", suffix_size: int = -1) -> float:

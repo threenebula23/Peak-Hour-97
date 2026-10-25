@@ -34,7 +34,7 @@ const DEFAULT_TABLE_ROWS = 6
 const DEFAULT_FOLDERS_START = 2
 
 ## Fallback, если data/balance.json ещё не содержит grid.folder_dims.
-const GRID_DIMS = [[5, 4], [6, 4], [6, 5], [7, 5], [7, 6], [8, 6]]
+const GRID_DIMS = [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
 
 ## Fallback-формы (совпадают с data/balance.json → grid.shapes).
 const SHAPES = {
@@ -521,6 +521,11 @@ func auto_place_file(file_id: String, folder_id: String) -> bool:
 
 
 ## Перемещение: origin=(-1,-1) → auto-place, иначе точное размещение.
+## Файл, зарезервированный под запрос (required_by), ПЕРЕМЕЩАТЬ МЕЖДУ ПАПКАМИ
+## можно: запрос ищет файл по id и остаётся выполнимым из любой папки, а карточка
+## запроса показывает актуальную папку. Блокируются только разрушительные
+## действия (destroy_file/remove_file/move_file_to_table) и прикрепление к
+## другому запросу (attach_file).
 func move_file(file_id: String, folder_id: String, origin: Vector2i = Vector2i(-1, -1), rotation: int = -1) -> bool:
 	var file = files.get(file_id)
 	if file == null:
@@ -728,6 +733,8 @@ func move_file_to_table(file_id: String, origin: Vector2i = Vector2i(-1, -1), ro
 	var file = files.get(file_id)
 	if file == null:
 		return false
+	if not file.required_by.is_empty():
+		return false
 	if file.location == &"attached" or not file.attached_request.is_empty():
 		return false
 	if file.location == &"locked" or file.location == &"failed" or file.location == &"malicious":
@@ -750,7 +757,6 @@ func move_file_to_table(file_id: String, origin: Vector2i = Vector2i(-1, -1), ro
 	file.attached_request = ""
 	if old_folder != null:
 		folder_changed.emit(old_folder)
-		grid_changed.emit(old_folder.id)
 	file_changed.emit(file)
 	table_changed.emit()
 	registry_changed.emit()
@@ -976,6 +982,8 @@ func attach_file(file_id: String, request_id: String, now: float = -1.0) -> bool
 		return false
 	if file.location == &"table":
 		return false
+	if not file.required_by.is_empty() and file.required_by != request_id:
+		return false
 	if not file.attached_request.is_empty():
 		return false
 	if not file.can_attach(now):
@@ -1013,6 +1021,9 @@ func mark_failed(file_id: String) -> bool:
 		return false
 	file.location = &"failed"
 	file.attached_request = ""
+	# Проваленный файл больше не может обслужить запрос: снимаем резерв,
+	# иначе он навсегда остаётся «занятым» и его нельзя уничтожить.
+	file.required_by = ""
 	file.lock_until = 0.0
 	file.cooldown_until = 0.0
 	file._location_before_lock = &"folder" if not file.folder_id.is_empty() else &"registry"
@@ -1028,6 +1039,9 @@ func mark_malicious(file_id: String, kind: String) -> bool:
 	file.location = &"malicious"
 	file.malicious_kind = kind
 	file.attached_request = ""
+	# Заражённый файл не является валидной резервацией запроса: снимаем
+	# required_by, иначе запрос навсегда ждёт мёртвый файл, а удалить его нельзя.
+	file.required_by = ""
 	file.lock_until = 0.0
 	file.cooldown_until = 0.0
 	file._location_before_lock = &"folder" if not file.folder_id.is_empty() else &"registry"
@@ -1123,6 +1137,9 @@ func consume_file(file_id: String) -> bool:
 func remove_file(file_id: String, force: bool = false) -> bool:
 	var file = files.get(file_id)
 	if file == null:
+		return false
+	# Файл зарезервирован под конкретный запрос: удалять нельзя.
+	if not file.required_by.is_empty():
 		return false
 	if file.location == &"attached" or not file.attached_request.is_empty():
 		return false
@@ -1774,6 +1791,8 @@ func _clear_file_placement(file) -> void:
 		if folder != null:
 			folder.clear_owner(file.id)
 			folder.file_ids.erase(file.id)
+			# Старая папка тоже должна перерисоваться (перенос/расход файла).
+			grid_changed.emit(folder.id)
 	_clear_table_cells(file.id)
 
 

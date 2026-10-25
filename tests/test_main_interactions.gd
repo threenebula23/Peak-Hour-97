@@ -75,6 +75,7 @@ func _init() -> void:
 	await _test_reject()
 	_test_protocol_toggle()
 	_test_prediction()
+	await _test_four_slots()
 
 	await process_frame
 	print("")
@@ -130,14 +131,15 @@ func _test_attach_and_explicit_send() -> void:
 		return
 	var req = _director.active_requests[rid]
 	_eq(int(_director.request_required_count(rid)), 1, "запросу нужен 1 файл")
-	var fid := _available_file()
-	_ok(not fid.is_empty(), "есть свободный файл для attach")
-	if fid.is_empty():
+	var missing: Array = _director.request_missing(rid)
+	_ok(missing.size() >= 1, "есть конкретный required-файл для attach")
+	if missing.is_empty():
 		return
+	var fid := str(missing[0])
 
 	_main._on_file_to_request(rid, 0, {"kind": "file", "id": fid, "from": "folder"})
 	_eq(req.attached.size(), 1, "файл прикреплён через UI")
-	_ok(req.attached.has(fid), "req.attached содержит файл")
+	_ok(req.attached.has(fid), "req.attached содержит required-файл")
 	_ok(not req.sending, "attach НЕ запускает отправку")
 	_ok(not req.minigame_active, "attach НЕ открывает мини-игру")
 	_ok(_main._modal_game == null, "после attach модалки нет")
@@ -148,11 +150,14 @@ func _test_attach_and_explicit_send() -> void:
 	_ok(card != null, "карточка запроса найдена")
 	if card == null:
 		return
-	_ok(card.get_node_or_null("ConnectButton") == null, "у запроса нет кнопки СОЕДИНИТЬСЯ")
-	_ok(card.can_send(), "ОТПРАВИТЬ доступна после attach")
-	_ok(not card.send_disabled(), "кнопка ОТПРАВИТЬ включена")
+	_ok(card.get_node_or_null("ConnectButton") == null,
+		"у запроса нет legacy-кнопки ConnectButton")
+	_ok(card.can_send(), "кнопка доступна после attach")
+	_ok(not card.send_disabled(), "кнопка включена после attach")
+	_eq(card._send_btn.caption, "СОЕДИНИТЬСЯ",
+		"TCP без соединения: кнопка СОЕДИНИТЬСЯ")
 
-	# Подменная мини-игра: проверяем реальный путь show_minigame → modal_root.
+	# Подменная мини-игра: реальный путь connection → show_minigame → modal_root.
 	var holder := {"game": null}
 	_director.send_game_factory = func(_id, _tier, _seed, _ctx):
 		var g := FakeGame.new()
@@ -160,11 +165,20 @@ func _test_attach_and_explicit_send() -> void:
 		return g
 	card._send_btn.pressed.emit()
 	await process_frame
+	_ok(req.connecting, "нажатие запускает TCP-соединение")
+	_ok(_main._modal_game != null and str(_main._modal_kind) == "connection",
+		"показана модалка соединения")
+	var conn_game = _main._modal_game
+	_main._on_connection_finished(true, rid, conn_game)
+	await process_frame
+	await process_frame
 	_fake_game = holder.get("game")
+	_ok(req.connected, "соединение установлено")
 	_ok(_fake_game != null, "мини-игра отправки создана")
-	_ok(req.minigame_active, "ОТПРАВИТЬ включает мини-игру")
+	_ok(req.minigame_active, "после соединения включается мини-игра")
 	_ok(_main._modal_game == _fake_game, "Main запомнил модалку мини-игры")
-	_ok(_fake_game.get_parent() == _main.modal_root, "мини-игра лежит в modal_root")
+	if _fake_game != null:
+		_ok(_fake_game.get_parent() == _main.modal_root, "мини-игра лежит в modal_root")
 	_ok(bool(_controller.modal_open), "controller.modal_open = true на мини-игре")
 
 	# Пока мини-игра открыта, таймер запроса не идёт.
@@ -209,11 +223,14 @@ func _test_queue_pause_and_timeout() -> void:
 	_ok(req != null, "запрос для очереди создан")
 	if req == null:
 		return
-	var fid := _available_file()
-	_ok(not fid.is_empty(), "есть файл для запроса в очередь")
-	if fid.is_empty():
+	var missing_q: Array = _director.request_missing(rid)
+	_ok(missing_q.size() >= 1, "есть required-файл для запроса в очередь")
+	if missing_q.is_empty():
 		return
+	var fid := str(missing_q[0])
 	_ok(_director.attach_file(rid, fid), "файл прикреплён к запросу очереди")
+	_ok(_director.set_request_protocol(rid, "udp"),
+		"запрос очереди переведён на UDP")
 
 	var holder := {"game": null}
 	_director.send_game_factory = func(_id, _tier, _seed, _ctx):
@@ -272,9 +289,10 @@ func _test_reject() -> void:
 	_ok(req != null, "запрос для отказа создан")
 	if req == null:
 		return
-	var fid := _available_file()
+	var missing_r: Array = _director.request_missing(rid)
+	var fid := str(missing_r[0]) if not missing_r.is_empty() else ""
 	if not fid.is_empty():
-		_ok(_director.attach_file(rid, fid), "файл прикреплён перед отказом")
+		_ok(_director.attach_file(rid, fid), "required-файл прикреплён перед отказом")
 	var money_before := int(_game.money)
 	var sla_before := float(_game.sla)
 	_main._on_request_reject(rid)
@@ -299,15 +317,16 @@ func _test_protocol_toggle() -> void:
 	_director.reject_request(rid)
 
 
-## Предсказание RequestCard совпадает с реальным выбором Economy (B4) для
-## всех ключевых сумм, включая S=8 (dots/T2) и S=24 (video/T4).
+## Предсказание RequestCard совпадает с реальным выбором Economy: сумма
+## коэффициентов 1/2/4/8, 27 достижимых сумм, 3 ступени, без «wires».
 func _test_prediction() -> void:
 	var cases := [
-		{"types": ["text"], "sum": 1, "id": "dots", "tier": 1},
-		{"types": ["text", "sound"], "sum": 3, "id": "wires", "tier": 1},
-		{"types": ["photo"], "sum": 4, "id": "text", "tier": 1},
-		{"types": ["video"], "sum": 8, "id": "dots", "tier": 2},
-		{"types": ["video", "video", "video"], "sum": 24, "id": "video", "tier": 4},
+		{"types": ["text"], "sum": 1, "id": "text", "tier": 1},
+		{"types": ["text", "sound"], "sum": 3, "id": "dots", "tier": 1},
+		{"types": ["photo"], "sum": 4, "id": "photo", "tier": 1},
+		{"types": ["video"], "sum": 8, "id": "video", "tier": 1},
+		{"types": ["video", "video", "video"], "sum": 24, "id": "dots", "tier": 3},
+		{"types": ["video", "video", "video", "video"], "sum": 32, "id": "video", "tier": 3},
 	]
 	for entry in cases:
 		var tc: Dictionary = entry
@@ -329,7 +348,41 @@ func _test_prediction() -> void:
 			"S=%d: sum совпадает с Economy" % int(tc["sum"]))
 		_eq(str(p.get("id", "")), str(tc["id"]), "S=%d: ожидаемая игра" % int(tc["sum"]))
 		_eq(int(p.get("tier", 0)), int(tc["tier"]), "S=%d: ожидаемая ступень" % int(tc["sum"]))
+		_ok(str(p.get("id", "")) != "wires", "S=%d: wires не выбирается" % int(tc["sum"]))
 		card.free()
+
+
+## v3: карточка держит контейнер до 4 обязательных файлов и сумму 4 text.
+func _test_four_slots() -> void:
+	var ids: Array = []
+	for i in 4:
+		var f = _game.registry.create_file("слот_%d" % i, "text", _folder_id)
+		if f != null:
+			ids.append(str(f.id))
+	_eq(ids.size(), 4, "созданы 4 файла для контейнера")
+	if ids.size() < 4:
+		return
+	var rid := str(_director._create_request(4, "tcp", ids, true))
+	_ok(not rid.is_empty(), "запрос на 4 файла создан")
+	_main._refresh_hour()
+	await process_frame
+	var card = _request_card(rid)
+	_ok(card != null, "карточка 4-слотового запроса найдена")
+	if card == null:
+		_director._cleanup_request(rid, true)
+		return
+	_eq(card.required_count, 4, "контейнер на 4 обязательных файла")
+	_eq(card.slots.size(), 4, "в карточке 4 слота")
+	var expected: Dictionary = ECONOMY.send_minigame_for(["text", "text", "text", "text"])
+	_eq(int(card.prediction().get("sum", -1)), int(expected.get("sum", -2)),
+		"сумма 4 text = 4")
+	_eq(str(card.prediction().get("id", "")), str(expected.get("id", "")),
+		"игра для S=4 из Economy")
+	_eq(int(card.prediction().get("tier", -1)), int(expected.get("tier", -2)),
+		"ступень для S=4 из Economy")
+	_eq(card.difficulty_text(), "СУММА: %d" % int(expected.get("sum", 0)),
+		"подпись суммы на карточке")
+	_director._cleanup_request(rid, true)
 
 
 # --- хелперы ----------------------------------------------------------------

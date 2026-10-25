@@ -220,7 +220,8 @@ func _test_shield_auto_block() -> void:
 	_attack_shows = 0
 	_resolved_events.clear()
 	var row := _tier_row("ddos", ECONOMY.attack_tier(2))
-	var expected := int(round(float(row.get("reward_money", 0)) * _money_scale(2) * 0.5))
+	var shield_scale := _shield_scale()
+	var expected := int(round(float(row.get("reward_money", 0)) * _money_scale(2) * shield_scale))
 	var money_before: int = _game.money
 	var sla_before: float = _game.sla
 	var id := str(ad.spawn_attack("ddos"))
@@ -230,9 +231,10 @@ func _test_shield_auto_block() -> void:
 	_ok(not _hd.is_attack_paused(), "щит не ставит час на паузу")
 	_eq(int(ad.shield_charges), 0, "заряд израсходован")
 	_eq(int(_game.shield_charges), 0, "Game.shield_charges синхронизирован")
-	_eq(_game.money, money_before + expected, "50% награды начислено")
-	_approx(_game.sla, sla_before + float(row.get("reward_sla", 0)) * 0.5, 0.001,
-		"50% SLA-награды")
+	_eq(_game.money, money_before + expected,
+		"награда щита: x%.2f от денег атаки" % shield_scale)
+	_approx(_game.sla, sla_before + float(row.get("reward_sla", 0)) * shield_scale, 0.001,
+		"награда щита: x%.2f от SLA атаки" % shield_scale)
 	_ok(_has_toast("ЩИТ ПОГЛОТИЛ АТАКУ"), "тост «ЩИТ ПОГЛОТИЛ АТАКУ»")
 	_ok(_resolved_events.size() >= 1, "resolved(true) при щите")
 	if not _resolved_events.is_empty():
@@ -398,6 +400,15 @@ func _money_scale(hour: int) -> float:
 		if attacks is Dictionary:
 			scale *= float((attacks as Dictionary).get("money_scale", 1.0))
 	return scale
+
+
+## Множитель награды щита — из balance.json → attacks.shield_reward_scale.
+func _shield_scale() -> float:
+	if _data != null and _data.get("balance") is Dictionary:
+		var attacks = (_data.balance as Dictionary).get("attacks", null)
+		if attacks is Dictionary:
+			return maxf(0.0, float((attacks as Dictionary).get("shield_reward_scale", 0.5)))
+	return 0.5
 
 
 func _new_file(name: String, type: String):

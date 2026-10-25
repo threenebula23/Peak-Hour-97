@@ -1,12 +1,21 @@
 class_name ToastLayer
 extends Control
-## Очередь сообщений внизу справа. Живут над статус-баром, не перекрывая его.
-## Светлые карточки с цветной точкой и мягкой тенью.
+## Очередь сообщений сверху по центру холста. Стопка растёт ВНИЗ от верхней
+## кромки рабочей области: не перекрывает карточки ОТПРАВКИ и их кнопки
+## ОТПРАВИТЬ/ОТКЛОНИТЬ. Светлые карточки с цветной точкой и мягкой тенью.
+##
+## Координаты — логические 1280×720 (canvas_items): тост шириной 400 стоит
+## ровно по центру (440…840) и не заходит в правое окно ОТПРАВКА (856…1272).
 
 const W := 400.0
 const H := 30.0
 const GAP := 4.0
-const BOTTOM := 650.0
+## Первый тост: сразу под строкой меню, над заголовками ДИСК/ФАЙЛЫ.
+const TOP := 44.0
+## Точка входа: над кадром, карточка «въезжает» сверху вниз.
+const ENTER_Y := -40.0
+## Центр холста 1280 px.
+const LEFT := (1280.0 - W) * 0.5
 
 var _items: Array[Control] = []
 
@@ -26,12 +35,15 @@ func toast(text: String, kind: String = "info") -> void:
 			old.queue_free()
 	var item := ToastItem.new(text, kind)
 	item.size = Vector2(W, H)
-	item.position = Vector2(1276.0, _slot_y(_items.size()))
+	# Новый тост — последний в стопке, то есть самый нижний.
+	item.position = Vector2(LEFT, ENTER_Y)
+	item.modulate.a = 0.0
 	add_child(item)
 	_items.append(item)
 	var target := _target_pos(_items.size() - 1)
-	var tw := create_tween()
-	tw.tween_property(item, "position", target, 0.22).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	var tw := create_tween().set_parallel(true)
+	tw.tween_property(item, "position", target, 0.24).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
+	tw.tween_property(item, "modulate:a", 1.0, 0.16)
 	var life := create_tween()
 	life.tween_interval(3.0)
 	life.tween_property(item, "modulate:a", 0.0, 0.45)
@@ -57,12 +69,13 @@ func _stop_life(item: Control) -> void:
 		(tw as Tween).kill()
 
 
+## Слот стопки: 44 / 78 / 112 — сверху вниз, свежий тост ниже старых.
 func _slot_y(index: int) -> float:
-	return BOTTOM - H - (index) * (H + GAP)
+	return TOP + float(index) * (H + GAP)
 
 
 func _target_pos(index: int) -> Vector2:
-	return Vector2(1272.0 - W, _slot_y(index))
+	return Vector2(LEFT, _slot_y(index))
 
 
 func _relayout() -> void:

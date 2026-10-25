@@ -68,7 +68,8 @@ func _test_full_hour() -> void:
 		_ok(report.has(key), "в отчёте есть %s" % key)
 	_ok(not is_nan(float(report.get("sla_delta", 0.0))), "sla_delta не NaN")
 	_ok(not is_nan(float(_game.sla)), "SLA не NaN")
-	_ok(float(_game.sla) <= 200.0 + 0.0001, "SLA ≤ 200")
+	_ok(float(_game.sla) <= float(_game.sla_cap()) + 0.0001,
+		"SLA ≤ кап (%.0f)" % float(_game.sla_cap()))
 	_eq(_hd.slots.used_count(), 0, "все слоты освобождены после конца часа")
 	_ok(_hd.active_packets.is_empty(), "после конца часа нет активных пакетов")
 	_ok(_hd.active_requests.is_empty(), "после конца часа нет активных запросов")
@@ -108,7 +109,8 @@ func _test_nine_hours() -> void:
 			_ok(report.has(key), "час %d: в отчёте есть %s" % [h, key])
 		_ok(not is_nan(float(report.get("sla_delta", 0.0))), "час %d: sla_delta не NaN" % h)
 		_ok(not is_nan(float(_game.sla)), "час %d: SLA не NaN" % h)
-		_ok(float(_game.sla) <= 200.0 + 0.0001, "час %d: SLA ≤ 200" % h)
+		_ok(float(_game.sla) <= float(_game.sla_cap()) + 0.0001,
+			"час %d: SLA ≤ кап (%.0f)" % [h, float(_game.sla_cap())])
 		_ok(int(_game.money) >= 0, "час %d: money >= 0" % h)
 		_eq(_attack_marks.size(), expected[h - 1], "час %d: атак по расписанию" % h)
 		for mark in _attack_marks:

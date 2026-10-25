@@ -43,7 +43,7 @@ func _test_data() -> void:
 	var video: Dictionary = data.type_def("video")
 	_eq(int(video.get("cells", 0)), 4, "video: 4 клетки")
 	_approx(float(video.get("base_time_sec", 0.0)), 12.0, EPS, "video: base_time_sec 12")
-	_approx(float(video.get("base_pay", 0.0)), 80.0, EPS, "video: base_pay 80")
+	_approx(float(video.get("base_pay", 0.0)), 69.0, EPS, "video: base_pay 69")
 	_approx(float(video.get("weight", 0.0)), 8.0, EPS, "video: weight 8")
 	_approx(float(video.get("minigame_coeff", 0.0)), 8.0, EPS, "video: coeff 8")
 	_approx(float(video.get("sla_loss", 0.0)), 16.0, EPS, "video: sla_loss 16")
@@ -52,23 +52,25 @@ func _test_data() -> void:
 	_eq(int(data.type_def("nope").get("cells", 0)), 1, "неизвестный тип → text (merge defaults)")
 
 	var h1: Dictionary = data.hour_def(1)
-	_eq(int(h1.get("files", 0)), 4, "H1: 4 файла")
-	_eq(int(h1.get("request_cap", 0)), 2, "H1: кап 2 запроса")
-	_eq(int(h1.get("active_requests", 0)), 1, "H1: 1 активный запрос")
+	_eq(int(h1.get("files", 0)), 7, "H1: 7 файлов")
+	_eq(int(h1.get("request_cap", 0)), 6, "H1: кап 6 запросов")
+	_eq(int(h1.get("active_requests", 0)), 2, "H1: 2 активных запроса")
 	_eq(int(h1.get("attacks", 0)), 0, "H1: 0 атак")
-	_approx(float(h1.get("income_target", 0.0)), 65.0, EPS, "H1: цель дохода 65")
+	_approx(float(h1.get("income_target", 0.0)), 150.0, EPS, "H1: цель дохода 150")
+	_approx(float(h1.get("send_interval", 0.0)), 12.0, EPS, "H1: send_interval 12")
 	var w1: Dictionary = h1.get("type_weights", {})
 	_approx(float(w1.get("text", 0.0)), 0.70, EPS, "H1: text 70%")
 	_approx(float(w1.get("sound", 0.0)), 0.30, EPS, "H1: sound 30%")
 	_approx(float(w1.get("photo", 0.0)), 0.0, EPS, "H1: photo 0%")
 	_approx(float(w1.get("video", 0.0)), 0.0, EPS, "H1: video 0%")
 	var m1: Dictionary = h1.get("request_mix", {})
-	_approx(float(m1.get("1", 0.0)), 0.70, EPS, "H1: 1 файл 70%")
-	_approx(float(m1.get("2", 0.0)), 0.30, EPS, "H1: 2 файла 30%")
+	_approx(float(m1.get("1", 0.0)), 0.76, EPS, "H1: 1 файл 76%")
+	_approx(float(m1.get("2", 0.0)), 0.24, EPS, "H1: 2 файла 24%")
 	_approx(float(m1.get("3", 0.0)), 0.0, EPS, "H1: 3 файла 0%")
+	_approx(float(m1.get("4", 0.0)), 0.0, EPS, "H1: 4 файла 0%")
 	_eq(int(data.hour_def(2).get("files", 0)), 8, "H2: 8 файлов")
 	_eq(int(data.hour_def(9).get("files", 0)), 20, "H9: 20 файлов")
-	_eq(int(data.hour_def(9).get("request_cap", 0)), 8, "H9: кап 8 запросов")
+	_eq(int(data.hour_def(9).get("request_cap", 0)), 7, "H9: кап 7 запросов")
 	_eq(int(data.hour_def(100).get("hour", 0)), 9, "hour > 9 → последняя строка")
 	_eq(data.hours.size(), 9, "9 строк бюджета часов")
 
@@ -94,7 +96,7 @@ func _test_data() -> void:
 		_eq(lot_prices.size(), int(lot.get("max_level", 0)), "prices %s по числу уровней" % str(expected_ids[i]))
 		for price in lot_prices:
 			prices_sum += int(price)
-	_eq(prices_sum, 13100, "сумма цен всех лотов = 13 100")
+	_eq(prices_sum, 8085, "сумма цен всех лотов = 8 085")
 	_eq(str(data.lot_def("lot_speed").get("effect", "")), "transfer_speed", "lot_speed effect")
 	_eq(str(data.lot_def("lot_channel").get("effect", "")), "channel_capacity", "lot_channel effect")
 	_ok(data.lot_def("lot_nope").is_empty(), "неизвестный лот → {}")
@@ -105,13 +107,17 @@ func _test_data() -> void:
 	_eq((rules.get("reroll_costs", []) as Array).size(), 3, "3 цены реролла")
 
 	var dots: Dictionary = data.minigame_def("dots")
-	_eq((dots.get("tiers", []) as Array).size(), 4, "dots: 4 ступени")
-	for gid in ["dots", "sound", "wires", "text", "video", "photo", "maze", "junk", "ddos", "phishing", "ransomware"]:
+	_eq((dots.get("tiers", []) as Array).size(), 3, "dots: 3 ступени")
+	for gid in ["dots", "sound", "text", "video", "photo", "maze", "junk", "ddos", "phishing", "ransomware"]:
 		_ok(not data.minigame_def(gid).is_empty(), "мини-игра %s есть" % gid)
+	_ok(not (data.minigames.get("games", {}) as Dictionary).has("wires"), "wires удалена")
 	var sel: Dictionary = data.minigame_selection()
-	_eq((sel.get("order", []) as Array).size(), 7, "send order: 7 игр")
+	_eq((sel.get("order", []) as Array).size(), 6, "send order: 6 игр")
 	var sums: Array = sel.get("achievable_sums", [])
-	_eq(sums.size(), 19, "19 достижимых сумм")
+	_eq(sums.size(), 27, "27 достижимых сумм (1-4 файла)")
+	_eq(int(sel.get("max_index", -1)), 26, "max_index = 26")
+	_eq((sel.get("rank_games", []) as Array).size(), 27, "rank_games: 27 значений")
+	_eq((sel.get("tier_max_rank", []) as Array).size(), 2, "tier_max_rank: 2 границы")
 	var coeff: Dictionary = sel.get("coeff", {})
 	_eq(int(coeff.get("video", 0)), 8, "coeff video = 8 в selection")
 	_eq((data.attack_def("ddos").get("tiers", []) as Array).size(), 4, "ddos: 4 ступени")
@@ -169,14 +175,14 @@ func _test_levels_and_caps() -> void:
 
 	game.set_lot_level("lot_speed", 6)
 	_eq(game.level("speed_level"), 6, "speed_level = 6")
-	_approx(game.speed_mult(), 0.606355, 0.0005, "pow(0.92, 6) ≈ 0.606")
-	_approx(E.speed_mult(6), pow(0.92, 6.0), EPS, "speed_mult = pow(0.92, 6) без ^")
+	_approx(game.speed_mult(), 0.531441, 0.0005, "pow(0.90, 6) ≈ 0.531")
+	_approx(E.speed_mult(6), pow(0.90, 6.0), EPS, "speed_mult = pow(0.90, 6) без ^")
 
 	game.set_lot_level("lot_sla", 4)
-	_approx(game.sla_cap(), 200.0, EPS, "4 уровня ИБП → кап 200")
-	_approx(game.sla, 200.0, EPS, "ИБП сразу добавляет +35 за уровень (60 → 200)")
+	_approx(game.sla_cap(), 220.0, EPS, "4 уровня ИБП → кап 220")
+	_approx(game.sla, 220.0, EPS, "ИБП сразу добавляет +40 за уровень (60 → 220)")
 	game.add_sla(1000.0)
-	_approx(game.sla, 200.0, EPS, "add_sla не выше динамического капа 200")
+	_approx(game.sla, 220.0, EPS, "add_sla не выше динамического капа 220")
 
 	game.set_lot_level("lot_money", 8)
 	_approx(game.money_mult(), 1.4, EPS, "8 уровней контракта → ×1.4")
@@ -184,7 +190,7 @@ func _test_levels_and_caps() -> void:
 
 	game.set_lot_level("lot_folder", 5)
 	var dims: Vector2i = game.folder_dims()
-	_eq(dims.x, 8, "folder level 5: 8 столбцов")
+	_eq(dims.x, 9, "folder level 5: 9 столбцов")
 	_eq(dims.y, 6, "folder level 5: 6 строк")
 	game.set_lot_level("lot_folder", 1)
 	dims = game.folder_dims()
@@ -196,7 +202,7 @@ func _test_levels_and_caps() -> void:
 	_eq(game.buffer_limit(), 12, "6 уровней канала → буфер 12")
 
 	game.set_lot_level("lot_timer", 5)
-	_approx(game.request_timer(), 55.0, EPS, "5 уровней таймера → 55")
+	_approx(game.request_timer(), 65.0, EPS, "5 уровней таймера → 65")
 	game.set_lot_level("lot_timer", 99)
 	_eq(game.level("lot_timer"), 5, "уровень клампится max_level")
 
@@ -205,7 +211,7 @@ func _test_levels_and_caps() -> void:
 	_eq(game.shield_charges, 3, "покупка сразу заряжает щит")
 
 	# Сетка уровней 0..5 из таблицы.
-	var expected := [[5, 4], [6, 4], [6, 5], [7, 5], [7, 6], [8, 6]]
+	var expected := [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
 	for lvl in range(6):
 		game.set_lot_level("lot_folder", lvl)
 		var d: Vector2i = game.folder_dims()
@@ -229,9 +235,9 @@ func _test_sla_rules() -> void:
 	game.sla = 90.0
 	game.hour = 2
 	game.regen_sla_for_hour()
-	_approx(float(game.sla), 95.0, EPS, "реген не превышает кап 95")
+	_approx(float(game.sla), 100.0, EPS, "реген не превышает кап 100")
 	game.regen_sla_for_hour()
-	_approx(float(game.sla), 95.0, EPS, "повторный реген в том же часу — no-op")
+	_approx(float(game.sla), 100.0, EPS, "повторный реген в том же часу — no-op")
 
 	# SLA 0 во время часа = поражение забега.
 	var reasons: Array = []
@@ -266,10 +272,10 @@ func _test_channel_and_timers() -> void:
 	_approx(E.packet_timer(1, {}), 20.0, EPS, "packet timer H1 = 20")
 	_approx(E.packet_timer(9, {"timer_level": 5}), 20.0, EPS, "packet timer не меняется")
 	_approx(E.request_timer(1, {}), 30.0, EPS, "request timer base 30")
-	_approx(E.request_timer(5, {"timer_level": 1}), 35.0, EPS, "request timer +1 = 35")
-	_approx(E.request_timer(9, {"timer_level": 5}), 55.0, EPS, "request timer max 55")
-	_approx(E.request_timer(9, {"timer_level": 99}), 55.0, EPS, "request timer cap 55")
-	_approx(E.request_timer(1, {"lot_timer": 2}), 40.0, EPS, "request timer по id лота")
+	_approx(E.request_timer(5, {"timer_level": 1}), 37.0, EPS, "request timer +1 = 37")
+	_approx(E.request_timer(9, {"timer_level": 5}), 65.0, EPS, "request timer max 65")
+	_approx(E.request_timer(9, {"timer_level": 99}), 65.0, EPS, "request timer cap 65")
+	_approx(E.request_timer(1, {"lot_timer": 2}), 44.0, EPS, "request timer по id лота")
 
 
 func _test_transfer_time() -> void:
@@ -278,14 +284,14 @@ func _test_transfer_time() -> void:
 	_approx(E.recv_transfer_time({"base_time_sec": 5}, 1.0, 0), 5.0, EPS, "sound 5 с")
 	_approx(E.recv_transfer_time({"base_time_sec": 8}, 1.0, 0), 8.0, EPS, "photo 8 с")
 	_approx(E.recv_transfer_time({"base_time_sec": 12}, 1.0, 0), 12.0, EPS, "video 12 с")
-	_approx(E.recv_transfer_time({"base_time_sec": 12}, 1.0, 1), 12.0 * 0.92, EPS, "speed 1 → ×0.92")
+	_approx(E.recv_transfer_time({"base_time_sec": 12}, 1.0, 1), 12.0 * 0.90, EPS, "speed 1 → ×0.90")
 	_approx(E.recv_transfer_time({"base_time_sec": 12}, 2.0, 0), 24.0, EPS, "channel factor 2")
-	_approx(E.recv_transfer_time({"base_time_sec": 8}, 1.0, 2), 8.0 * pow(0.92, 2.0), EPS, "speed 2")
+	_approx(E.recv_transfer_time({"base_time_sec": 8}, 1.0, 2), 8.0 * pow(0.90, 2.0), EPS, "speed 2")
 	_approx(E.send_transfer_time({"base_time_sec": 12}, 1.0, 0, "tcp"), 12.0, EPS, "TCP ×1.0")
 	_approx(E.send_transfer_time({"base_time_sec": 12}, 1.0, 0, "udp"), 9.6, EPS, "UDP ×0.8")
 	_approx(E.send_transfer_time({"base_time_sec": 12}, 1.0, 0, &"UDP"), 9.6, EPS, "UDP StringName")
-	_approx(E.recv_time({"base_time_sec": 8}, 1.0, {"speed_level": 2}), 8.0 * pow(0.92, 2.0), EPS, "legacy recv_time + speed")
-	_approx(E.send_time({"base_time_sec": 12}, 1.0, {"speed_level": 1}), 12.0 * 0.92, EPS, "legacy send_time")
+	_approx(E.recv_time({"base_time_sec": 8}, 1.0, {"speed_level": 2}), 8.0 * pow(0.90, 2.0), EPS, "legacy recv_time + speed")
+	_approx(E.send_time({"base_time_sec": 12}, 1.0, {"speed_level": 1}), 12.0 * 0.90, EPS, "legacy send_time")
 	_approx(E.recv_time({"recv_time": 2.0}, 1.0, {}), 2.0, EPS, "legacy поле recv_time")
 
 
@@ -293,76 +299,97 @@ func _test_payout() -> void:
 	_set_case("payout")
 	# 100 × 0.8 × 1.0 × 1.15 × 1.15 × 1.1 = 116.38 → 116
 	_eq(E.payout(100.0, 2, 15.0, 30.0, 1.0, "tcp", 5, {}), 116, "полный TCP-пример (multi 1.15)")
-	_eq(E.payout(100.0, 1, 30.0, 30.0, 0.5, "udp", 0, {}), 75, "quality 0.5, udp")
-	_eq(E.payout(100.0, 3, 30.0, 30.0, 1.0, "udp", 0, {}), 130, "multi n=3 (1.30)")
-	_eq(E.payout(100.0, 1, 0.0, 30.0, 1.0, "udp", 0, {}), 60, "speed минимум 0.6")
-	_eq(E.payout(100.0, 1, 60.0, 30.0, 1.0, "udp", 0, {}), 100, "time ratio клампится 1")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 0.5, "udp", 0, {}), 64, "quality 0.5, udp ×0.85")
+	_eq(E.payout(100.0, 3, 30.0, 30.0, 1.0, "udp", 0, {}), 111, "multi n=3 (1.30) × udp 0.85")
+	_eq(E.payout(100.0, 1, 0.0, 30.0, 1.0, "udp", 0, {}), 51, "speed минимум 0.6")
+	_eq(E.payout(100.0, 1, 60.0, 30.0, 1.0, "udp", 0, {}), 85, "time ratio клампится 1")
 	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "TCP", 10, {}), 138, "TCP + streak 10")
-	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, &"udp", 10, {}), 120, "streak +20%")
-	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 50, {}), 120, "streak cap 10")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, &"udp", 10, {}), 102, "streak +20% × udp 0.85")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 50, {}), 102, "streak cap 10")
 	_eq(E.payout(100.0, 0, 30.0, 30.0, 1.0, "udp", 0, {}), 0, "n=0 → 0")
 	_eq(E.payout(0.0, 1, 30.0, 30.0, 1.0, "udp", 0, {}), 0, "base 0 → 0")
-	_eq(E.payout(100.0, 1, 30.0, 0.0, 1.0, "udp", 0, {}), 100, "timer_total 0 → полная скорость")
-	_eq(E.payout(100.0, 1, 30.0, 30.0, 2.0, "udp", 0, {}), 100, "quality клампится 1")
-	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"money_level": 4}), 120, "money_mult +4 = ×1.2")
-	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"money_level": 8}), 140, "money_mult +8 = ×1.4")
-	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"lot_money": 2}), 110, "money_mult по id лота")
+	_eq(E.payout(100.0, 1, 30.0, 0.0, 1.0, "udp", 0, {}), 85, "timer_total 0 → полная скорость")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 2.0, "udp", 0, {}), 85, "quality клампится 1")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"money_level": 4}), 102, "money_mult +4 = ×1.2")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"money_level": 8}), 119, "money_mult +8 = ×1.4")
+	_eq(E.payout(100.0, 1, 30.0, 30.0, 1.0, "udp", 0, {"lot_money": 2}), 94, "money_mult по id лота")
 
 	# Float-точность: 1/3 и 2/3 не должны стать int/int.
-	# 100 × (0.6 + 0.4/3) × 0.5 = 36.667 → 37 (при int/int было бы 30).
-	_eq(E.payout(100.0, 1, 1.0, 3.0, 0.0, "udp", 0, {}), 37, "time ratio 1/3 — float")
-	# 100 × (0.6 + 0.8/3) × 0.5 = 43.333 → 43.
-	_eq(E.payout(100.0, 1, 2.0, 3.0, 0.0, "udp", 0, {}), 43, "time ratio 2/3 — float")
+	# 100 × (0.6 + 0.4/3) × 0.5 × 0.85 = 31.167 → 31.
+	_eq(E.payout(100.0, 1, 1.0, 3.0, 0.0, "udp", 0, {}), 31, "time ratio 1/3 — float")
+	# 100 × (0.6 + 0.8/3) × 0.5 × 0.85 = 36.833 → 37.
+	_eq(E.payout(100.0, 1, 2.0, 3.0, 0.0, "udp", 0, {}), 37, "time ratio 2/3 — float")
 
 
 func _test_send_minigame() -> void:
 	_set_case("send_minigame")
-	var m: Dictionary = E.send_minigame_for(["text"])
+	var m: Dictionary = E.send_minigame_for([])
+	_eq(int(m.get("sum", -1)), 0, "S=0")
+	_eq(str(m.get("id", "")), "dots", "S=0 → dots")
+	_eq(int(m.get("tier", 0)), 1, "S=0 → T1")
+	m = E.send_minigame_for(["text"])
 	_eq(int(m.get("sum", 0)), 1, "S=1")
-	_eq(str(m.get("id", "")), "dots", "S=1 → dots")
+	_eq(str(m.get("id", "")), "text", "S=1 → text")
 	_eq(int(m.get("tier", 0)), 1, "S=1 → T1")
 	_eq(int(m.get("index", -1)), 0, "S=1 → rank 0")
 	m = E.send_minigame_for(["sound"])
 	_eq(int(m.get("sum", 0)), 2, "S=2")
 	_eq(str(m.get("id", "")), "sound", "S=2 → sound")
 	_eq(int(m.get("tier", 0)), 1, "S=2 → T1")
-	m = E.send_minigame_for(["text", "sound"])
-	_eq(int(m.get("sum", 0)), 3, "S=3")
-	_eq(str(m.get("id", "")), "wires", "S=3 → wires")
+	m = E.send_minigame_for(["TEXT", "Sound"])
+	_eq(int(m.get("sum", 0)), 3, "S=3 (types lowercase)")
+	_eq(str(m.get("id", "")), "dots", "S=3 → dots")
 	_eq(int(m.get("tier", 0)), 1, "S=3 → T1")
 	m = E.send_minigame_for(["photo"])
 	_eq(int(m.get("sum", 0)), 4, "S=4")
-	_eq(str(m.get("id", "")), "text", "S=4 → text")
+	_eq(str(m.get("id", "")), "photo", "S=4 → photo")
 	_eq(int(m.get("tier", 0)), 1, "S=4 → T1")
 	m = E.send_minigame_for(["video"])
 	_eq(int(m.get("sum", 0)), 8, "S=8")
-	_eq(str(m.get("id", "")), "dots", "S=8 → dots")
-	_eq(int(m.get("tier", 0)), 2, "S=8 → T2")
+	_eq(str(m.get("id", "")), "video", "S=8 → video")
+	_eq(int(m.get("tier", 0)), 1, "S=8 → T1 (rank 7)")
 	_eq(int(m.get("index", -1)), 7, "S=8 → rank 7")
+	m = E.send_minigame_for(["video", "text"])
+	_eq(int(m.get("sum", 0)), 9, "S=9")
+	_eq(int(m.get("tier", 0)), 2, "S=9 → T2")
+	_eq(str(m.get("id", "")), "dots", "S=9 → dots (rank 8)")
 	m = E.send_minigame_for(["video", "video", "video"])
 	_eq(int(m.get("sum", 0)), 24, "S=24")
-	_eq(int(m.get("tier", 0)), 4, "S=24 → T4")
-	# B4: плотный список достижимых сумм, rank 18 → order[18 % 7] = video.
-	_eq(str(m.get("id", "")), "video", "S=24 → video (B4 reindex)")
-	_eq(int(m.get("index", -1)), 18, "S=24 → rank 18")
+	_eq(int(m.get("tier", 0)), 3, "S=24 → T3")
+	_eq(str(m.get("id", "")), "dots", "S=24 → dots (rank 22)")
+	_eq(int(m.get("index", -1)), 22, "S=24 → rank 22")
+	m = E.send_minigame_for(["video", "video", "video", "video"])
+	_eq(int(m.get("sum", 0)), 32, "S=32")
+	_eq(int(m.get("tier", 0)), 3, "S=32 → T3")
+	_eq(int(m.get("index", -1)), 26, "S=32 → rank 26")
+	# ACHIEVABLE_SUMS: ровно 27 значений для 1–4 файлов.
+	_eq(E.achievable_sums().size(), 27, "27 достижимых сумм")
+	var alias: Dictionary = E.selection_for_sum(8)
+	_eq(str(alias.get("id", "")), "video", "selection_for_sum(8) → video")
+	_eq(int(alias.get("tier", 0)), 1, "selection_for_sum(8) → T1")
+	_eq(int(alias.get("index", -1)), 7, "selection_for_sum(8) → rank 7")
 
-	# Все 7 игр и все 4 ступени достижимы при максимум 3 файлах.
+	# Все 6 игр и все 3 ступени достижимы при 1–4 файлах.
 	var pool := ["text", "sound", "photo", "video"]
 	var ids: Dictionary = {}
 	var tiers: Dictionary = {}
 	for a in range(pool.size()):
 		for b in range(pool.size()):
 			for c in range(pool.size()):
-				for combo in [[pool[a]], [pool[a], pool[b]], [pool[a], pool[b], pool[c]]]:
-					var r: Dictionary = E.send_minigame_for(combo)
-					var id := str(r.get("id", ""))
-					ids[id] = true
-					tiers[int(r.get("tier", 0))] = true
-					_ok(E.SEND_ORDER.has(id), "id %s из SEND_ORDER" % id)
-	_eq(ids.size(), 7, "достижимы все 7 игр отправки")
-	for t in [1, 2, 3, 4]:
+				for d in range(pool.size()):
+					for combo in [[pool[a]], [pool[a], pool[b]],
+							[pool[a], pool[b], pool[c]],
+							[pool[a], pool[b], pool[c], pool[d]]]:
+						var r: Dictionary = E.send_minigame_for(combo)
+						var id := str(r.get("id", ""))
+						ids[id] = true
+						tiers[int(r.get("tier", 0))] = true
+						_ok(E.SEND_ORDER.has(id), "id %s из SEND_ORDER" % id)
+	_eq(ids.size(), 6, "достижимы все 6 игр отправки")
+	for t in [1, 2, 3]:
 		_ok(tiers.has(t), "достижима ступень T%d" % t)
 	_ok(not ids.has("junk"), "атакующие игры не выбираются для отправки")
+	_ok(not ids.has("wires"), "wires больше не выбирается")
 
 
 func _test_attack_tier() -> void:

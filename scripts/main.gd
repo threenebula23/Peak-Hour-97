@@ -66,20 +66,49 @@ var _confirm_action := ""
 var _backdrop: Control = null
 var _hour_ui_shown := false
 var _hour_signals_connected := false
-## Активная модалка мини-игры (отправка/атака); вторая не открывается.
+## M8: троттлинг тоста «буфер полон» (не чаще раза в ~5 с).
+var _spawn_frozen_toast_ms: int = -100000
+## Активная модалка мини-игры (отправка/атака/соединение); вторая не открывается.
 var _modal_game: Node = null
+## Тип активной модалки: "send" / "attack" / "connection" / "".
+var _modal_kind := ""
+## M2: шаг обучения «send» подтверждается один раз за открытие мини-игры.
+var _send_tutorial_notified := false
 
-## Туториал первого часа показывается один раз за запуск.
+## Туториал первого часа показывается один раз за забег/реплей.
 var _tutorial_shown := false
 var _tutorial_intro_shown := false
 var _tutorial_after_shown := false
-## Шаги первого часа: текст, номер шага и задержка от старта часа.
+## Шаги обучения: key — событие завершения, timeout — аварийный автопереход.
 const TUTORIAL_STEPS := [
-	{"text": "Перетащи пакет в папку", "step": 1, "delay": 2.0},
-	{"text": "Собери файлы в запрос", "step": 2, "delay": 20.0},
-	{"text": "TCP: нажми Соединиться и попади три раза", "step": 3, "delay": 40.0},
+	{"key": "packet",
+		"text": "Перетащи пакет из «ПРИЁМА» в папку", "timeout": 30.0},
+	{"key": "attach",
+		"text": "Открой папку и перетащи файл в карточку запроса", "timeout": 40.0},
+	{"key": "connect",
+		"text": "Нажми «СОЕДИНИТЬСЯ» и попади в зелёную зону три раза",
+		"timeout": 45.0},
+	{"key": "send",
+		"text": "Пройди мини-игру: качество влияет на оплату", "timeout": 40.0},
+	{"key": "sla", "text": "Следи за SLA и отражай атаки", "timeout": 12.0},
 ]
-const TUTORIAL_STEP_SECONDS := 7.0
+const TUTORIAL_ACK_SECONDS := 0.6
+const TUTORIAL_CLOSE_SECONDS := 0.9
+
+var _tutorial_active := false
+var _tutorial_pending := false
+var _tutorial_closing := false
+var _tutorial_step := -1
+var _tutorial_step_elapsed := 0.0
+var _tutorial_ack_left := 0.0
+var _tutorial_close_left := 0.0
+var _tutorial_waiting_spawn := false
+var _tutorial_force_show := false
+var _tutorial_overlay = null
+var _tutorial_next_btn: Button90 = null
+## Пустое состояние ОТПРАВКИ: неинтерактивная плашка внутри content.
+var _requests_empty: Control = null
+var _requests_empty_hint: Label = null
 
 ## --- Автообновление подготовки по сигналам FileRegistry -------------------
 ## Реестр, к которому подключены сигналы (меняется после load/new_run).
@@ -103,10 +132,10 @@ var _recv_scroll := 0.0
 const RECV_CARD_H := 56.0
 const RECV_WHEEL_STEP := 24.0
 
-## --- Скролл карточек ОТПРАВКИ: карточка v2 выше, запросов до 4 -----------
+## --- Скролл карточек ОТПРАВКИ: карточка v2 (2×2 чипа), запросов до 4 --------
 var _send_bar: ScrollBar90
 var _send_scroll := 0.0
-const REQ_CARD_H := 108.0
+const REQ_CARD_H := 128.0
 
 ## --- Поиск по файлам (апгрейд shop_search) --------------------------------
 var _search_edit: LineEdit
@@ -118,6 +147,7 @@ func _ready() -> void:
 	_create_drag_controller()
 	_build()
 	_connect_all()
+	_rename_slot_labels()
 	controller = GAME_CONTROLLER.new()
 	controller.name = "GameController"
 	add_child(controller)
@@ -126,6 +156,7 @@ func _ready() -> void:
 	_build_modals()
 	_apply_saved_settings()
 	_init_mascot()
+	_init_tutorial_hud()
 	_bind_registry_signals()
 	main_menu.set_has_save(controller.has_save())
 	main_menu.visible = true
@@ -143,6 +174,7 @@ func _create_drag_controller() -> void:
 
 
 func _process(delta: float) -> void:
+	_tutorial_tick(delta)
 	if controller == null:
 		return
 	_clear_modal_if_dead()
@@ -467,6 +499,7 @@ func _build_modals() -> void:
 	main_menu.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	main_menu.new_run.connect(_start_new_run)
 	main_menu.continue_run.connect(_continue_run)
+	main_menu.tutorial_requested.connect(_on_menu_tutorial)
 	main_menu.settings.connect(_open_settings)
 	main_menu.about.connect(_show_about)
 	main_menu.visible = true
@@ -551,6 +584,12 @@ func _start_new_run() -> void:
 	_tutorial_shown = false
 	_tutorial_intro_shown = false
 	_tutorial_after_shown = false
+	# start_tutorial(replay) из меню до «Нового забега» не должен теряться.
+	var tutorial_replay_pending := _tutorial_pending or _tutorial_force_show
+	_tutorial_reset()
+	if tutorial_replay_pending:
+		_tutorial_pending = true
+		_tutorial_force_show = true
 	if mascot != null:
 		mascot.hide_message()
 	if hour_result_modal != null:
@@ -569,6 +608,17 @@ func _start_new_run() -> void:
 
 ## Публичный алиас для тестов/инструментов.
 func start_new_run() -> void:
+	_start_new_run()
+
+
+## «ОБУЧЕНИЕ» в главном меню: сбрасываем tutorial_done и стартуем новый забег,
+## чтобы обучение прошло в подготовке и первом часу. Если забег уже идёт,
+## не начинаем второй — просто перезапускаем обучение на текущем часу.
+func _on_menu_tutorial() -> void:
+	if controller != null and controller.phase != GAME_CONTROLLER.PHASE_MENU:
+		start_tutorial(true)
+		return
+	start_tutorial(true)
 	_start_new_run()
 
 
@@ -667,9 +717,9 @@ func _refresh_prep() -> void:
 		grid.set_folder("", "ПАПКА", "C: \\")
 		_current_files = []
 		grid.set_filter("")
-		files_window.set_title("ФАЙЛЫ · ПУСТО", "занято 0 из 0")
+		files_window.set_title("ФАЙЛЫ · ПУСТО")
 		if workspace != null:
-			workspace.title_right = "занято 0 из 0"
+			workspace.title_right = ""
 	else:
 		tree.select_folder(folder_id)
 		_show_folder(folder_id, folder_name, section_id, d)
@@ -758,6 +808,29 @@ func _init_mascot() -> void:
 		move_child(mascot, modal_root.get_index())
 
 
+## Подсветка цели и маленький «ДАЛЕЕ»: оба не перекрывают игровой ввод.
+func _init_tutorial_hud() -> void:
+	_tutorial_overlay = TutorialHighlight.new()
+	_tutorial_overlay.name = "TutorialHighlight"
+	add_child(_tutorial_overlay)
+	_tutorial_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	_tutorial_overlay.visible = false
+
+	_tutorial_next_btn = Button90.new()
+	_tutorial_next_btn.name = "TutorialNext"
+	_tutorial_next_btn.caption = "ДАЛЕЕ"
+	_tutorial_next_btn.caption_size = 9
+	_tutorial_next_btn.flat_style = true
+	_tutorial_next_btn.size = Vector2(58, 16)
+	_tutorial_next_btn.tooltip_text = "Пропустить шаг обучения"
+	_tutorial_next_btn.pressed.connect(_tutorial_skip_current)
+	add_child(_tutorial_next_btn)
+	_tutorial_next_btn.visible = false
+	if modal_root != null:
+		move_child(_tutorial_overlay, modal_root.get_index())
+		move_child(_tutorial_next_btn, modal_root.get_index())
+
+
 ## В headless маскот не показываем: он не должен влиять на тесты.
 func _tutorial_enabled() -> bool:
 	return mascot != null and DisplayServer.get_name() != "headless"
@@ -784,17 +857,326 @@ func _maybe_show_prep_tutorial() -> void:
 		mascot.show_message("Дальше будет сложнее. Держи SLA выше нуля.", 7.0)
 
 
-## Шаг туториала часа 1; вызывается по таймеру и не блокирует игру.
+## Совместимость с dev_capture: показать конкретный шаг без таймеров.
 func _show_tutorial_step(index: int) -> void:
+	if not _tutorial_enabled():
+		return
+	_tutorial_reset()
+	_tutorial_shown = true
+	_tutorial_active = true
+	_tutorial_force_show = true
+	_tutorial_begin_step(clampi(int(index), 0, TUTORIAL_STEPS.size() - 1))
+
+
+## Публичный запуск/реплей обучения (вызывает главное меню или тесты).
+func start_tutorial(replay: bool = false) -> void:
+	if replay and Game.stats != null:
+		Game.stats["tutorial_done"] = false
+	_tutorial_reset()
+	_tutorial_shown = true
+	_tutorial_active = true
+	_tutorial_pending = true
+	_tutorial_force_show = true
+	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_HOUR:
+		_tutorial_pending = false
+		_tutorial_begin_auto()
+
+
+## Автозапуск только на первом часу и только пока обучение не пройдено.
+func _maybe_show_tutorial() -> void:
 	if not _tutorial_enabled() or controller == null:
 		return
-	if controller.phase != GAME_CONTROLLER.PHASE_HOUR or Game.hour != 1:
+	if controller.phase != GAME_CONTROLLER.PHASE_HOUR:
 		return
-	if index < 0 or index >= TUTORIAL_STEPS.size():
+	if _tutorial_active:
+		# Возврат из меню/настроек: bubble мог быть скрыт — восстанавливаем.
+		_tutorial_restore_bubble()
 		return
+	if _tutorial_pending:
+		_tutorial_pending = false
+		_tutorial_begin_auto()
+		return
+	if _tutorial_shown or int(Game.hour) != 1:
+		return
+	if Game.stats != null and bool(Game.stats.get("tutorial_done", false)):
+		return
+	_tutorial_shown = true
+	_tutorial_begin_auto()
+
+
+## Сразу начинаем шаг (a), если пакет уже есть; иначе ждём packet_added.
+func _tutorial_begin_auto() -> void:
+	_tutorial_active = true
+	_tutorial_closing = false
+	_tutorial_step = -1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_waiting_spawn = false
+	if _tutorial_force_show or _has_hour_packet():
+		_tutorial_begin_step(0)
+	else:
+		_tutorial_waiting_spawn = true
+		if mascot != null:
+			mascot.set_step(1)
+			mascot.show_message("Ждём первый пакет…", -1.0)
+		_tutorial_hide_targets()
+
+
+func _has_hour_packet() -> bool:
+	if not packets.is_empty():
+		return true
+	var director = _hour_director()
+	return director != null and not director.active_packets.is_empty()
+
+
+## HourDirector текущего контроллера (null до создания/после перезапуска).
+func _hour_director():
+	return controller.hour_director if controller != null else null
+
+
+func _on_hour_packet_added(_id: String) -> void:
+	if _tutorial_active and _tutorial_waiting_spawn:
+		_tutorial_waiting_spawn = false
+		_tutorial_begin_step(0)
+
+
+func _tutorial_begin_step(index: int) -> void:
+	if not _tutorial_active:
+		return
+	if index >= TUTORIAL_STEPS.size():
+		_tutorial_close()
+		return
+	_tutorial_step = index
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_waiting_spawn = false
+	_tutorial_closing = false
 	var step: Dictionary = TUTORIAL_STEPS[index]
-	mascot.set_step(int(step.get("step", index + 1)))
-	mascot.show_message(str(step.get("text", "")), TUTORIAL_STEP_SECONDS)
+	if mascot != null:
+		mascot.set_step(index + 1)
+		mascot.show_message(str(step.get("text", "")), -1.0)
+	_tutorial_update_targets()
+	_position_tutorial_next()
+	if _tutorial_next_btn != null:
+		_tutorial_next_btn.visible = true
+
+
+func _tutorial_tick(delta: float) -> void:
+	if controller != null and controller.phase != GAME_CONTROLLER.PHASE_HOUR:
+		return
+	if _tutorial_closing:
+		_tutorial_close_left = maxf(0.0, _tutorial_close_left - delta)
+		if _tutorial_close_left <= 0.0:
+			_tutorial_hide()
+		return
+	if not _tutorial_active or _tutorial_step < 0:
+		return
+	if _tutorial_step >= TUTORIAL_STEPS.size():
+		return
+	if _tutorial_ack_left > 0.0:
+		_tutorial_ack_left = maxf(0.0, _tutorial_ack_left - delta)
+		if _tutorial_ack_left <= 0.0:
+			_tutorial_begin_step(_tutorial_step)
+		return
+	_tutorial_step_elapsed += delta
+	var step: Dictionary = TUTORIAL_STEPS[_tutorial_step]
+	if _tutorial_step_elapsed >= float(step.get("timeout", 30.0)):
+		_tutorial_advance(true)
+
+
+## Событие шага: принимаем только текущий key (остальные игнорируем).
+func _tutorial_notify(key: String) -> void:
+	if not _tutorial_active or _tutorial_closing or _tutorial_step < 0:
+		return
+	if _tutorial_ack_left > 0.0 or _tutorial_step >= TUTORIAL_STEPS.size():
+		return
+	if str(TUTORIAL_STEPS[_tutorial_step].get("key", "")) != key:
+		return
+	_tutorial_advance(false)
+
+
+## Пропуск текущего шага кнопкой «ДАЛЕЕ».
+func _tutorial_skip_current() -> void:
+	if not _tutorial_active or _tutorial_closing:
+		return
+	_tutorial_advance(true)
+
+
+func _tutorial_advance(skipped: bool) -> void:
+	if not _tutorial_active or _tutorial_step < 0:
+		return
+	if _tutorial_step >= TUTORIAL_STEPS.size() - 1:
+		_tutorial_close()
+		return
+	_tutorial_step += 1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = TUTORIAL_ACK_SECONDS
+	if mascot != null:
+		mascot.set_step(0)
+		mascot.show_message("ПРОПУСК" if skipped else "ГОТОВО", -1.0)
+	_tutorial_hide_targets()
+	if _tutorial_next_btn != null:
+		_tutorial_next_btn.visible = false
+
+
+## Финал: фиксируем прохождение в stats (они уже сохраняются в save.json).
+func _tutorial_close() -> void:
+	_tutorial_active = false
+	_tutorial_closing = true
+	_tutorial_close_left = TUTORIAL_CLOSE_SECONDS
+	_tutorial_step = -1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_waiting_spawn = false
+	_tutorial_hide_targets()
+	if mascot != null:
+		mascot.set_step(0)
+		mascot.show_message("ГОТОВО · ОБУЧЕНИЕ ЗАВЕРШЕНО", -1.0)
+	if Game.stats != null:
+		Game.stats["tutorial_done"] = true
+	if controller != null:
+		controller.save()
+
+
+func _tutorial_hide() -> void:
+	_tutorial_active = false
+	_tutorial_pending = false
+	_tutorial_closing = false
+	_tutorial_step = -1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_waiting_spawn = false
+	_tutorial_force_show = false
+	if mascot != null:
+		mascot.hide_message()
+	_tutorial_hide_targets()
+
+
+func _tutorial_reset() -> void:
+	_tutorial_active = false
+	_tutorial_pending = false
+	_tutorial_closing = false
+	_tutorial_step = -1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_close_left = 0.0
+	_tutorial_waiting_spawn = false
+	_tutorial_force_show = false
+	_tutorial_hide_targets()
+	if mascot != null:
+		mascot.hide_message()
+
+
+func _tutorial_restore_bubble() -> void:
+	if not _tutorial_active or _tutorial_closing or mascot == null:
+		return
+	if mascot.visible:
+		return
+	if _tutorial_step >= 0 and _tutorial_step < TUTORIAL_STEPS.size():
+		mascot.set_step(_tutorial_step + 1)
+		mascot.show_message(str(TUTORIAL_STEPS[_tutorial_step].get("text", "")), -1.0)
+		_tutorial_update_targets()
+		_position_tutorial_next()
+		if _tutorial_next_btn != null:
+			_tutorial_next_btn.visible = true
+	elif _tutorial_waiting_spawn:
+		mascot.set_step(1)
+		mascot.show_message("Ждём первый пакет…", -1.0)
+
+
+func _position_tutorial_next() -> void:
+	if mascot == null or _tutorial_next_btn == null:
+		return
+	_tutorial_next_btn.position = mascot.position + Vector2(
+		maxf(0.0, mascot.size.x - _tutorial_next_btn.size.x),
+		mascot.size.y + 2.0)
+
+
+func _tutorial_hide_targets() -> void:
+	if _tutorial_overlay != null:
+		_tutorial_overlay.set_targets([])
+		_tutorial_overlay.visible = false
+	if _tutorial_next_btn != null:
+		_tutorial_next_btn.visible = false
+
+
+func _tutorial_update_targets() -> void:
+	if _tutorial_overlay == null:
+		return
+	var rects: Array = _tutorial_targets(_tutorial_step)
+	_tutorial_overlay.set_targets(rects)
+	_tutorial_overlay.visible = not rects.is_empty()
+
+
+func _tutorial_targets(index: int) -> Array:
+	if index < 0 or index >= TUTORIAL_STEPS.size():
+		return []
+	var key := str(TUTORIAL_STEPS[index].get("key", ""))
+	match key:
+		"packet":
+			return [_control_rect(receive_window)]
+		"attach":
+			return [_control_rect(files_window.content if files_window != null else null),
+				_control_rect(send_window)]
+		"connect":
+			for card in requests:
+				if card != null and is_instance_valid(card):
+					return [_control_rect(card)]
+			return [_control_rect(send_window)]
+		"send":
+			return [_control_rect(send_window)]
+		"sla":
+			return [_status_segment_rect("sla")]
+	return []
+
+
+## Прямоугольник контрола в координатах Main (оверлей — тоже ребёнок Main).
+func _control_rect(control: Control) -> Rect2:
+	if control == null or not is_instance_valid(control):
+		return Rect2()
+	var global := control.get_global_rect()
+	return Rect2(global.position - get_global_position(), global.size)
+
+
+## Сегмент статус-бара по key: повторяем публичную раскладку segments,
+## не трогая status_bar.gd другого lane.
+func _status_segment_rect(key: String) -> Rect2:
+	if status_bar == null:
+		return Rect2()
+	var segs: Array = status_bar.segments
+	var total := 0.0
+	for s in segs:
+		total += float(s.get("w", 0.0))
+	if total <= 0.0:
+		return Rect2()
+	var start := 8.0
+	var right := maxf(start + 1.0, status_bar.size.x - 8.0)
+	var span := right - start
+	var acc := 0.0
+	var left := start
+	for i in segs.size():
+		var s: Dictionary = segs[i]
+		acc += float(s.get("w", 0.0))
+		var x1 := right
+		if i < segs.size() - 1:
+			x1 = roundf(start + span * (acc / total))
+		if str(s.get("key", "")) == key:
+			return Rect2(status_bar.position + Vector2(left, 0.0),
+				Vector2(maxf(1.0, x1 - left), status_bar.size.y))
+		left = x1
+	return Rect2()
+
+
+## Слоты полосы — общие для приёма и отправки, поэтому подпись «СЛОТЫ».
+func _rename_slot_labels() -> void:
+	if status_bar == null:
+		return
+	var segs: Array = status_bar.segments
+	for s in segs:
+		if s is Dictionary and str(s.get("key", "")) == "tcp":
+			s["label"] = "СЛОТЫ"
+			break
+	status_bar.queue_redraw()
 
 
 # --------------------------------------------------------------------------
@@ -936,25 +1318,23 @@ func _on_search_changed(_text: String) -> void:
 	_apply_file_filter()
 
 
-## Заголовок окна ФАЙЛЫ: счётчик в КЛЕТКАХ (v2), при фильтре — найденные файлы.
+## Заголовок окна ФАЙЛЫ: имя папки и (при фильтре) число найденных файлов.
+## Занятость диска в заголовке не дублируем — счётчики остаются в дереве/сетке.
 func _update_files_title() -> void:
 	if files_window == null or grid == null:
 		return
 	var folder_label := _folder_name(grid.folder_id).to_upper()
 	if folder_label.is_empty():
 		folder_label = "ПАПКА"
-	var stats: Dictionary = grid.stats()
-	var occupied := int(stats.get("occupied", 0))
-	var total := int(stats.get("total", 0))
-	var hint := "занято %d из %d" % [occupied, total]
+	var hint := ""
 	var query := ""
 	if _search_edit != null and _search_edit.visible:
 		query = _search_edit.text.strip_edges()
 	if not query.is_empty():
-		hint = "найдено %d · занято %d из %d" % [_filtered_files().size(), occupied, total]
+		hint = "найдено %d" % _filtered_files().size()
 	files_window.set_title("ФАЙЛЫ · %s" % folder_label, hint)
 	if workspace != null:
-		workspace.title_right = "занято %d из %d" % [occupied, total]
+		workspace.title_right = ""
 
 
 ## Файлы текущей папки, подходящие под строку поиска.
@@ -1016,6 +1396,8 @@ func _update_status(d: Dictionary) -> void:
 
 
 func _clear_hour_panels() -> void:
+	_requests_empty = null
+	_requests_empty_hint = null
 	for c in receive_window.content.get_children():
 		# Скроллбар ПРИЁМА живёт всё время — его не пересоздаём.
 		if c == _recv_bar:
@@ -1053,6 +1435,12 @@ func _clear_hour_panels() -> void:
 
 func _on_phase(phase: StringName) -> void:
 	_clear_modal_if_dead()
+	if phase != GAME_CONTROLLER.PHASE_HOUR:
+		# Конец часа: соединение принудительно закрываем, не оставляя модалку.
+		_drop_connection_modal()
+		# Обучение живёт только внутри часа 1; вне часа шаги не тикают.
+		if _tutorial_active or _tutorial_closing:
+			_tutorial_hide()
 	match phase:
 		GAME_CONTROLLER.PHASE_PREP:
 			_hour_ui_shown = false
@@ -1109,19 +1497,6 @@ func _show_hour() -> void:
 	_toast("ЧАС %d НАЧАЛСЯ" % Game.hour, "success")
 
 
-## Подсказки первого часа: три шага маскота с задержкой, один раз за запуск.
-func _maybe_show_tutorial() -> void:
-	if _tutorial_shown or not _tutorial_enabled():
-		return
-	if Game.hour != 1:
-		return
-	_tutorial_shown = true
-	for i in TUTORIAL_STEPS.size():
-		var step: Dictionary = TUTORIAL_STEPS[i]
-		var timer := get_tree().create_timer(float(step.get("delay", 0.0)))
-		timer.timeout.connect(_show_tutorial_step.bind(i))
-
-
 ## Сигналы контроллера, которые нужны UI часа (подключаются один раз).
 func _connect_hour_signals() -> void:
 	if controller == null or _hour_signals_connected:
@@ -1131,17 +1506,58 @@ func _connect_hour_signals() -> void:
 	controller.run_finished.connect(_on_run_finished)
 	controller.toast.connect(func(text: String) -> void: _toast(text, "info"))
 	controller.show_minigame.connect(_on_show_minigame)
+	controller.show_connection.connect(_on_show_connection)
 	controller.show_attack_minigame.connect(_on_show_attack_minigame)
 	# Принудительное закрытие (конец часа / отмена атаки) освобождает ноду
 	# раньше, чем UI успевает получить finished — чистим висячий указатель.
 	controller.minigame_closed.connect(_on_minigame_closed_ui)
 	controller.attack_resolved.connect(_on_attack_resolved_ui)
+	# Прямая страховка: HourDirector может эмитить packet_added сам.
+	var director = _hour_director()
+	if director != null:
+		if director.has_signal("packet_added") \
+				and not director.packet_added.is_connected(_on_hour_packet_added):
+			director.packet_added.connect(_on_hour_packet_added)
+		# M8: спавн замер из-за полного буфера — раньше сигнал никто не слушал.
+		if director.has_signal("spawn_frozen") \
+				and not director.spawn_frozen.is_connected(_on_spawn_frozen_ui):
+			director.spawn_frozen.connect(_on_spawn_frozen_ui)
+
+
+## M8: тост о заморозке приёма, не чаще раза в ~5 секунд.
+func _on_spawn_frozen_ui(_reason: String) -> void:
+	var now := Time.get_ticks_msec()
+	if now - _spawn_frozen_toast_ms < 5000:
+		return
+	_spawn_frozen_toast_ms = now
+	_toast("БУФЕР ПРИЁМА ПОЛОН · ПРИЁМ ОСТАНОВЛЕН", "warn")
 
 
 ## Атака v2 — только модальная мини-игра, без карточек/оверлеев.
 func _on_show_attack_minigame(game_node, kind: String) -> void:
 	_toast("АТАКА: %s" % _attack_kind_name(kind), "warn")
-	_show_modal_game(game_node)
+	if _show_modal_game(game_node, "attack"):
+		_tutorial_notify("sla")
+		return
+	# C1: модалку не показали (экран занят) — атаку отменяем без штрафа,
+	# иначе HourDirector останется в _attack_paused и час замрёт.
+	var director = _hour_director()
+	if director != null and director.attack_director != null \
+			and director.attack_director.has_method("cancel_active"):
+		director.attack_director.cancel_active()
+	_restore_modal_open_state()
+
+
+## C1: после отката чужой модалки вернуть controller.modal_open в актуальное
+## состояние, не разблокировав час под всё ещё открытым окном.
+func _restore_modal_open_state() -> void:
+	if controller == null:
+		return
+	var open := _modal_game != null and is_instance_valid(_modal_game)
+	if controller.has_method("set_modal_open"):
+		controller.set_modal_open(open)
+	else:
+		controller.modal_open = open
 
 
 func _attack_kind_name(kind: String) -> String:
@@ -1157,18 +1573,146 @@ func _attack_kind_name(kind: String) -> String:
 	return kind.to_upper()
 
 
-## HourDirector уже вызвал start() — здесь только показываем готовую модалку.
+## HourDirector уже создал и запустил ConnectionGame — монтируем модалку.
 func _on_show_connection(game_node) -> void:
-	_show_modal_game(game_node)
+	if game_node == null or not (game_node is Node):
+		return
+	if _show_connection_modal(game_node):
+		return
+	# C1: экран занят другой модалкой — откатываем соединение, чтобы запрос
+	# не остался в connecting навсегда, и освобождаем не показанную ноду.
+	var req_id := ""
+	var raw_req = game_node.get("request_id")
+	if raw_req != null:
+		req_id = str(raw_req)
+	var director = _hour_director()
+	if not req_id.is_empty() and director != null \
+			and director.has_method("connection_finished"):
+		director.connection_finished(req_id, false)
+	if not game_node.is_queued_for_deletion():
+		game_node.queue_free()
+	_restore_modal_open_state()
+
+
+## ConnectionGame сам не ставит час на паузу: modal_open останавливает спавн,
+## а таймер запроса заморожен флагом req.connecting в HourDirector.
+## C1: возвращает false, если экран уже занят другой модалкой (не освобождая её).
+func _show_connection_modal(game_node) -> bool:
+	if game_node == null or modal_root == null:
+		return false
+	if _modal_game != null and _modal_game != game_node:
+		# C1: чужую модалку НЕ освобождаем. Атака с открытым экраном
+		# результата уже сбросила running, но ещё не эмитила finished —
+		# queue_free здесь оставил бы час в _attack_paused навсегда.
+		if is_instance_valid(_modal_game) and not _modal_game.is_queued_for_deletion():
+			_toast("СНАЧАЛА ЗАКРОЙТЕ ТЕКУЩЕЕ ОКНО", "warn")
+			return false
+		# Указатель на уже освобождённую/закрывающуюся ноду — просто чистим.
+		_modal_game = null
+		_modal_kind = ""
+	_modal_kind = "connection"
+	_modal_game = game_node
+	if controller != null:
+		if controller.has_method("set_modal_open"):
+			controller.set_modal_open(true)
+		else:
+			controller.modal_open = true
+	if game_node.get_parent() == null:
+		modal_root.add_child(game_node)
+	elif game_node.get_parent() != modal_root:
+		game_node.reparent(modal_root)
+	if game_node is Control:
+		# Окна мини-игр фиксированного размера — ставим по центру, не растягиваем.
+		# PRESET_CENTER + MINSIZE обнуляет offsets, если размер ещё не применён:
+		# сначала фиксируем минимальный размер, затем центрируем KEEP_SIZE.
+		var ctl := game_node as Control
+		ctl.size = ctl.get_combined_minimum_size()
+		ctl.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_KEEP_SIZE)
+	if game_node.has_signal("finished") \
+			and game_node.finished.get_connections().is_empty():
+		game_node.finished.connect(_on_connection_finished.bind(game_node))
+	return true
+
+
+## ConnectionGame.finished(success, request_id): применяем исход в директоре.
+func _on_connection_finished(success: bool, req_id: String, game_node = null) -> void:
+	var client := _request_client_name(str(req_id))
+	var was_current: bool = _modal_game == game_node
+	# Промах читаем ДО queue_free(): после удаления узел уже недоступен.
+	var missed := false
+	if game_node != null and is_instance_valid(game_node):
+		missed = bool(game_node.get("missed"))
+	if game_node != null and is_instance_valid(game_node):
+		if game_node.get_parent() != null:
+			game_node.get_parent().remove_child(game_node)
+		if not game_node.is_queued_for_deletion():
+			game_node.queue_free()
+	if was_current:
+		_modal_game = null
+		_modal_kind = ""
+		if controller != null:
+			if controller.has_method("set_modal_open"):
+				controller.set_modal_open(false)
+			else:
+				controller.modal_open = false
+	var director = _hour_director()
+	if director != null and director.has_method("connection_finished"):
+		director.connection_finished(str(req_id), bool(success), missed)
+	if bool(success):
+		_toast("СОЕДИНЕНИЕ УСТАНОВЛЕНО · %s" % client, "success")
+		_tutorial_notify("connect")
+	# BUG B: неуспех уже озвучивает HourDirector.connection_finished()
+	# («СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО» + штраф за промах) — второй тост не нужен.
+	_refresh_hour()
+
+
+func _drop_connection_modal() -> void:
+	if _modal_kind != "connection":
+		return
+	if _modal_game != null and is_instance_valid(_modal_game):
+		if _modal_game.get_parent() != null:
+			_modal_game.get_parent().remove_child(_modal_game)
+		_modal_game.queue_free()
+	_modal_game = null
+	_modal_kind = ""
+	if controller != null:
+		if controller.has_method("set_modal_open"):
+			controller.set_modal_open(false)
+		else:
+			controller.modal_open = false
+
+
+func _request_client_name(req_id: String) -> String:
+	var director = _hour_director()
+	if director != null:
+		var req = director.active_requests.get(str(req_id))
+		if req != null:
+			var client := str(req.client_name)
+			if not client.is_empty():
+				return client
+	return "КЛИЕНТ"
 
 
 ## Отправка: HourDirector уже вызвал start() и создал MiniGame.
 func _on_show_minigame(game_node) -> void:
-	_show_modal_game(game_node)
+	if _show_modal_game(game_node, "send"):
+		return
+	# C1: экран занят — мини-игру не показываем; принудительно закрываем её
+	# в директоре, иначе запрос навсегда останется в minigame_active.
+	var director = _hour_director()
+	if director != null and director.has_method("force_close_send_minigame"):
+		director.force_close_send_minigame()
+	_restore_modal_open_state()
 
 
 ## HourDirector.force_close_send_minigame(): нода уже queue_free — снимаем модалку.
+## M2: сигнал о закрытии приходит, пока _modal_kind ещё равен "send", — именно
+## здесь фиксируем шаг обучения, иначе _clear_modal_if_dead обнулит kind раньше
+## _on_modal_game_finished и «send» никогда не засчитается.
 func _on_minigame_closed_ui(_req_id: String) -> void:
+	if _modal_kind == "send" and not _send_tutorial_notified:
+		_send_tutorial_notified = true
+		_tutorial_notify("send")
 	_clear_modal_if_dead()
 
 
@@ -1180,55 +1724,76 @@ func _on_attack_resolved_ui(_kind: String, _success: bool, _tier: int) -> void:
 ## Сбрасывает _modal_game, если нода освобождена или стоит в очереди на free.
 ## Не трогает живую мини-игру и не запускает отправку запросов.
 func _clear_modal_if_dead() -> void:
+	if _modal_game != null:
+		var dead := not is_instance_valid(_modal_game) \
+			or _modal_game.is_queued_for_deletion()
+		if not dead:
+			return
+		_modal_game = null
+		_modal_kind = ""
+		if controller != null:
+			if controller.has_method("set_modal_open"):
+				controller.set_modal_open(false)
+			else:
+				controller.modal_open = false
+	# C1: страховка от soft-lock. Если модалок больше нет, но час всё ещё
+	# заморожен незавершённой атакой — снимаем _attack_paused.
 	if _modal_game == null:
-		return
-	var dead := not is_instance_valid(_modal_game) \
-		or _modal_game.is_queued_for_deletion()
-	if not dead:
-		return
-	_modal_game = null
-	if controller != null:
-		controller.modal_open = false
+		var director = _hour_director()
+		if director != null and director.has_method("is_attack_paused") \
+				and director.is_attack_paused():
+			director.set_attack_paused(false)
 
 
-func _show_modal_game(game_node) -> void:
+## C1: возвращает false, если экран уже занят другой модалкой. Чужую
+## модалку НЕ освобождаем: атака на экране результата уже сбросила running,
+## но ещё ждёт «ПРОДОЛЖИТЬ» — queue_free оставил бы час в _attack_paused.
+func _show_modal_game(game_node, kind: String = "send") -> bool:
 	if game_node == null or modal_root == null:
-		return
-	# Вторую модалку не показываем: директор сам блокирует параллельный старт,
-	# это защита от двойного сигнала. Но если старая уже завершилась (running
-	# сброшен до emit finished, например UDP-перезапуск мини-игры) — заменяем.
+		return false
 	if _modal_game != null and _modal_game != game_node:
 		if is_instance_valid(_modal_game) and not _modal_game.is_queued_for_deletion():
-			var old_running = _modal_game.get("running")
-			if old_running == null or bool(old_running):
-				return
-			# Старая игра уже завершилась и ждёт «ПРОДОЛЖИТЬ»: новая модалка
-			# заменяет её, поэтому освобождаем прежнюю ноду.
-			_modal_game.queue_free()
+			_toast("СНАЧАЛА ЗАКРОЙТЕ ТЕКУЩЕЕ ОКНО", "warn")
+			return false
+		# Указатель на уже освобождённую/закрывающуюся ноду — просто чистим.
 		_modal_game = null
+		_modal_kind = ""
 	_modal_game = game_node
+	_modal_kind = kind
+	if kind == "send":
+		_send_tutorial_notified = false
 	# D2 (§5.5): модальные мини-игры сначала показывают q%/вердикт/ПРОДОЛЖИТЬ,
 	# и только клик по кнопке эмитит finished (директор применяет исход).
 	var deferred = game_node.get("defer_finish_signal")
 	if deferred != null:
 		game_node.set("defer_finish_signal", true)
 	if controller != null:
-		controller.modal_open = true
+		if controller.has_method("set_modal_open"):
+			controller.set_modal_open(true)
+		else:
+			controller.modal_open = true
 	if game_node.get_parent() == null:
 		modal_root.add_child(game_node)
 	elif game_node.get_parent() != modal_root:
 		game_node.reparent(modal_root)
 	if game_node is Control:
 		# Окна мини-игр фиксированного размера — ставим по центру, не растягиваем.
-		(game_node as Control).set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	if game_node.has_signal("finished"):
+		# PRESET_CENTER + MINSIZE обнуляет offsets, пока размер не устоялся:
+		# сначала фиксируем минимальный размер, затем центрируем KEEP_SIZE.
+		var ctl := game_node as Control
+		ctl.size = ctl.get_combined_minimum_size()
+		ctl.set_anchors_and_offsets_preset(Control.PRESET_CENTER, Control.PRESET_MODE_KEEP_SIZE)
+	if game_node.has_signal("finished") \
+			and game_node.finished.get_connections().is_empty():
 		game_node.finished.connect(_on_modal_game_finished.bind(game_node))
+	return true
 
 
 ## Общий обработчик finished у MiniGame (1 арг: quality).
 ## Параметр game_node приходит из bind(); атаку закрывает AttackDirector.
 ## ВАЖНО: сбрасываем _modal_game только для ЭТОЙ ноды и НЕ стартуем отправку.
 func _on_modal_game_finished(_a = null, game_node = null) -> void:
+	var was_send := _modal_kind == "send"
 	if game_node == null and _a is Node:
 		game_node = _a
 	if game_node != null and is_instance_valid(game_node):
@@ -1243,7 +1808,14 @@ func _on_modal_game_finished(_a = null, game_node = null) -> void:
 			_modal_game = null
 	_clear_modal_if_dead()
 	if _modal_game == null and controller != null:
-		controller.modal_open = false
+		if controller.has_method("set_modal_open"):
+			controller.set_modal_open(false)
+		else:
+			controller.modal_open = false
+	_modal_kind = ""
+	if was_send and not _send_tutorial_notified:
+		_send_tutorial_notified = true
+		_tutorial_notify("send")
 	# v2: отправка НЕ стартует автоматически по закрытию мини-игры — только
 	# явная кнопка ОТПРАВИТЬ (или очередь слота внутри HourDirector).
 	_refresh_hour()
@@ -1417,6 +1989,8 @@ func _refresh_packets(data: Array) -> void:
 
 
 func _refresh_requests(data: Array) -> void:
+	if not data.is_empty():
+		_remove_requests_empty()
 	var ids: Array = []
 	for r in data:
 		ids.append(str(r.get("id", "")))
@@ -1456,9 +2030,12 @@ func _refresh_requests(data: Array) -> void:
 			bool(r.get("queued", false)), bool(r.get("sending", false)),
 			int(r.get("send_sum", 0)), str(r.get("minigame_id", "")),
 			int(r.get("minigame_tier", 0)), bool(r.get("minigame_active", false)),
-			bool(r.get("ready", false)))
+			bool(r.get("ready", false)), bool(r.get("connecting", false)),
+			bool(r.get("connected", false)))
 		requests[i].queue_redraw()
 	_sync_send_scroll(data.size())
+	if data.is_empty():
+		_ensure_requests_empty()
 
 
 ## Высота карточки запроса v2 (контент с кнопками и предсказанием).
@@ -1471,7 +2048,10 @@ func _layout_request_cards(_count: int) -> void:
 	if send_window == null or send_window.content == null:
 		return
 	var h := REQ_CARD_H
-	var w := maxf(120.0, send_window.content.size.x - 20.0)
+	# Карточка рисует фиксированную геометрию 400 px по ширине, поэтому тянем
+	# её до 400, а ужимаем только если контент реально уже 400+отступов.
+	var avail := send_window.content.size.x - 8.0
+	var w := minf(400.0, maxf(120.0, avail))
 	for i in requests.size():
 		var card := requests[i]
 		if card == null or not is_instance_valid(card):
@@ -1481,23 +2061,36 @@ func _layout_request_cards(_count: int) -> void:
 		card.queue_redraw()
 
 
-## Слоты запроса: прикреплённые файлы из реестра; пустой слот — null.
-## required в v2 пуст, состав задаётся required_count + attached.
+## Слоты запроса: конкретные REQUIRED-файлы в порядке запроса (до 4).
+## attached = файл уже в контейнере; null — required-файл исчез из реестра.
+## Порядок attached не используется: слот i всегда соответствует required[i].
 func _request_slots(request: Dictionary) -> Array:
-	var required := maxi(0, int(request.get("required_count", 0)))
-	if required <= 0:
-		required = maxi(1, (request.get("attached", []) as Array).size())
+	var ids: Array = request.get("required", [])
+	if not (ids is Array):
+		ids = []
+	if ids.is_empty():
+		var director = _hour_director()
+		if director != null and director.has_method("request_required_ids"):
+			ids = director.request_required_ids(str(request.get("id", "")))
 	var attached: Array = request.get("attached", [])
-	var out: Array = []
 	var registry = Game.registry
-	for i in required:
-		if i >= attached.size():
-			out.append(null)
-			continue
-		var fid := str(attached[i])
+	var out: Array = []
+	for i in mini(ids.size(), 4):
+		var fid := str(ids[i])
 		var file = registry.files.get(fid) if registry != null else null
 		if file == null:
-			out.append(null)
+			# Required-файл исчез из реестра — не null, а явный «потерян»,
+			# чтобы карточка показала красное состояние.
+			out.append({
+				"id": fid,
+				"name": "ПОТЕРЯН",
+				"ext": "",
+				"type": "",
+				"folder": "",
+				"attached": false,
+				"required": true,
+				"missing": true,
+			})
 			continue
 		var folder_name := ""
 		if not str(file.folder_id).is_empty() and registry.folders.has(file.folder_id):
@@ -1508,9 +2101,134 @@ func _request_slots(request: Dictionary) -> Array:
 			"ext": str(file.ext),
 			"type": str(file.type),
 			"folder": folder_name,
+			"attached": attached.has(fid),
+			"required": true,
+		})
+	if not out.is_empty():
+		return out
+	# Legacy-фолбэк, пока HourDirector не заполняет required конкретными id.
+	var need := maxi(0, int(request.get("required_count", 0)))
+	if need <= 0:
+		need = maxi(1, attached.size())
+	for i in need:
+		if i >= attached.size():
+			out.append(null)
+			continue
+		var fid2 := str(attached[i])
+		var file2 = registry.files.get(fid2) if registry != null else null
+		if file2 == null:
+			out.append({
+				"id": fid2,
+				"name": "ПОТЕРЯН",
+				"ext": "",
+				"type": "",
+				"folder": "",
+				"attached": false,
+				"required": true,
+				"missing": true,
+			})
+			continue
+		out.append({
+			"id": fid2,
+			"name": str(file2.name),
+			"ext": str(file2.ext),
+			"type": str(file2.type),
+			"folder": "",
 			"attached": true,
+			"required": true,
 		})
 	return out
+
+
+## Плашка пустого ОТПРАВКИ: не интерактивна и не мешает скроллу.
+func _ensure_requests_empty() -> void:
+	if send_window == null or send_window.content == null:
+		return
+	if _requests_empty != null and is_instance_valid(_requests_empty):
+		_update_requests_empty()
+		return
+	var box := Control.new()
+	box.name = "RequestsEmpty"
+	box.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.focus_mode = Control.FOCUS_NONE
+	send_window.content.add_child(box)
+	_requests_empty = box
+
+	var title := Label.new()
+	title.name = "Title"
+	title.text = "ОЖИДАНИЕ ЗАПРОСА"
+	title.add_theme_font_override("font", Theme90.ui(800))
+	title.add_theme_font_size_override("font_size", Theme90.FS_MICRO)
+	title.add_theme_color_override("font_color", Theme90.NAVY)
+	title.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(title)
+
+	var hint := Label.new()
+	hint.name = "Hint"
+	hint.add_theme_font_override("font", Theme90.ui())
+	hint.add_theme_font_size_override("font_size", 12)
+	hint.add_theme_color_override("font_color", Theme90.DARK)
+	hint.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	hint.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(hint)
+	_requests_empty_hint = hint
+
+	var quiet := Label.new()
+	quiet.name = "Quiet"
+	quiet.text = "Файлы приходят в «ПРИЁМ» — раскладывайте их по папкам"
+	quiet.add_theme_font_override("font", Theme90.ui())
+	quiet.add_theme_font_size_override("font_size", 10)
+	quiet.add_theme_color_override("font_color", Theme90.SHADE)
+	quiet.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
+	quiet.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	box.add_child(quiet)
+	_update_requests_empty()
+
+
+func _update_requests_empty() -> void:
+	if _requests_empty == null or not is_instance_valid(_requests_empty):
+		return
+	var content := send_window.content if send_window != null else null
+	if content == null:
+		return
+	_requests_empty.position = Vector2(8, 8)
+	_requests_empty.size = Vector2(maxf(80.0, content.size.x - 26.0),
+		maxf(60.0, content.size.y - 16.0))
+	var title := _requests_empty.get_node_or_null("Title") as Label
+	var hint := _requests_empty.get_node_or_null("Hint") as Label
+	var quiet := _requests_empty.get_node_or_null("Quiet") as Label
+	var w := _requests_empty.size.x
+	if title != null:
+		title.position = Vector2(0, 0)
+		title.size = Vector2(w, 18)
+	if hint != null:
+		hint.text = _next_request_hint_text()
+		hint.position = Vector2(0, 24)
+		hint.size = Vector2(w, 38)
+	if quiet != null:
+		quiet.position = Vector2(0, _requests_empty.size.y - 36.0)
+		quiet.size = Vector2(w, 34)
+	_requests_empty_hint = hint
+
+
+func _next_request_hint_text() -> String:
+	var director = _hour_director()
+	if director != null and director.has_method("next_request_hint"):
+		var hint := str(director.next_request_hint()).strip_edges()
+		if not hint.is_empty():
+			return hint
+	return "Следующий запрос скоро"
+
+
+func _remove_requests_empty() -> void:
+	if _requests_empty == null:
+		return
+	if is_instance_valid(_requests_empty):
+		if _requests_empty.get_parent() != null:
+			_requests_empty.get_parent().remove_child(_requests_empty)
+		_requests_empty.queue_free()
+	_requests_empty = null
+	_requests_empty_hint = null
 
 
 func _refresh_slots(data: Array, packets_data: Array = [],
@@ -1883,6 +2601,7 @@ func _build() -> void:
 	slots_strip = Panel90.new()
 	slots_strip.name = "SlotsStrip"
 	slots_strip.kind = Panel90.Kind.RAISED
+	slots_strip.tooltip_text = "Слоты передачи: приём и отправка"
 	_place(self, slots_strip, Rect2(8, 604, 1264, 52))
 
 	var head := Panel90.new()
@@ -1893,9 +2612,10 @@ func _build() -> void:
 	head.size = Vector2(46, 42)
 
 	var tcp_lbl := Label.new()
-	tcp_lbl.text = "TCP"
+	tcp_lbl.text = "СЛОТЫ"
+	tcp_lbl.tooltip_text = "Слоты передачи: приём и отправка"
 	tcp_lbl.add_theme_font_override("font", Theme90.ui(800))
-	tcp_lbl.add_theme_font_size_override("font_size", Theme90.FS_BODY)
+	tcp_lbl.add_theme_font_size_override("font_size", Theme90.FS_MICRO)
 	tcp_lbl.add_theme_color_override("font_color", Theme90.NAVY)
 	tcp_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	tcp_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -2395,7 +3115,18 @@ func _on_request_connect(_id: String) -> void:
 	_toast("СОБЕРИТЕ ФАЙЛЫ И НАЖМИТЕ ОТПРАВИТЬ", "info")
 
 
+## C1: пока открыта игровая модалка, ввод под ней не должен менять состояние часа.
+## Возвращает true, если ввод заблокирован (и показывает подсказку).
+func _modal_blocks_input() -> bool:
+	if _modal_game != null and is_instance_valid(_modal_game):
+		_toast("СНАЧАЛА ЗАКРОЙТЕ ТЕКУЩЕЕ ОКНО", "warn")
+		return true
+	return false
+
+
 func _on_request_reject(id: String) -> void:
+	if _modal_blocks_input():
+		return
 	if controller == null or controller.hour_director == null:
 		return
 	if controller.hour_director.reject_request(id):
@@ -2406,15 +3137,22 @@ func _on_request_reject(id: String) -> void:
 
 
 func _on_request_detach(request_id: String, slot_index: int) -> void:
+	if _modal_blocks_input():
+		return
 	if controller == null or controller.hour_director == null:
 		return
 	var req = controller.hour_director.active_requests.get(request_id)
 	if req == null:
 		return
-	if slot_index < 0 or slot_index >= req.attached.size():
+	# slot_index приходит из RequestCard в порядке REQUIRED-слотов, а
+	# req.attached хранится в порядке вложения — индексируем required.
+	if slot_index < 0 or slot_index >= req.required.size():
 		_toast("ФАЙЛ НЕ ПРИКРЕПЛЁН", "info")
 		return
-	var file_id := str(req.attached[slot_index])
+	var file_id := str(req.required[slot_index])
+	if not req.attached.has(file_id):
+		_toast("ФАЙЛ НЕ ПРИКРЕПЛЁН", "info")
+		return
 	if controller.hour_director.detach_file(request_id, file_id):
 		_toast("ФАЙЛ ОТСОЕДИНЁН ОТ ЗАПРОСА", "info")
 		_refresh_hour()
@@ -2424,6 +3162,8 @@ func _on_request_detach(request_id: String, slot_index: int) -> void:
 
 ## Прикрепление файла к запросу: только attach, без автостарта отправки.
 func _on_file_to_request(request_id: String, _slot_index: int, payload: Dictionary) -> void:
+	if _modal_blocks_input():
+		return
 	if controller == null or controller.hour_director == null:
 		return
 	if str(payload.get("from", "")) == "table":
@@ -2434,6 +3174,7 @@ func _on_file_to_request(request_id: String, _slot_index: int, payload: Dictiona
 		return
 	if controller.hour_director.attach_file(request_id, file_id):
 		_toast("ФАЙЛ ПРИКРЕПЛЁН", "success")
+		_tutorial_notify("attach")
 		_refresh_hour()
 	else:
 		_toast("НЕ УДАЛОСЬ ПРИКРЕПИТЬ ФАЙЛ", "warn")
@@ -2441,6 +3182,8 @@ func _on_file_to_request(request_id: String, _slot_index: int, payload: Dictiona
 
 ## Явная отправка по кнопке ОТПРАВИТЬ (v2).
 func _on_request_send(req_id: String) -> void:
+	if _modal_blocks_input():
+		return
 	_maybe_start_send(req_id)
 
 
@@ -2454,6 +3197,8 @@ func _maybe_start_send(req_id: String) -> void:
 
 
 func _on_request_protocol_toggle(req_id: String) -> void:
+	if _modal_blocks_input():
+		return
 	if controller == null or controller.hour_director == null:
 		return
 	var req = controller.hour_director.active_requests.get(req_id)
@@ -2488,6 +3233,8 @@ func _on_packet_to_slot(_cell_id: String, _payload: Dictionary) -> void:
 
 ## Точный drop в сетку папки: origin/rotation уходят в HourDirector.
 func _on_grid_packet_drop(payload: Dictionary, origin: Vector2i, rotation: int) -> void:
+	if _modal_blocks_input():
+		return
 	if controller == null or controller.hour_director == null:
 		return
 	var packet_id := str(payload.get("id", ""))
@@ -2496,6 +3243,7 @@ func _on_grid_packet_drop(payload: Dictionary, origin: Vector2i, rotation: int) 
 	var folder_id := str(grid.folder_id)
 	if controller.hour_director.receive_packet(packet_id, folder_id, origin, rotation):
 		_toast("ПАКЕТ ПРИНЯТ", "success")
+		_tutorial_notify("packet")
 	else:
 		_toast("ПАКЕТ НЕ ПРИНЯТ · ПАКЕТ ОСТАЛСЯ В БУФЕРЕ", "warn")
 	_refresh_hour()
@@ -2503,6 +3251,8 @@ func _on_grid_packet_drop(payload: Dictionary, origin: Vector2i, rotation: int) 
 
 ## Drop пакета на строку папки — auto-place первой подходящей фигурой.
 func _on_tree_packet_drop(folder_id: String, payload: Dictionary) -> void:
+	if _modal_blocks_input():
+		return
 	if controller == null or controller.hour_director == null:
 		return
 	var packet_id := str(payload.get("id", ""))
@@ -2510,6 +3260,7 @@ func _on_tree_packet_drop(folder_id: String, payload: Dictionary) -> void:
 		return
 	if controller.hour_director.receive_packet(packet_id, folder_id):
 		_toast("ПАКЕТ ПРИНЯТ В «%s»" % _folder_name(folder_id), "success")
+		_tutorial_notify("packet")
 	else:
 		_toast("ПАКЕТ НЕ ПРИНЯТ · НЕТ МЕСТА ИЛИ СЛОТА", "warn")
 	_refresh_hour()
@@ -2649,6 +3400,8 @@ func _folder_file_ids(folder_id: String) -> Array:
 
 
 ## Реальное уничтожение: удаляем файлы папки и списываем 5 SLA.
+## Если папка состоит только из зарезервированных/неудаляемых файлов —
+## ничего не удаляем и SLA НЕ списываем.
 func _destroy_folder_contents(folder_id: String) -> void:
 	if Game.registry == null or not Game.registry.folders.has(folder_id):
 		_toast("ПАПКА НЕ НАЙДЕНА", "warn")
@@ -2658,14 +3411,34 @@ func _destroy_folder_contents(folder_id: String) -> void:
 		_toast("ПАПКА ПУСТА", "warn")
 		return
 	var registry = Game.registry
+	var removed := 0
 	for file_id in file_ids:
+		var file = registry.files.get(file_id)
+		if file == null:
+			continue
+		# Файл зарезервирован активным запросом — уничтожать нельзя: запрос
+		# останется без содержимого, а штраф всё равно спишется. Пропускаем.
+		if not str(file.required_by).is_empty():
+			continue
+		var removed_one := false
 		# remove_file штатно удаляет только malicious/failed; для осознанного
 		# уничтожения помечаем файл и сразу удаляем.
-		if not registry.remove_file(file_id):
-			registry.mark_malicious(file_id, "destroy")
-			registry.remove_file(file_id)
-		if _selected_file == file_id:
-			_selected_file = ""
+		if registry.remove_file(file_id):
+			removed_one = true
+		elif registry.mark_malicious(file_id, "destroy"):
+			removed_one = registry.remove_file(file_id)
+		if removed_one:
+			removed += 1
+			if _selected_file == file_id:
+				_selected_file = ""
+	if removed <= 0:
+		# Ничего не удалилось (все файлы под резервацией) — штрафа нет.
+		if controller != null and controller.phase == GAME_CONTROLLER.PHASE_PREP:
+			_refresh_prep()
+		else:
+			_refresh_hour()
+		_toast("НЕЧЕГО УНИЧТОЖИТЬ", "warn")
+		return
 	Game.add_sla(-5.0, "destroy")
 	if controller != null:
 		controller.save()
@@ -3024,6 +3797,41 @@ func _tr_or(key: String, fallback: String) -> String:
 # --------------------------------------------------------------------------
 # Фон
 # --------------------------------------------------------------------------
+
+class TutorialHighlight:
+	extends Control
+	## Тонкая пульсирующая рамка вокруг цели шага. Мышь не перехватывает.
+
+	var rects: Array = []
+	var _t := 0.0
+
+	func _ready() -> void:
+		mouse_filter = Control.MOUSE_FILTER_IGNORE
+		focus_mode = Control.FOCUS_NONE
+		set_process(false)
+
+	func set_targets(value: Array) -> void:
+		rects = value
+		visible = not rects.is_empty()
+		set_process(visible)
+		queue_redraw()
+
+	func _process(delta: float) -> void:
+		_t += delta
+		queue_redraw()
+
+	func _draw() -> void:
+		var pulse := 0.5 + 0.5 * sin(_t * 4.2)
+		var col := Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b,
+			0.55 + 0.35 * pulse)
+		for r in rects:
+			if not (r is Rect2):
+				continue
+			var rect := r as Rect2
+			if rect.size.x <= 0.0 or rect.size.y <= 0.0:
+				continue
+			draw_rect(rect.grow(2.0), col, false, 2.0)
+
 
 class Backdrop:
 	extends Control

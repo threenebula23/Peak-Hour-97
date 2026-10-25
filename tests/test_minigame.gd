@@ -4,6 +4,8 @@ extends SceneTree
 
 const MG := preload("res://scripts/minigames/minigame_base.gd")
 const FACTORY := preload("res://scripts/minigames/minigame_factory.gd")
+const ECONOMY := preload("res://scripts/core/economy.gd")
+const CONNECTION := preload("res://scripts/minigames/connection_game.gd")
 
 var _checks: int = 0
 var _fails: int = 0
@@ -22,6 +24,7 @@ func _init() -> void:
 	_test_selection()
 	_test_attack_placeholder()
 	_test_no_timers()
+	_test_connection_grace()
 	_finish()
 
 
@@ -42,6 +45,7 @@ func _test_base_contract() -> void:
 	_ok(mg.visible, "окно видимо")
 	_eq(str(mg.context.get("request_id", "")), "req_1", "context сохранён")
 	_approx(mg.quality(), 0.0, 0.0001, "quality стартует с 0")
+	_eq(str(mg.tier_label()), "СЛОЖНОСТЬ 2/3", "tier_label отправки 2/3")
 
 	# Два одинаковых сида дают одинаковую последовательность локального RNG.
 	var a = MG.new()
@@ -106,7 +110,7 @@ func _test_base_skip_and_esc() -> void:
 	_finish_count = 0
 	_last_q = -1.0
 	mg.finished.connect(_on_finished)
-	mg.start("wires", 1, 3)
+	mg.start("sound", 1, 3)
 	mg._on_skip_clicked()
 	_ok(mg._skip_armed, "первый клик только взводит пропуск")
 	_ok(not mg.is_finished(), "первый клик не завершает")
@@ -137,7 +141,7 @@ func _test_verdicts() -> void:
 
 func _test_factory_send() -> void:
 	_set_case("factory_send")
-	_eq(FACTORY.send_ids().size(), 7, "зарегистрировано 7 игр")
+	_eq(FACTORY.send_ids().size(), 6, "зарегистрировано 6 игр")
 	for id in FACTORY.send_ids():
 		var game = FACTORY.create_send(str(id), 1, 123)
 		_ok(game != null, "create_send(%s) не null" % str(id))
@@ -150,11 +154,12 @@ func _test_factory_send() -> void:
 		_ok(game.visible, "игра показана после start")
 		game.free()
 
-	for id in ["dots", "sound", "wires", "text", "video", "photo", "maze"]:
+	for id in ["dots", "sound", "text", "video", "photo", "maze"]:
 		var hard = FACTORY.create_send(id, 4, 99)
 		_ok(hard != null, "T4 create_send(%s)" % id)
 		if hard != null:
-			_eq(hard.tier, 4, "T4 tier у %s" % id)
+			_eq(hard.tier, 3, "tier 4 клампится в 3 у %s" % id)
+			_eq(str(hard.tier_label()), "СЛОЖНОСТЬ 3/3", "tier_label отправки %s" % id)
 			hard.free()
 
 	_ok(FACTORY.create_send("nope", 1, 1) == null, "неизвестная игра → null")
@@ -164,52 +169,107 @@ func _test_factory_send() -> void:
 	_eq(FACTORY.tier_for_hour(2), 1, "tier_for_hour 2 → 1")
 	_eq(FACTORY.tier_for_hour(4), 2, "tier_for_hour 4 → 2")
 	_eq(FACTORY.tier_for_hour(6), 3, "tier_for_hour 6 → 3")
-	_eq(FACTORY.tier_for_hour(8), 4, "tier_for_hour 8 → 4")
-	_eq(FACTORY.tier_for_hour(9), 4, "tier_for_hour 9 → 4")
+	_eq(FACTORY.tier_for_hour(8), 3, "tier_for_hour 8 → 3")
+	_eq(FACTORY.tier_for_hour(9), 3, "tier_for_hour 9 → 3")
 
 
 func _test_selection() -> void:
 	_set_case("selection")
-	var one := FACTORY.send_for_types(["text"])
-	_eq(str(one.get("id", "")), "dots", "S=1 → dots")
-	_eq(int(one.get("tier", 0)), 1, "S=1 → T1")
-	_eq(int(one.get("sum", 0)), 1, "sum=1")
+	var data = _data()
+	var selection: Dictionary = {}
+	if data != null and data.has_method("minigame_selection"):
+		selection = data.minigame_selection()
+	var sums: Array = selection.get("achievable_sums", ECONOMY.achievable_sums())
+	var rank_games: Array = selection.get("rank_games", ECONOMY.RANK_GAMES)
+	var tier_max: Array = selection.get("tier_max_rank", ECONOMY.TIER_MAX_RANK)
+	var coeff: Dictionary = selection.get("coeff", ECONOMY.MINIGAME_COEFF)
 
-	var video := FACTORY.send_for_types(["video"])
-	_eq(str(video.get("id", "")), "dots", "S=8 → dots")
-	_eq(int(video.get("tier", 0)), 2, "S=8 → T2")
+	# Схема §6: ровно 27 достижимых сумм коэффициентов 1/2/4/8 для 1–4 файлов.
+	_eq(ECONOMY.achievable_sums(),
+		[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18,
+			19, 20, 21, 22, 24, 25, 26, 28, 32],
+		"27 достижимых сумм [1..22,24,25,26,28,32]")
+	_eq(sums.size(), 27, "в данных 27 сумм")
+	_eq(_ints(ECONOMY.achievable_sums()), _ints(sums),
+		"Economy и Data согласованы по суммам")
+	_eq(str(ECONOMY.RANK_GAMES), str(rank_games), "Economy и Data согласованы по rank_games")
+	_eq(_ints(ECONOMY.TIER_MAX_RANK), _ints(tier_max),
+		"Economy и Data согласованы по границам ступеней")
+	for type_id in ["text", "sound", "photo", "video"]:
+		_eq(int(coeff.get(type_id, -1)), int(ECONOMY.MINIGAME_COEFF[type_id]),
+			"коэффициент %s = %d" % [type_id, int(ECONOMY.MINIGAME_COEFF[type_id])])
 
-	var three_video := FACTORY.send_for_types(["video", "video", "video"])
-	_ok(FACTORY.send_ids().has(str(three_video.get("id", ""))), "S=24 → известная игра")
-	_ok(int(three_video.get("tier", 0)) >= 1 and int(three_video.get("tier", 0)) <= 4,
-		"S=24 → допустимая ступень")
-	_eq(int(three_video.get("sum", 0)), 24, "sum=24")
-	# Каноническая формула спецификации (idx = S-1) отдельно от Economy-делегата.
-	var canonical := FACTORY.selection_for_sum(24)
-	_eq(str(canonical.get("id", "")), "wires", "канон S=24 → wires")
-	_eq(int(canonical.get("tier", 0)), 4, "канон S=24 → T4")
-	_eq(str(FACTORY.selection_for_sum(8).get("id", "")), "dots", "канон S=8 → dots/T2")
-	_eq(int(FACTORY.selection_for_sum(8).get("tier", 0)), 2, "канон S=8 → T2")
+	# Суммы действительно достижимы 1–4 файлами (и других нет).
+	var coeffs: Array = [1, 2, 4, 8]
+	var reachable: Dictionary = {}
+	for a in coeffs:
+		reachable[a] = true
+		for b in coeffs:
+			if b < a:
+				continue
+			reachable[a + b] = true
+			for c in coeffs:
+				if c < b:
+					continue
+				reachable[a + b + c] = true
+				for d in coeffs:
+					if d < c:
+						continue
+					reachable[a + b + c + d] = true
+	var reachable_sorted: Array = reachable.keys()
+	reachable_sorted.sort()
+	_eq(_ints(reachable_sorted), _ints(sums),
+		"список сумм = все суммы 1–4 коэффициентов")
 
-	var mix := FACTORY.send_for_types(["text", "sound"])
-	_eq(str(mix.get("id", "")), "wires", "S=3 → wires")
-	_eq(int(mix.get("tier", 0)), 1, "S=3 → T1")
+	# rank → игра и ступень: 0–7 → T1, 8–13 → T2, 14–26 → T3.
+	for idx in range(sums.size()):
+		var total := int(sums[idx])
+		var pick: Dictionary = FACTORY.selection_for_sum(total)
+		_eq(int(pick.get("index", -1)), idx, "S=%d: rank %d" % [total, idx])
+		_eq(int(pick.get("sum", -1)), total, "S=%d: сумма сохранена" % total)
+		_eq(str(pick.get("id", "")), str(rank_games[idx]),
+			"S=%d: игра из GAME_BY_RANK[%d]" % [total, idx])
+		var expected_tier := 1
+		if idx > int(tier_max[1]):
+			expected_tier = 3
+		elif idx > int(tier_max[0]):
+			expected_tier = 2
+		_eq(int(pick.get("tier", 0)), expected_tier,
+			"S=%d: ступень %d" % [total, expected_tier])
+		_ok(FACTORY.send_ids().has(str(pick.get("id", ""))),
+			"S=%d: игра зарегистрирована" % total)
+		_ok(str(pick.get("id", "")) != "wires", "S=%d: wires не выбирается" % total)
 
-	var photo := FACTORY.send_for_types(["photo"])
-	_eq(str(photo.get("id", "")), "text", "S=4 → text")
+	# Коэффициенты типов дают ту же сумму/игру, что и прямой выбор по rank.
+	var combos := [
+		["text"], ["sound"], ["photo"], ["video"],
+		["text", "sound"], ["text", "text"], ["sound", "sound"],
+		["video", "video"], ["video", "video", "video"],
+		["video", "video", "video", "video"],
+	]
+	for types in combos:
+		var total := 0
+		for t in types:
+			total += int(coeff.get(str(t), 1))
+		var direct: Dictionary = FACTORY.selection_for_sum(total)
+		var pick: Dictionary = FACTORY.send_for_types(types)
+		_eq(str(pick.get("id", "")), str(direct.get("id", "")),
+			"%s: игра совпадает с выбором по сумме %d" % [str(types), total])
+		_eq(int(pick.get("tier", 0)), int(direct.get("tier", 0)),
+			"%s: ступень совпадает с суммой %d" % [str(types), total])
+		_eq(int(pick.get("sum", -1)), total, "%s: sum=%d" % [str(types), total])
+		_ok(str(pick.get("id", "")) != "wires", "%s: не wires" % str(types))
 
-	var seven := FACTORY.send_for_types(["text", "sound", "photo"])
-	_ok(FACTORY.send_ids().has(str(seven.get("id", ""))), "S=7 → известная игра")
-	_eq(int(seven.get("sum", 0)), 7, "S=7 sum")
-	_eq(str(FACTORY.selection_for_sum(7).get("id", "")), "maze", "канон S=7 → maze")
-	_eq(int(FACTORY.selection_for_sum(7).get("tier", 0)), 1, "канон S=7 → T1")
-
-	var empty := FACTORY.selection_for_sum(0)
+	# S=0 клампится в dots/T1, сверх максимума — последний rank.
+	var empty: Dictionary = FACTORY.selection_for_sum(0)
 	_eq(str(empty.get("id", "")), "dots", "S=0 клампится в dots/T1")
 	_eq(int(empty.get("tier", 0)), 1, "S=0 → T1")
-	var cap := FACTORY.selection_for_sum(99)
-	_eq(int(cap.get("index", -1)), 27, "idx клампится в 27")
-	_eq(int(cap.get("tier", 0)), 4, "idx 27 → T4")
+	_eq(int(empty.get("index", -1)), 0, "S=0 → rank 0")
+	var cap: Dictionary = FACTORY.selection_for_sum(99)
+	_eq(int(cap.get("index", -1)), sums.size() - 1, "idx клампится в последний rank")
+	_eq(int(cap.get("tier", 0)), 3, "последний rank → T3")
+	_eq(str(cap.get("id", "")), str(rank_games[rank_games.size() - 1]),
+		"последний rank → игра из таблицы")
 
 
 func _test_attack_placeholder() -> void:
@@ -219,6 +279,7 @@ func _test_attack_placeholder() -> void:
 		_ok(true, "атакующий скрипт ещё не добавлен — null допустим")
 	else:
 		_ok(attack is MiniGame, "существующая атака — MiniGame")
+		_eq(str(attack.tier_label()), "СЛОЖНОСТЬ 1/4", "у атаки 4 ступени")
 		attack.free()
 	var missing = FACTORY.create_attack("not_a_real_attack", 1, 7)
 	_ok(missing == null, "неизвестная атака → null")
@@ -238,6 +299,36 @@ func _test_no_timers() -> void:
 		game.free()
 
 
+func _test_connection_grace() -> void:
+	_set_case("connection_grace")
+	var game = CONNECTION.new()
+	root.add_child(game)
+	game.start(1, 0, 0, "req")
+	_ok(game._input_grace > 0.0, "start() взводит grace")
+	_ok(not game._armed, "до истечения grace попытки запрещены")
+
+	# Клик, который открыл модалку (и его release), не должен быть попыткой.
+	var press := InputEventMouseButton.new()
+	press.button_index = MOUSE_BUTTON_LEFT
+	press.pressed = true
+	press.position = game.global_position + Vector2(320.0, 140.0)
+	game._input(press)
+	_ok(not game.missed, "клик в grace не даёт промах")
+	_approx(game.flash_left, 0.0, 0.0001, "клик в grace не включает красную вспышку")
+	_eq(game.active_index, 0, "клик в grace не засчитывает попадание")
+	_ok(not game._emitted, "клик в grace не завершает игру")
+
+	# После grace палочка уходит из зелёной зоны — обычный клик штрафует.
+	game._process(0.4)
+	_ok(game._input_grace <= 0.0, "grace истекает по _process")
+	_ok(game._armed, "после grace попытки разрешены")
+	_ok(game.stick_positions[0] < game.zone_start_x(), "палочка вне зоны")
+	game._input(press)
+	_ok(game.missed, "клик вне зоны после grace = промах")
+	_ok(game.flash_left > 0.0, "промах включает красную вспышку")
+	game.free()
+
+
 func _count_timers(node: Node) -> int:
 	var count := 0
 	for child in node.get_children():
@@ -248,6 +339,18 @@ func _count_timers(node: Node) -> int:
 
 
 # --- assert-хелперы --------------------------------------------------------
+
+func _data():
+	return root.get_node_or_null("Data")
+
+
+## JSON парсит числа как float — нормализуем к int для сравнения таблиц.
+func _ints(values: Array) -> Array:
+	var out: Array = []
+	for value in values:
+		out.append(int(value))
+	return out
+
 
 func _set_case(name: String) -> void:
 	_case = name

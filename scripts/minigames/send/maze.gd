@@ -4,13 +4,11 @@ extends MiniGame
 ## Качество: 1 - 0.04*collisions - 0.02*dead_ends (без нижнего порога 0.4).
 
 const TIERS := {
-	1: {"cols": 9, "rows": 4, "field_w": 360.0, "field_h": 160.0,
-		"corridor": 28.0, "speed": 420.0},
-	2: {"cols": 11, "rows": 4, "field_w": 440.0, "field_h": 160.0,
+	1: {"cols": 11, "rows": 4, "field_w": 440.0, "field_h": 160.0,
 		"corridor": 24.0, "speed": 470.0},
-	3: {"cols": 13, "rows": 4, "field_w": 494.0, "field_h": 152.0,
+	2: {"cols": 13, "rows": 4, "field_w": 494.0, "field_h": 152.0,
 		"corridor": 20.0, "speed": 520.0},
-	4: {"cols": 15, "rows": 5, "field_w": 520.0, "field_h": 180.0,
+	3: {"cols": 15, "rows": 5, "field_w": 520.0, "field_h": 180.0,
 		"corridor": 18.0, "speed": 560.0},
 }
 const HITBOX := 9.0
@@ -73,10 +71,24 @@ func _setup() -> void:
 		int(maze["ent_row"]), int(maze["exit_row"]))
 
 
+func _goal_text() -> String:
+	return "ПРОВЕДИТЕ ПАКЕТ ОТ ВХОДА ДО ЗЕЛЁНОГО ВЫХОДА"
+
+
+func _progress_ratio() -> float:
+	if _solution.is_empty():
+		return 0.0
+	return clampf((float(_max_sol) + 1.0) / float(_solution.size()), 0.0, 1.0)
+
+
+func _result_stats() -> String:
+	return "СТОЛКНОВЕНИЙ %d · ТУПИКОВ %d" % [_collisions, _dead_end_hits]
+
+
 # --- параметры/генерация ---------------------------------------------------
 
 static func tier_params(p_tier: int) -> Dictionary:
-	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 4), TIERS[1]) as Dictionary).duplicate(true)
+	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 3), TIERS[1]) as Dictionary).duplicate(true)
 	var row := MiniGame.data_minigame_tier("maze", p_tier)
 	if row.is_empty():
 		return base
@@ -410,10 +422,10 @@ func _on_key_pressed(keycode: int, _event: InputEvent) -> bool:
 
 func _draw_game() -> void:
 	var font := Theme90.ui()
-	_draw_label("МАРШРУТ · ВЫХОД СПРАВА", Vector2(24.0, 34.0), 10,
-		Theme90.NAVY, 280.0)
+	_draw_label("МАРШРУТ · ВЫХОД СПРАВА", Vector2(24.0, 46.0), 10,
+		Theme90.DARK, 280.0)
 	_draw_label("СТОЛКНОВЕНИЙ %d · ТУПИКОВ %d" % [_collisions, _dead_end_hits],
-		Vector2(320.0, 34.0), 10, Theme90.SHADE, 280.0,
+		Vector2(320.0, 46.0), 10, Theme90.DARK, 280.0,
 		HORIZONTAL_ALIGNMENT_RIGHT)
 
 	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER, 4, 1),
@@ -441,7 +453,5 @@ func _draw_game() -> void:
 	if not _solution.is_empty():
 		progress = clampf((float(_max_sol) + 1.0) / float(_solution.size()), 0.0, 1.0)
 	_draw_label("ПРОГРЕСС %d%%" % roundi(progress * 100.0),
-		Vector2(_field.position.x, _field.end.y + 12.0), 10, Theme90.SHADE,
+		Vector2(_field.position.x, _field.end.y + 12.0), 10, Theme90.DARK,
 		_field.size.x)
-	_draw_label("ВЕДИТЕ ПАКЕТ МЫШЬЮ · СТЕНЫ СКОЛЬЗЯТ · ВЫХОД — ЗЕЛЁНЫЙ",
-		Vector2(24.0, 344.0), 10, Theme90.SHADE, 430.0)

@@ -10,7 +10,8 @@ extends MiniGame
 const GAME_ID := "ddos"
 const TITLE_RU := "ЩИТ"
 
-const FIELD := Rect2(18.0, 58.0, 604.0, 246.0)
+## Поле заканчивается на y=294, чтобы подсказка (y=298..311) не легла на доску.
+const FIELD := Rect2(18.0, 58.0, 604.0, 236.0)
 const PACKET_W := 18.0
 const PACKET_H := 20.0
 const SHIELD_H := 16.0
@@ -370,7 +371,8 @@ func _draw_game() -> void:
 
 
 func _draw_footer_hint() -> void:
-	_draw_label("ЩИТ СЛЕДУЕТ ЗА МЫШЬЮ ПО X · СТРЕЛКИ ← → ТОЖЕ", Vector2(18.0, 350.0),
+	# Подсказка живёт в свободной полосе между полем (y=294) и футером (y=320).
+	_draw_label("ЩИТ СЛЕДУЕТ ЗА МЫШЬЮ ПО X · СТРЕЛКИ ← → ТОЖЕ", Vector2(18.0, 298.0),
 		10, Theme90.SHADE, 604.0)
 
 

@@ -12,7 +12,9 @@ extends Control
 signal finished(quality: float)
 
 const WINDOW_SIZE := Vector2(640.0, 360.0)
-const HEADER_H := 30.0
+## Шапка двухстрочная: название + цель игры. Контент мини-игр начинается
+## с y=44, поэтому высота 42 не перекрывает жёстко заданные координаты.
+const HEADER_H := 42.0
 const FOOTER_Y := 320.0
 const CONTENT_RECT := Rect2(18.0, 40.0, 604.0, 270.0)
 const ACTION_RECT := Rect2(466.0, 320.0, 156.0, 28.0)
@@ -20,24 +22,39 @@ const SKIP_RECT := Rect2(18.0, 320.0, 148.0, 28.0)
 const CONTINUE_RECT := Rect2(245.0, 252.0, 150.0, 32.0)
 
 const SEND_IDS: Array[String] = [
-	"dots", "sound", "wires", "text", "video", "photo", "maze",
+	"dots", "sound", "text", "video", "photo", "maze",
+]
+const ATTACK_IDS: Array[String] = [
+	"junk", "ddos", "phishing", "ransomware",
 ]
 const GAME_TITLES := {
 	"dots": "ОДНА ЛИНИЯ",
 	"sound": "УРОВНИ",
-	"wires": "ПРОВОДА",
 	"text": "ЧУЖОЕ СЛОВО",
 	"video": "РАСКАДРОВКА",
 	"photo": "КАДР",
 	"maze": "ЛАБИРИНТ",
+	"junk": "ФИЛЬТР",
+	"ddos": "ЩИТ",
+	"phishing": "ПАСПОРТ",
+	"ransomware": "КАРАНТИН",
 }
 const LEGACY_TYPES := {
 	"text": "text",
 	"sound": "sound",
 	"photo": "photo",
 	"video": "video",
-	"connection": "wires",
-	"connect": "wires",
+	# Старые id «проводов» после удаления игры ведут на ближайшую по смыслу.
+	"connection": "dots",
+	"connect": "dots",
+}
+## Короткие цели для игр атак (файлы атак не переопределяют _goal_text).
+## Игры отправки возвращают свою строку сами.
+const ATTACK_GOALS := {
+	"junk": "СНИМИТЕ МУСОРНЫЕ ФАЙЛЫ · НОРМАЛЬНЫЕ НЕ ТРОГАЙТЕ",
+	"ddos": "ДВИГАЙТЕ ЩИТ И ОТРАЖАЙТЕ ПАКЕТЫ",
+	"phishing": "СВЕРЬТЕ ДАННЫЕ КЛИЕНТА С ЭТАЛОНОМ",
+	"ransomware": "ИЗОЛИРУЙТЕ ФАЙЛЫ С ОПАСНЫМ РАСШИРЕНИЕМ",
 }
 
 ## Общие поля контракта.
@@ -76,6 +93,10 @@ func _init() -> void:
 
 func _ready() -> void:
 	_center_on_screen()
+	# Main ставит модалку через PRESET_CENTER уже после add_child, а в Godot
+	# 4.7.2 этот пресет обнуляет offsets (окно уезжает в правый нижний угол).
+	# Повторяем центрирование в конце кадра, когда родитель уже modal_root.
+	call_deferred("_center_on_screen")
 	var viewport := get_viewport()
 	if viewport != null and not viewport.size_changed.is_connected(_center_on_screen):
 		viewport.size_changed.connect(_center_on_screen)
@@ -94,10 +115,12 @@ func start(type_or_id: String, p_difficulty: float = 1.0, p_seed: int = 0,
 
 	game_id = resolved
 	difficulty = maxf(0.0, float(p_difficulty))
-	# Старый вызов передавал 2.5 и т.п.; фабрика передаёт 1..4.
-	tier = clampi(int(round(difficulty)), 1, 4)
+	# Старый вызов передавал 2.5 и т.п.; фабрика передаёт 1..3 (отправка)
+	# или 1..4 (атаки). Атаки сохраняют четыре ступени.
+	var max_tier := 4 if is_attack_id(game_id) else 3
+	tier = clampi(int(round(difficulty)), 1, max_tier)
 	if difficulty >= 1.0 and difficulty <= 4.0 and is_equal_approx(difficulty, roundf(difficulty)):
-		tier = clampi(int(difficulty), 1, 4)
+		tier = clampi(int(difficulty), 1, max_tier)
 	context = p_context.duplicate(true)
 
 	seed_value = p_seed
@@ -146,13 +169,35 @@ func title() -> String:
 	return str(GAME_TITLES.get(game_id, "МИНИ-ИГРА"))
 
 
+## Максимум ступеней: у отправки три (после удаления T1), у атак четыре.
+func max_tier() -> int:
+	return 4 if is_attack or is_attack_id(game_id) else 3
+
+
 func tier_label() -> String:
-	return "T%d" % tier
+	return "СЛОЖНОСТЬ %d/%d" % [clampi(tier, 1, max_tier()), max_tier()]
 
 
 ## Подпись кнопки отказа: атаки сдаются, отправки пропускаются.
+## Текст с подсказкой «2 клика» добавляется только при отрисовке, чтобы
+## контракт skip_label() оставался прежним для тестов и других систем.
 func skip_label() -> String:
 	return "СДАТЬСЯ" if is_attack else "ПРОПУСТИТЬ"
+
+
+## Одна строка цели игры под шапкой. Переопределяется наследниками.
+func _goal_text() -> String:
+	return str(ATTACK_GOALS.get(game_id, ""))
+
+
+## Прогресс 0..1 для тонкой полосы в шапке; -1 — не показывать.
+func _progress_ratio() -> float:
+	return -1.0
+
+
+## Короткая статистика для экрана результата (одна строка).
+func _result_stats() -> String:
+	return ""
 
 
 func quality() -> float:
@@ -205,11 +250,17 @@ func _emit_finished_once() -> void:
 
 
 func _default_result_detail() -> String:
+	var parts: Array[String] = []
+	var stats := _result_stats()
+	if not stats.is_empty():
+		parts.append(stats)
 	var reward := str(context.get("reward_text", ""))
-	var penalty := str(context.get("penalty_text", ""))
 	if not reward.is_empty():
-		return reward
-	return penalty
+		parts.append(reward)
+	var penalty := str(context.get("penalty_text", ""))
+	if not penalty.is_empty():
+		parts.append(penalty)
+	return " · ".join(parts)
 
 
 # --- ввод ------------------------------------------------------------------
@@ -309,15 +360,29 @@ func _draw() -> void:
 		Theme90.HAIRLINE)
 	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0,
 		Theme90.ACCENT)
-	Theme90.text(self, font, Vector2(tr.position.x + 24.0, tr.position.y + 7.0),
-		title(), 16, Theme90.NAVY_DEEP, tr.size.x - 210.0)
+	Theme90.text(self, font, Vector2(tr.position.x + 24.0, tr.position.y + 3.0),
+		title(), 18, Theme90.NAVY_DEEP, tr.size.x - 400.0)
 
-	var badge := Rect2(tr.end.x - 196.0, tr.position.y + 7.0, 42.0, 16.0)
+	var badge := Rect2(tr.end.x - 124.0, tr.position.y + 6.0, 116.0, 17.0)
 	draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.BORDER_SOFT, 2, 1), badge)
-	Theme90.text_vcenter(self, font, badge, tier_label(), 10, Theme90.NAVY,
+	Theme90.text_vcenter(self, font, badge, tier_label(), 11, Theme90.NAVY,
 		-1, HORIZONTAL_ALIGNMENT_CENTER)
-	Theme90.text(self, font, Vector2(tr.end.x - 146.0, tr.position.y + 8.0),
-		"БЕЗ ТАЙМЕРА", 10, Theme90.SHADE, 130.0, HORIZONTAL_ALIGNMENT_RIGHT)
+
+	var ratio := _progress_ratio()
+	if ratio >= 0.0:
+		var bar := Rect2(tr.end.x - 252.0, tr.position.y + 16.0, 104.0, 6.0)
+		Theme90.text(self, font, Vector2(bar.position.x - 38.0, bar.position.y - 2.0),
+			"%d%%" % roundi(clampf(ratio, 0.0, 1.0) * 100.0), 10, Theme90.DARK,
+			34.0, HORIZONTAL_ALIGNMENT_RIGHT)
+		_draw_bar(bar, ratio, Theme90.SUCCESS if ratio >= 0.999 else Theme90.ACCENT)
+
+	var goal := _goal_text()
+	if not goal.is_empty():
+		draw_rect(Rect2(tr.position.x + 14.0, tr.position.y + 26.0, 2.0, 12.0),
+			Theme90.ACCENT_LIGHT)
+		Theme90.text(self, font, Vector2(tr.position.x + 24.0, tr.position.y + 25.0),
+			Theme90.fit(font, goal, 11, tr.size.x - 48.0), 11, Theme90.DARK,
+			tr.size.x - 48.0)
 
 	_draw_game()
 	_draw_skip_button()
@@ -344,13 +409,15 @@ func _draw_skip_button() -> void:
 		Theme90.SHADOW if not _skip_armed else Color(0, 0, 0, 0)), SKIP_RECT)
 	var label := skip_label()
 	if _skip_armed:
-		label = "ТОЧНО СДАТЬСЯ?" if is_attack else "ТОЧНО ПРОПУСТИТЬ?"
-	Theme90.text_vcenter(self, Theme90.ui(), SKIP_RECT, label, 10, fg,
+		label = "ЕЩЁ КЛИК — СДАЧА" if is_attack else "ЕЩЁ КЛИК — ПРОПУСК"
+	else:
+		label = "%s · 2 КЛИКА" % label
+	Theme90.text_vcenter(self, Theme90.ui(), SKIP_RECT, label, 11, fg,
 		-1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_action_button(rect: Rect2, label: String, enabled: bool = true,
-		primary: bool = true) -> void:
+		primary: bool = true, size_px: int = 12) -> void:
 	var face := Theme90.PAPER_HI
 	var fg := Theme90.INK
 	var border := Theme90.BORDER
@@ -360,17 +427,17 @@ func _draw_action_button(rect: Rect2, label: String, enabled: bool = true,
 		border = Theme90.ACCENT.darkened(0.18)
 	elif not enabled:
 		face = Theme90.PAPER
-		fg = Theme90.SHADE
+		fg = Theme90.DARK
 		border = Theme90.BORDER_SOFT
 	draw_style_box(Theme90.box(face, border, 3, 1,
 		Theme90.SHADOW if enabled else Color(0, 0, 0, 0)), rect)
-	Theme90.text_vcenter(self, Theme90.ui(), rect, label, 12, fg,
+	Theme90.text_vcenter(self, Theme90.ui(), rect, label, size_px, fg,
 		-1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_secondary_button(rect: Rect2, label: String) -> void:
 	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER, 3, 1), rect)
-	Theme90.text_vcenter(self, Theme90.ui(), rect, label, 10, Theme90.DARK,
+	Theme90.text_vcenter(self, Theme90.ui(), rect, label, 11, Theme90.DARK,
 		-1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
@@ -404,31 +471,39 @@ func _result_continue_rect() -> Rect2:
 
 
 func _result_panel_rect() -> Rect2:
-	return Rect2((size.x - 380.0) * 0.5, (size.y - 196.0) * 0.5, 380.0, 196.0)
+	return Rect2((size.x - 400.0) * 0.5, (size.y - 232.0) * 0.5, 400.0, 232.0)
 
 
 func _draw_result_overlay() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.08, 0.10, 0.10, 0.58))
 	var panel := _result_panel_rect()
 	_draw_modal_panel(panel)
-	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 18.0),
-		"РЕЗУЛЬТАТ", 16, Theme90.NAVY_DEEP, panel.size.x,
+	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 10.0),
+		"РЕЗУЛЬТАТ", 13, Theme90.NAVY_DEEP, panel.size.x,
 		HORIZONTAL_ALIGNMENT_CENTER)
+	Theme90.text(self, Theme90.ui(), Vector2(panel.position.x, panel.position.y + 30.0),
+		Theme90.fit(Theme90.ui(), title(), 12, panel.size.x - 36.0), 12, Theme90.NAVY,
+		panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 	var q_text := "%d%%" % roundi(quality_value * 100.0)
-	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 50.0),
-		q_text, 24, Theme90.INK, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
-	var verdict := verdict_for(quality_value)
-	var vcol := Theme90.SUCCESS if quality_value >= 0.75 else (
+	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 46.0),
+		q_text, 30, Theme90.INK, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	var qcol := Theme90.SUCCESS if quality_value >= 0.75 else (
 		Theme90.WARN if quality_value >= 0.45 else Theme90.ERROR)
-	Theme90.text(self, Theme90.ui(), Vector2(panel.position.x, panel.position.y + 104.0),
-		verdict, 24, vcol, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_bar(Rect2(panel.position.x + 26.0, panel.position.y + 86.0,
+		panel.size.x - 52.0, 8.0), quality_value, qcol)
+	var verdict := verdict_for(quality_value)
+	Theme90.text(self, Theme90.ui(), Vector2(panel.position.x, panel.position.y + 102.0),
+		verdict, 22, qcol, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 	if not _result_detail.is_empty():
 		Theme90.text(self, Theme90.ui(), Vector2(panel.position.x + 18.0,
-			panel.position.y + 142.0), Theme90.fit(Theme90.ui(), _result_detail, 10,
-			panel.size.x - 36.0), 10, Theme90.SHADE, panel.size.x - 36.0,
+			panel.position.y + 134.0), Theme90.fit(Theme90.ui(), _result_detail, 11,
+			panel.size.x - 36.0), 11, Theme90.DARK, panel.size.x - 36.0,
 			HORIZONTAL_ALIGNMENT_CENTER)
+	Theme90.text(self, Theme90.ui(), Vector2(panel.position.x,
+		panel.position.y + 154.0), "Esc — продолжить", 10, Theme90.DARK,
+		panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 	var cont := _result_continue_rect()
-	_draw_action_button(cont, "ПРОДОЛЖИТЬ", true, true)
+	_draw_action_button(cont, "ПРОДОЛЖИТЬ", true, true, 13)
 
 
 # --- служебное -------------------------------------------------------------
@@ -437,7 +512,21 @@ static func resolve_game_id(value: String) -> String:
 	var v := value.strip_edges().to_lower()
 	if SEND_IDS.has(v):
 		return v
+	if ATTACK_IDS.has(v):
+		return v
 	return str(LEGACY_TYPES.get(v, ""))
+
+
+static func is_attack_id(value: String) -> bool:
+	var v := str(value).strip_edges().to_lower()
+	var loop := Engine.get_main_loop()
+	if loop is SceneTree:
+		var data = (loop as SceneTree).root.get_node_or_null("Data")
+		if data != null and data.has_method("minigame_def"):
+			var def = data.call("minigame_def", v)
+			if def is Dictionary and not (def as Dictionary).is_empty():
+				return str((def as Dictionary).get("kind", "")).to_lower() == "attack"
+	return ATTACK_IDS.has(v)
 
 
 ## Безопасное чтение data/minigame_def(id) с fallback на balance.json.
@@ -466,20 +555,32 @@ static func data_minigame_def(id: String) -> Dictionary:
 
 ## Строка tier из Data.minigame_def(id). Поддерживает tiers как Array
 ## (текущий формат balance.json) и как Dictionary (старый/альтернативный).
+##
+## Отправка теперь имеет 3 ступени, атаки — 4. Если balance.json ещё хранит
+## старые 4 строки для отправки, tier 1 читает вторую строку (старый T2):
+## так игра работает и до, и после синхронного сдвига таблиц.
 static func data_minigame_tier(id: String, p_tier: int) -> Dictionary:
 	var def := data_minigame_def(id)
 	if def.is_empty():
 		return {}
-	var t := clampi(p_tier, 1, 4)
+	var attack_def := is_attack_id(id) \
+		or str(def.get("kind", "")).to_lower() == "attack"
+	var t := clampi(p_tier, 1, 4 if attack_def else 3)
 	var tiers = def.get("tiers", null)
 	var row: Dictionary = {}
 	if tiers is Array:
 		var arr := tiers as Array
-		if t - 1 < arr.size() and arr[t - 1] is Dictionary:
-			row = (arr[t - 1] as Dictionary).duplicate(true)
+		var index := t - 1
+		if not attack_def and arr.size() >= 4:
+			index = clampi(t, 0, arr.size() - 1)
+		if index >= 0 and index < arr.size() and arr[index] is Dictionary:
+			row = (arr[index] as Dictionary).duplicate(true)
 	elif tiers is Dictionary:
 		var map := tiers as Dictionary
-		var value = map.get(str(t), map.get(t, null))
+		var key := t
+		if not attack_def and map.size() >= 4:
+			key = clampi(t + 1, 1, 4)
+		var value = map.get(str(key), map.get(key, null))
 		if value is Dictionary:
 			row = (value as Dictionary).duplicate(true)
 	if row.is_empty():
@@ -491,11 +592,19 @@ static func data_minigame_tier(id: String, p_tier: int) -> Dictionary:
 
 
 func _center_on_screen() -> void:
-	var viewport := get_viewport()
-	if viewport == null:
-		return
-	var screen := get_viewport_rect().size
-	position = ((screen - WINDOW_SIZE) * 0.5).floor()
+	# get_viewport_rect() отдаёт ФИЗИЧЕСКИЙ размер окна (1920×1080), а UI-канва
+	# логическая 1280×720. Центрируем по фактическому родителю (modal_root),
+	# иначе окно уезжает в правый нижний квадрант. Fallback — вьюпорт.
+	var area := Vector2.ZERO
+	if is_inside_tree() and get_parent() is Control:
+		area = (get_parent() as Control).size
+	if area.x <= 0.0 or area.y <= 0.0:
+		# Вне дерева (нода создана фабрикой до add_child) вьюпорта ещё нет —
+		# центрируем позже в _ready()/повторном start().
+		if not is_inside_tree():
+			return
+		area = get_viewport_rect().size
+	position = ((area - size) * 0.5).floor()
 	position.x = maxf(0.0, position.x)
 	position.y = maxf(0.0, position.y)
 

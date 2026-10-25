@@ -188,24 +188,23 @@ func _play_tick() -> void:
 			continue
 		_try_receive(hd, str(packet_id))
 
-	# 4. Запросы: докладываем файлы, затем явный start_send.
+	# 4. Запросы: докладываем ИМЕННО required-файлы, затем явный start_send.
 	for req_id in hd.active_requests.keys().duplicate():
 		if not hd.active_requests.has(req_id):
 			continue
 		var req = hd.active_requests[req_id]
-		if req.sending or req.minigame_active or hd.is_request_queued(req_id):
+		if req.sending or req.minigame_active or req.connecting or hd.is_request_queued(req_id):
 			continue
-		var need := int(hd.request_required_count(req_id))
-		var guard := 0
-		while req.attached.size() < need and guard < 8:
-			guard += 1
-			var fid := _available_file(hd)
-			if fid.is_empty():
+		var missing: Array = hd.request_missing(req_id)
+		for fid in missing:
+			if not hd.attach_file(req_id, str(fid)):
 				break
-			if not hd.attach_file(req_id, fid):
-				break
-		if req.attached.size() >= need:
+		if hd.request_missing(req_id).is_empty():
 			if hd.start_send(req_id):
+				# Бот мгновенно проходит мини-игру соединения (UI-слой не подключён).
+				var fresh = hd.active_requests.get(req_id)
+				if fresh != null and bool(fresh.connecting):
+					hd.connection_finished(req_id, true)
 				if hd.is_minigame_active():
 					hd._on_send_minigame_finished(0.8)
 		elif float(req.time_left) < 2.0:

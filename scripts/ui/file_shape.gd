@@ -273,6 +273,138 @@ static func paint(ci: CanvasItem, pos: Vector2, cells: Array, cell_px,
 			alpha, locked, state)
 
 
+## Кегль подписи файла по размеру клетки: 12 / 14 / 16 px.
+## Используется и в сетке, и в карточке запроса (square), чтобы имена
+## не были микроскопическими на больших клетках.
+## Это БАЗОВЫЙ кегль: если имя не влезает в отведённые строки, painter
+## уменьшает его на 1 px (не ниже 11) прежде чем обрезать многоточием.
+static func label_font_size(cell_px: float) -> int:
+	if cell_px > 96.0:
+		return 16
+	if cell_px >= 72.0:
+		return 14
+	return 12
+
+
+## Сколько строк имени даёт клетка: 3 при >= 88, 2 при 72–87, 1 ниже 72.
+## Больше строк — длинные имена читаются целиком, а не «запас_е…».
+static func label_max_lines(cell_px: float) -> int:
+	if cell_px >= 88.0:
+		return 3
+	if cell_px >= 72.0:
+		return 2
+	return 1
+
+
+## Перенос по словам с РАЗНОЙ шириной строк: первая уже (в ней иконка),
+## последующие занимают всю клетку за вычетом полей.
+static func _wrap_name(f: Font, text: String, size: int, first_w: float,
+		rest_w: float) -> PackedStringArray:
+	var out := PackedStringArray()
+	if text.is_empty():
+		return out
+	var cur := ""
+	for raw in text.split(" ", false):
+		var word := str(raw)
+		var width := first_w if out.is_empty() else rest_w
+		var cand := word if cur.is_empty() else cur + " " + word
+		if f.get_string_size(cand, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x <= width:
+			cur = cand
+		else:
+			if not cur.is_empty():
+				out.append(cur)
+			cur = word
+	if not cur.is_empty():
+		out.append(cur)
+	return out
+
+
+## Имя целиком помещается в max_lines при данном кегле (без многоточия)?
+static func _name_fits(f: Font, text: String, size: int, first_w: float,
+		rest_w: float, max_lines: int) -> bool:
+	var lines := _wrap_name(f, text, size, first_w, rest_w)
+	if lines.size() > max_lines:
+		return false
+	for i in lines.size():
+		var width := first_w if i == 0 else rest_w
+		if f.get_string_size(lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > width:
+			return false
+	return true
+
+
+## Самый крупный кегль от базового, при котором имя ещё влезает целиком.
+## Ниже 11 px не опускаемся: лучше многоточие, чем нечитаемая строка.
+static func name_font_size(cell_px: float, text: String, first_w: float,
+		rest_w: float, max_lines: int) -> int:
+	return _max_fit_size(Theme90.ui(), text, cell_px, first_w, rest_w, max_lines)
+
+
+static func _max_fit_size(f: Font, text: String, cell_px: float, first_w: float,
+		rest_w: float, max_lines: int) -> int:
+	var base := label_font_size(cell_px)
+	var lo := mini(11, base)
+	for size in range(base, lo - 1, -1):
+		if _name_fits(f, text, size, first_w, rest_w, max_lines):
+			return size
+	return lo
+
+
+## Готовые строки для отрисовки. Если имя не влезает — последняя строка
+## получает хвост и многоточие; отдельные слишком длинные слова режутся
+## по ширине своей строки.
+static func _build_lines(f: Font, text: String, size: int, first_w: float,
+		rest_w: float, max_lines: int) -> PackedStringArray:
+	var lines := _wrap_name(f, text, size, first_w, rest_w)
+	if lines.size() > max_lines:
+		var kept := PackedStringArray()
+		for i in max_lines:
+			kept.append(lines[i])
+		kept[max_lines - 1] = Theme90.fit(f,
+			kept[max_lines - 1] + " " + lines[max_lines], size,
+			first_w if max_lines == 1 else rest_w)
+		lines = kept
+	for i in lines.size():
+		var lw := first_w if i == 0 else rest_w
+		if f.get_string_size(lines[i], HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > lw:
+			lines[i] = Theme90.fit(f, lines[i], size, lw)
+	return lines
+
+
+## Сколько символов имени реально видно (без многоточий и пробелов).
+static func _visible_chars(lines: PackedStringArray) -> int:
+	var total := 0
+	for line in lines:
+		total += str(line).replace("…", "").replace(" ", "").length()
+	return total
+
+
+## Раскладка подписи. Обычно иконка стоит в верхнем левом углу, а первая
+## строка начинается справа от неё (icon_inline = true).
+## Если первое слово в такую строку не помещается даже после сжатия кегля,
+## текст переносится ПОД иконку и все строки получают полную ширину:
+## иначе длинное слово теряло бы начало («запас_енер…» вместо имени целиком).
+## Возвращает {"size": int, "lines": PackedStringArray, "icon_inline": bool}.
+static func _label_layout(f: Font, name: String, cell_px: float, first_w: float,
+		rest_w: float, max_lines: int) -> Dictionary:
+	var inline_size := name_font_size(cell_px, name, first_w, rest_w, max_lines)
+	if _name_fits(f, name, inline_size, first_w, rest_w, max_lines):
+		return {"size": inline_size, "icon_inline": true,
+			"lines": _build_lines(f, name, inline_size, first_w, rest_w, max_lines)}
+	var below_size := _max_fit_size(f, name, cell_px, rest_w, rest_w, max_lines)
+	if _name_fits(f, name, below_size, rest_w, rest_w, max_lines):
+		return {"size": below_size, "icon_inline": false,
+			"lines": _build_lines(f, name, below_size, rest_w, rest_w, max_lines)}
+	# Не влезает ни так, ни так — оставляем раскладку, где видно больше имени.
+	var inline_lines := _build_lines(f, name, inline_size, first_w, rest_w, max_lines)
+	var below_lines := _build_lines(f, name, below_size, rest_w, rest_w, max_lines)
+	var below_better := below_size > inline_size \
+		or (below_size == inline_size
+			and _visible_chars(below_lines) > _visible_chars(inline_lines))
+	if below_better:
+		return {"size": below_size, "icon_inline": false, "lines": below_lines}
+	return {"size": inline_size, "icon_inline": true, "lines": inline_lines}
+
+
 static func _paint_cell_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
 		cs: Vector2, gap: float, base: Color, file_type: String, name: String,
 		ext_value: String, alpha: float, locked: bool, state: String) -> void:
@@ -284,30 +416,59 @@ static func _paint_cell_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
 	var f := Theme90.ui()
 	var ink := Theme90.SHADE if locked else Theme90.INK
 	var shade := Theme90.SHADE
-	var pad := 3.0
-	var icon := Rect2(lr.position + Vector2(pad, pad), Vector2(8, 8))
-	draw_type_icon(ci, icon, file_type, base, alpha)
+	# Поля: строки после первой идут во всю ширину клетки (cell − 10 px).
+	const PAD := 5.0
+	var base_size := label_font_size(cell_min)
+	var ext_size := maxi(9, base_size - 3)
+	var max_lines := label_max_lines(cell_min)
+	var icon_size := clampf(cs.x * 0.16, 10.0, 16.0)
+	var ty := lr.position.y + 3.0
+	# Иконка — в верхнем левом углу. Первая строка идёт справа от неё,
+	# остальные — от левого поля, во всю ширину; если имя не влезает рядом
+	# с иконкой, весь текст уходит под неё (см. _label_layout).
+	var text_x := lr.position.x + PAD
+	var first_x := text_x + icon_size + 2.0
+	var badge_room := 10.0 if state == "attached" or state == "malicious" \
+		or state == "failed" else 0.0
+	var first_w := maxf(8.0, lr.end.x - first_x - PAD - badge_room)
+	var rest_w := maxf(8.0, lr.size.x - PAD * 2.0)
+	var layout := _label_layout(f, name, cell_min, first_w, rest_w, max_lines)
+	var name_size: int = int(layout["size"])
+	var lines: PackedStringArray = layout["lines"]
+	var icon_inline: bool = bool(layout["icon_inline"])
+	var line_h := float(name_size) + 1.0
+	# Строка с иконкой занимает не меньше самой иконки — иначе вторая строка
+	# наехала бы на неё.
+	var first_h := maxf(line_h, icon_size + 2.0)
+	var text_top := ty if icon_inline else ty + first_h
+	var icon := Rect2(Vector2(text_x, ty + maxf(0.0, (line_h - icon_size) * 0.5))
+		.round(), Vector2(icon_size, icon_size))
+	if not Theme90.draw_file_icon(ci, icon, file_type, _with_alpha(Color.WHITE, alpha)):
+		draw_type_icon(ci, icon, file_type, base, alpha)
 
-	var tx := lr.position.x + 13.0
-	var tw := maxf(8.0, lr.size.x - 16.0)
-	var ty := lr.position.y + 2.0
-	if cell_min >= 72.0:
-		var lines := Theme90.wrap(f, name, 10, tw, 2)
-		for i in lines.size():
-			Theme90.text(ci, f, Vector2(tx, ty + float(i) * 11.0), lines[i], 10,
-				_with_alpha(ink, alpha), tw)
-		var ey := ty + float(maxi(1, lines.size())) * 11.0 + 1.0
-		if not ext_value.is_empty():
-			Theme90.text(ci, f, Vector2(lr.position.x + pad, ey),
-				Theme90.fit(f, ext_value, 10, lr.size.x - pad * 2.0), 10,
-				_with_alpha(shade, alpha), lr.size.x - pad * 2.0)
-	else:
-		var line := Theme90.fit(f, name, 10, tw)
-		Theme90.text(ci, f, Vector2(tx, ty), line, 10, _with_alpha(ink, alpha), tw)
-		if not ext_value.is_empty():
-			Theme90.text(ci, f, Vector2(lr.position.x + pad, ty + 12.0),
-				Theme90.fit(f, ext_value, 10, lr.size.x - pad * 2.0), 10,
-				_with_alpha(shade, alpha), lr.size.x - pad * 2.0)
+	var last_bottom := ty
+	for i in lines.size():
+		var lx := text_x
+		var lw := rest_w
+		var ly := text_top + float(i) * line_h
+		if icon_inline:
+			if i == 0:
+				lx = first_x
+				lw = first_w
+				ly = ty
+			else:
+				ly = ty + first_h + float(i - 1) * line_h
+		Theme90.text(ci, f, Vector2(lx, ly), lines[i], name_size,
+			_with_alpha(ink, alpha), lw)
+		last_bottom = ly + line_h
+
+	if not ext_value.is_empty():
+		var ey := (last_bottom if not lines.is_empty() else ty) + 1.0
+		# Расширение — отдельной мелкой строкой, если в клетке осталось место.
+		if ey + float(ext_size) + 2.0 <= lr.end.y:
+			Theme90.text(ci, f, Vector2(text_x, ey),
+				Theme90.fit(f, ext_value, ext_size, rest_w),
+				ext_size, _with_alpha(shade, alpha), rest_w)
 
 	# состояния в верхнем правом углу label-клетки
 	var badge := Vector2(lr.end.x - 8.0, lr.position.y + 8.0)
@@ -330,19 +491,25 @@ static func _paint_square_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
 	var lr := Rect2(pos + Vector2(float(lbl.x) * step.x, float(lbl.y) * step.y), cs)
 	var f := Theme90.ui()
 	var cell_min := minf(cs.x, cs.y)
+	var name_size := label_font_size(cell_min)
 	var has_name := cell_min >= 40.0 and not name.is_empty()
-	var icon_size := clampf(cell_min * 0.34, 9.0, 18.0)
-	var icon_y := lr.get_center().y - icon_size * 0.5
+	var icon_size := clampf(cell_min * 0.30, 14.0, 18.0)
+	var name_y := lr.end.y - float(name_size) - 4.0
+	var icon := Rect2(lr.get_center().x - icon_size * 0.5,
+		lr.get_center().y - icon_size * 0.5, icon_size, icon_size)
 	if has_name:
-		icon_y -= 6.0
-	var icon := Rect2(lr.get_center().x - icon_size * 0.5, icon_y,
-		icon_size, icon_size)
-	draw_type_icon(ci, icon, file_type, base, alpha)
+		# Иконка слева от имени, выровнена по строке подписи.
+		icon = Rect2(lr.position.x + 3.0,
+			name_y + (float(name_size) - icon_size) * 0.5,
+			icon_size, icon_size)
+	if not Theme90.draw_file_icon(ci, icon, file_type, _with_alpha(Color.WHITE, alpha)):
+		draw_type_icon(ci, icon, file_type, base, alpha)
 	if has_name:
 		var col := Theme90.SHADE if locked else Theme90.INK
-		Theme90.text(ci, f, Vector2(lr.position.x + 3.0, lr.end.y - 14.0),
-			Theme90.fit(f, name, 10, lr.size.x - 6.0), 10, _with_alpha(col, alpha),
-			lr.size.x - 6.0)
+		var nx := icon.end.x + 2.0
+		Theme90.text(ci, f, Vector2(nx, name_y),
+			Theme90.fit(f, name, name_size, lr.end.x - nx - 3.0), name_size,
+			_with_alpha(col, alpha), lr.end.x - nx - 3.0)
 
 
 ## 8×8 иконка типа: строки (text), волна (sound), горы (photo), play (video).

@@ -277,8 +277,14 @@ func _check_hour() -> void:
 
 	var recv: WindowFrame = _main.get_node("ReceiveWindow")
 	var send: WindowFrame = _main.get_node("SendWindow")
-	_check(recv.title_hint.contains("ПАКЕТОВ"), "ПРИЁМ переключён на час: «%s»" % recv.title_hint)
-	_check(send.title_hint.contains("ЗАПРОСОВ"), "ОТПРАВКА переключена на час: «%s»" % send.title_hint)
+	var packet_hint: String = str(_main.call("_plural_ru",
+		(_main.get("packets") as Array).size(), "ПАКЕТ", "ПАКЕТА", "ПАКЕТОВ"))
+	var request_hint: String = str(_main.call("_plural_ru",
+		(_main.get("requests") as Array).size(), "ЗАПРОС", "ЗАПРОСА", "ЗАПРОСОВ"))
+	_check(recv.title_hint == packet_hint,
+		"ПРИЁМ переключён на час: «%s» (ожидалось «%s»)" % [recv.title_hint, packet_hint])
+	_check(send.title_hint == request_hint,
+		"ОТПРАВКА переключена на час: «%s» (ожидалось «%s»)" % [send.title_hint, request_hint])
 	var toast: ToastLayer = _main.get_node("ToastLayer")
 	_check(toast.get_child_count() >= 1, "тост «ЧАС N НАЧАЛСЯ» показан")
 
@@ -319,13 +325,13 @@ func _check_fonts() -> void:
 			missing += cyr[i]
 	_check(missing.is_empty(), "Handjet содержит кириллицу (%s)" % ("нет: " + missing if not missing.is_empty() else "ок"))
 	_check(Theme90.logo().has_char(48), "Press Start 2P содержит цифру 0")
-	_check([Theme90.FS_MICRO, Theme90.FS_BODY, Theme90.FS_HEAD, Theme90.FS_LOGO] == [10, 12, 16, 24],
-		"кегли 10/12/16/24")
+	_check([Theme90.FS_MICRO, Theme90.FS_BODY, Theme90.FS_HEAD, Theme90.FS_LOGO] == [11, 13, 17, 26],
+		"кегли 11/13/17/26")
 	var th: Theme = load("res://art/fonts/ui_theme.tres")
 	_check(th != null, "art/fonts/ui_theme.tres загружается")
 	if th != null:
 		_check(th.default_font is FontVariation, "тема: default_font = FontVariation")
-		_check(th.default_font_size == 12, "тема: базовый кегль 12")
+		_check(th.default_font_size == 13, "тема: базовый кегль 13")
 
 
 # --------------------------------------------------------------------------

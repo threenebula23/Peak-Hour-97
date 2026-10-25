@@ -110,6 +110,11 @@ func _test_receive_scroll() -> void:
 	_ok(director != null, "hour_director доступен")
 	if director == null:
 		return
+	# H1-затравка: первый пакет спавнится в t=0, поэтому очищаем буфер,
+	# чтобы проверка «ровно 4 пакета» не зависела от порядка кадров.
+	for pid in director.active_packets.keys().duplicate():
+		director._remove_packet(str(pid))
+	director.files_spawned = director.files_budget
 
 	# 4 пакета (базовый буфер 6) — всё влезает, скроллбар скрыт.
 	for i in 4:

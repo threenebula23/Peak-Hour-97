@@ -31,6 +31,8 @@ var type: String = "text"
 var folder_id: String = ""
 var location: StringName = &"folder"
 var attached_request: String = ""
+## Runtime-резерв: id запроса, для которого файл обязателен (не сохраняется).
+var required_by: String = ""
 var malicious_kind: String = ""
 var lock_until: float = 0.0
 var cooldown_until: float = 0.0

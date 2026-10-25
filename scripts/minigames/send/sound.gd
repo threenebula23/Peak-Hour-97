@@ -1,13 +1,12 @@
 extends MiniGame
 ## «Уровни» (sound). Вертикальные фейдеры, зелёные целевые зоны.
-## T1–T4: 3/4/5/6 каналов, допуск 16/11/8/6%, на T3/T4 — синусоидальный дрейф.
+## T1–T3: 4/5/6 каналов, допуск 11/8/6%, на T2/T3 — синусоидальный дрейф.
 ## Таймера нет; качество фиксируется кнопкой «ЗАПИСАТЬ».
 
 const TIERS := {
-	1: {"count": 3, "tolerance": 0.16, "drift_amp": 0.0, "drift_hz": 0.0},
-	2: {"count": 4, "tolerance": 0.11, "drift_amp": 0.0, "drift_hz": 0.0},
-	3: {"count": 5, "tolerance": 0.08, "drift_amp": 0.02, "drift_hz": 0.15},
-	4: {"count": 6, "tolerance": 0.06, "drift_amp": 0.03, "drift_hz": 0.25},
+	1: {"count": 4, "tolerance": 0.11, "drift_amp": 0.0, "drift_hz": 0.0},
+	2: {"count": 5, "tolerance": 0.08, "drift_amp": 0.02, "drift_hz": 0.15},
+	3: {"count": 6, "tolerance": 0.06, "drift_amp": 0.03, "drift_hz": 0.25},
 }
 const LABELS := [
 	["НЧ", "60"], ["НСЧ", "250"], ["СЧ", "1К"], ["ВСЧ", "4К"], ["ВЧ", "12К"],
@@ -46,10 +45,24 @@ func _setup() -> void:
 	_active = 0
 
 
+func _goal_text() -> String:
+	return "СОВМЕСТИТЕ БЕГУНКИ С ЗЕЛЁНЫМИ ПОЛОСАМИ · ENTER — ЗАПИСАТЬ"
+
+
+func _result_stats() -> String:
+	var in_zone := 0
+	for i in range(_values.size()):
+		var tol := float(state.get("tolerance", 0.11))
+		if absf(_values[i] - _current_target(i)) <= tol:
+			in_zone += 1
+	return "В ЗОНЕ %d/%d · ДОПУСК ±%d%%" % [in_zone, _values.size(),
+		roundi(float(state.get("tolerance", 0.11)) * 100.0)]
+
+
 # --- параметры/чистая логика ----------------------------------------------
 
 static func tier_params(p_tier: int) -> Dictionary:
-	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 4), TIERS[1]) as Dictionary).duplicate(true)
+	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 3), TIERS[1]) as Dictionary).duplicate(true)
 	var row := MiniGame.data_minigame_tier("sound", p_tier)
 	if row.is_empty():
 		return base
@@ -119,7 +132,7 @@ static func generate(p_tier: int, seed: int) -> Dictionary:
 		starts.append(start)
 		phases.append(rng.randf_range(0.0, TAU))
 	return {
-		"tier": clampi(p_tier, 1, 4),
+		"tier": clampi(p_tier, 1, 3),
 		"count": count,
 		"tolerance": tol,
 		"drift_amp": amp,
@@ -272,7 +285,7 @@ func _draw_game() -> void:
 	_draw_label("МИКШЕР · КАНАЛ 97", Vector2(24.0, 46.0), 10, Theme90.ACCENT, 240.0)
 	_draw_label("В ЗОНЕ %d / %d · ДОПУСК ±%d%%" % [in_zone, _values.size(),
 		roundi(tol * 100.0)], Vector2(280.0, 46.0), 10,
-		Theme90.SUCCESS if in_zone == _values.size() else Theme90.SHADE, 320.0,
+		Theme90.SUCCESS if in_zone == _values.size() else Theme90.DARK, 320.0,
 		HORIZONTAL_ALIGNMENT_RIGHT)
 
 	var panel := Rect2(18.0, 58.0, 604.0, 250.0)
@@ -283,7 +296,7 @@ func _draw_game() -> void:
 	for v in [1.0, 0.5, 0.0]:
 		var y := _value_to_y(first, v)
 		Theme90.text(self, Theme90.ui(), Vector2(first.position.x - 44.0, y - 6.0),
-			"%d" % roundi(v * 100.0), 10, Theme90.SHADE, 34.0,
+			"%d" % roundi(v * 100.0), 10, Theme90.DARK, 34.0,
 			HORIZONTAL_ALIGNMENT_RIGHT)
 
 	for i in range(_values.size()):
@@ -312,8 +325,6 @@ func _draw_game() -> void:
 			HORIZONTAL_ALIGNMENT_CENTER)
 		Theme90.text(self, Theme90.ui(), Vector2(rect.position.x - 10.0,
 			rect.end.y + 23.0), "%s · %d%%" % [str(label[1]), roundi(_values[i] * 100.0)],
-			10, Theme90.SHADE, rect.size.x + 20.0, HORIZONTAL_ALIGNMENT_CENTER)
+			10, Theme90.DARK, rect.size.x + 20.0, HORIZONTAL_ALIGNMENT_CENTER)
 
-	_draw_label("СОВМЕСТИТЕ БЕГУНКИ С ЗЕЛЁНЫМИ ПОЛОСАМИ · СТРЕЛКИ — ТОЧНАЯ НАСТРОЙКА",
-		Vector2(24.0, 344.0), 10, Theme90.SHADE, 430.0)
 	_draw_action_button(ACTION_RECT, "ЗАПИСАТЬ", true, true)

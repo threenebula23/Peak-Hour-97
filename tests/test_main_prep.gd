@@ -60,10 +60,12 @@ func _init() -> void:
 	_eq(int(grid_stats.get("total", 0)), 20, "сетка 5×4 = 20 клеток")
 	_eq(int(main.grid.grid_metrics().get("cols", 0)), 5, "сетка: 5 столбцов")
 	_eq(int(main.grid.grid_metrics().get("rows", 0)), 4, "сетка: 4 строки")
-	_eq(str(main.grid.footer_text()), "занято 0 из 20 · свободно 20",
-		"подвал сетки считает клетки")
-	_ok(main.files_window.title_hint.contains("занято 0 из 20"),
-		"подвал ФАЙЛЫ считает клетки: %s" % main.files_window.title_hint)
+	var footer_files := int(grid_stats.get("files", 0))
+	_eq(str(main.grid.footer_text()),
+		"%d %s · 20 клеток" % [footer_files, _plural_files(footer_files)],
+		"подвал сетки: файлы и клетки")
+	_ok(main.files_window.title_hint.is_empty(),
+		"подвал ФАЙЛЫ без подписи занятости: %s" % main.files_window.title_hint)
 
 	# --- Статус-бар ----------------------------------------------------------
 	_eq(str(main.status_bar.get_metric("money").get("value", "")), "$ 50",
@@ -105,7 +107,8 @@ func _init() -> void:
 		if not row.is_section and str(row.folder_id) == folder_id:
 			folder_row_count = int(row.count)
 			folder_row_capacity = int(row.capacity)
-	_eq(folder_row_count, 0, "дерево: папка показывает 0 занятых клеток")
+	_eq(folder_row_count, int(grid_stats.get("occupied", 0)),
+		"дерево: папка показывает занятые клетки (H1-затравка)")
 	_eq(folder_row_capacity, 20, "дерево: вместимость папки 20 клеток")
 
 	# --- Плюрализация заголовка ДИСКИ ---------------------------------------
@@ -172,8 +175,8 @@ func _test_registry_autorefresh(main, game) -> void:
 			main.grid.file_count()])
 	_eq(main.grid.occupied_cells(), before_cells + 1,
 		"занятые клетки выросли на 1 (текст)")
-	_ok(main.files_window.title_hint.contains("занято %d из 20"
-		% main.grid.occupied_cells()), "подвал ФАЙЛЫ обновился: %s"
+	_ok(main.files_window.title_hint.is_empty(),
+		"подвал ФАЙЛЫ не дублирует занятость: %s"
 		% main.files_window.title_hint)
 	var count_ok := false
 	for e in main.tree.get("_rows"):
@@ -240,12 +243,14 @@ func _test_search(main) -> void:
 
 
 ## Имена новых папок генерируются и остаются уникальными в секции.
-## D2 (H5): папки №3–6 стоят `folder_new_cost` (100 $), №7 упирается в
+## v3: папки №3–6 стоят `folder_new_cost` (180 $), №7 упирается в
 ## `folders_max` (6); без денег новая папка не создаётся.
 func _test_folder_name_generation(main, game) -> void:
 	_eq(main._unique_folder_name("C", "Разное"), "Разное 2",
 		"занятое имя получает суффикс 2")
 
+	var cost := int(_const_value("folder_new_cost", 180))
+	var folders_max := int(_const_value("folders_max", 6))
 	var before: int = game.registry.folder_count()
 	_eq(before, 2, "на старте ровно 2 папки")
 	# Без денег третья папка не создаётся.
@@ -254,31 +259,36 @@ func _test_folder_name_generation(main, game) -> void:
 	_eq(game.registry.folder_count(), before, "без денег папка не создаётся")
 	_eq(int(game.money), 0, "неудачная покупка не уводит деньги в минус")
 
-	# 3-я папка: ровно 100 $ и списание.
-	game.add_money(100)
+	# 3-я папка: ровно folder_new_cost и списание.
+	game.add_money(cost)
 	main._new_folder_in("C")
-	_eq(game.registry.folder_count(), before + 1, "3-я папка создана за 100 $")
-	_eq(int(game.money), 0, "3-я папка списала 100 $")
+	_eq(game.registry.folder_count(), before + 1,
+		"3-я папка создана за %d $" % cost)
+	_eq(int(game.money), 0, "3-я папка списала %d $" % cost)
 	var third_id := str(main.grid.folder_id)
 	_ok(game.registry.rename_folder(third_id, "Разное 2"),
 		"третья папка переименована для проверки имён")
 	_eq(main._unique_folder_name("C", "Разное"), "Разное 3",
 		"следующий дубль получает суффикс 3")
 
-	# 4-я, 5-я, 6-я папки — тоже по 100 $.
-	for expected in [4, 5, 6]:
-		game.add_money(100)
+	# 4-я … folders_max-я папки — тоже по folder_new_cost.
+	var expected_count := before + 2
+	while expected_count <= folders_max:
+		game.add_money(cost)
 		main._new_folder_in("C")
-		_eq(game.registry.folder_count(), expected,
-			"%d-я папка создана за 100 $" % expected)
-		_eq(int(game.money), 0, "%d-я папка списала 100 $" % expected)
-	_ok(game.registry.folder_count() <= 6, "всего не больше 6 папок")
+		_eq(game.registry.folder_count(), expected_count,
+			"%d-я папка создана за %d $" % [expected_count, cost])
+		_eq(int(game.money), 0, "%d-я папка списала %d $" % [expected_count, cost])
+		expected_count += 1
+	_ok(game.registry.folder_count() <= folders_max,
+		"всего не больше %d папок" % folders_max)
 
-	# 7-я папка запрещена лимитом, деньги не списываются.
-	game.add_money(100)
+	# Следующая папка запрещена лимитом, деньги не списываются.
+	game.add_money(cost)
 	main._new_folder_in("C")
-	_eq(game.registry.folder_count(), 6, "7-я папка заблокирована лимитом")
-	_eq(int(game.money), 100, "заблокированная 7-я папка не списала деньги")
+	_eq(game.registry.folder_count(), folders_max,
+		"%d-я папка заблокирована лимитом" % (folders_max + 1))
+	_eq(int(game.money), cost, "заблокированная папка не списала деньги")
 	main._refresh_prep()
 
 
@@ -443,6 +453,24 @@ func _test_shop_after_hour(main, game) -> void:
 	main.shop_modal.close()
 	_ok(not main.shop_modal.visible, "магазин закрывается")
 	main._shop_btn.visible = true
+
+
+## Плюрализация «файл/файла/файлов» — как в FileGrid.
+func _plural_files(n: int) -> String:
+	var n10 := n % 10
+	var n100 := n % 100
+	if n10 == 1 and n100 != 11:
+		return "файл"
+	if n10 >= 2 and n10 <= 4 and (n100 < 12 or n100 > 14):
+		return "файла"
+	return "файлов"
+
+
+func _const_value(key: String, fallback = null):
+	var data := root.get_node_or_null("Data")
+	if data != null and data.has_method("const_value"):
+		return data.const_value(key, fallback)
+	return fallback
 
 
 func _finish() -> void:

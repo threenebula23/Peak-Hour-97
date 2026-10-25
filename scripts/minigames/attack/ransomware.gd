@@ -14,7 +14,7 @@ const TITLE_RU := "КАРАНТИН"
 const VERIFY_RECT := Rect2(466.0, 320.0, 156.0, 28.0)
 
 const GRID_TOP := 58.0
-const GRID_BOTTOM := 306.0
+const GRID_BOTTOM := 294.0
 const GRID_GAP := 8.0
 
 const TIERS := {
@@ -516,7 +516,8 @@ func _draw_footer_hint() -> void:
 		text = "ИКОНКА ДОКУМЕНТА НИЧЕГО НЕ ЗНАЧИТ · НАВЕДИТЕ НА ФАЙЛ"
 	elif masking == "similar_names":
 		text = "«EXE» В ИМЕНИ — ЕЩЁ НЕ ПРИГОВОР · ПРОВЕРЬТЕ РАСШИРЕНИЕ"
-	_draw_label(text, Vector2(18.0, 350.0), 10, Theme90.SHADE, 604.0)
+	# Подсказка — в полосе между сеткой (y=294) и футером (y=320).
+	_draw_label(text, Vector2(18.0, 298.0), 10, Theme90.SHADE, 604.0)
 
 
 # --- служебное -------------------------------------------------------------

@@ -74,16 +74,14 @@ func _init() -> void:
 	if req == null:
 		_finish()
 		return
-	var fid := ""
-	for file in _game.registry.get_available_files():
-		if str(file.location) == "folder":
-			fid = str(file.id)
-			break
-	_ok(not fid.is_empty(), "есть свободный файл для прикрепления")
-	if fid.is_empty():
+	# v3: прикреплять можно только конкретный required-файл запроса.
+	var missing: Array = director.request_missing(rid)
+	_ok(not missing.is_empty(), "у запроса есть required-файл для прикрепления")
+	if missing.is_empty():
 		_finish()
 		return
-	_ok(director.attach_file(rid, fid), "файл прикреплён к запросу")
+	var fid := str(missing[0])
+	_ok(director.attach_file(rid, fid), "required-файл прикреплён к запросу")
 	_main._refresh_hour()
 	await process_frame
 	await process_frame  # даём отработать deferred registry-refresh сетки
@@ -171,7 +169,8 @@ func _slot_attached(rid: String, fid: String) -> bool:
 		"required_count": hd.request_required_count(rid),
 		"attached": req.attached,
 	})
-	var index: int = (req.attached as Array).find(fid)
+	var required: Array = hd.request_required_ids(rid)
+	var index: int = required.find(fid)
 	if index < 0 or index >= slots.size() or slots[index] == null:
 		return false
 	return bool((slots[index] as Dictionary).get("attached", false))
@@ -188,7 +187,8 @@ func _request_card_attached(rid: String, fid: String) -> bool:
 	var req = _controller.hour_director.active_requests.get(rid)
 	if req == null:
 		return false
-	var index: int = (req.attached as Array).find(fid)
+	var required: Array = _controller.hour_director.request_required_ids(rid)
+	var index: int = required.find(fid)
 	for card in _main.requests:
 		if card == null or not is_instance_valid(card) or str(card.id) != rid:
 			continue

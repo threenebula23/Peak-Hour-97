@@ -3,8 +3,8 @@ extends Node
 ## Единственный тикер часа (v2).
 ##
 ## Час — это бюджет файлов, бюджет запросов, окно спавна 75% часа и атаки.
-## Никаких полосок соединения, мусорных/шифровальщицких пакетов и
-## фишинговых запросов: всё это заменено мини-играми атак (§5.7).
+## «Мусорные»/шифровальщицкие пакеты и фишинговые запросы заменены
+## мини-играми атак (§5.7); TCP-соединение — отдельная мини-игра-полоска.
 ##
 ## Важные правила:
 ## - приём занимает слот `in` + резервирует клетки фигуры в папке;
@@ -30,15 +30,15 @@ signal attack_changed(id: String)
 signal attack_removed(id: String)
 signal toast(text: String)
 signal hour_finished(report: Dictionary)
-## Legacy-сигнал: соединение удалено из игры. Оставлен, чтобы не ломать main.gd.
-## (поле-словарь соединений больше не нужно и удалено)
-signal show_connection(game)
 signal show_minigame(game)
 signal minigame_closed(req_id: String)
 signal minigame_cancelled(req_id: String)
 signal show_attack_minigame(game, kind: String)
 signal attack_resolved(kind: String, success: bool, tier: int)
 signal spawn_frozen(reason: String)
+## TCP: показать мини-игру установления соединения.
+## UI создаёт ConnectionGame и по завершении зовёт connection_finished().
+signal show_connection(request_id: String, hour: int, successes: int)
 
 const PACKET_SCRIPT := preload("res://scripts/entities/packet.gd")
 const REQUEST_SCRIPT := preload("res://scripts/entities/request.gd")
@@ -59,8 +59,11 @@ const MAX_SPAWN_STEPS := 32
 const REJECT_FINE_MONEY := -5
 const REJECT_FINE_SLA := -5.0
 const DEFAULT_PACKET_SLA_LOSS := 2.0
+## Минимальный зазор между попытками спавна запроса (анти-голодание H1).
+const REQUEST_ATTEMPT_MIN_GAP := 3.0
+const MAX_REQUIRED_FILES := 4
 const TYPE_ORDER: Array[String] = ["text", "sound", "photo", "video"]
-const DEFAULT_REQUEST_MIX := {"1": 0.7, "2": 0.3, "3": 0.0}
+const DEFAULT_REQUEST_MIX := {"1": 0.76, "2": 0.24, "3": 0.0, "4": 0.0}
 const DEFAULT_TYPE_WEIGHTS := {"text": 1.0, "sound": 0.0, "photo": 0.0, "video": 0.0}
 
 ## Активные сущности часа.
@@ -95,12 +98,16 @@ var _recv_interval_current: float = DEFAULT_RECV_INTERVAL
 var _send_interval_current: float = DEFAULT_SEND_INTERVAL
 var _next_spawn_at: float = -1.0
 var _spawn_frozen_notified: bool = false
+## Момент последней попытки создать запрос (hour_elapsed). Нужен анти-голоданию.
+var _last_request_attempt_t: float = -REQUEST_ATTEMPT_MIN_GAP
 
 ## Состояние/настройки.
 var game = null
 var registry = null
 var rng = null
 var successes_this_hour: int = 0
+## Успешных TCP-соединений за забег (вход в формулу зоны ConnectionGame).
+var connect_successes: int = 0
 var shield_until: float = 0.0
 var recv_disabled_until: float = 0.0
 var send_disabled_until: float = 0.0
@@ -116,6 +123,7 @@ var _next_packet_num: int = 1
 var _next_request_num: int = 1
 var _order_counter: int = 0
 var _registry_accum: float = 0.0
+var _lost_check_accum: float = 0.0
 var _finish_guard: bool = false
 var _attack_paused: bool = false
 
@@ -145,6 +153,9 @@ func start_hour(p_hour: int) -> void:
 	_bind()
 	_clear_entities()
 	hour = clampi(int(p_hour), 1, 24)
+	# Строго до сброса счётчиков: не сеем заново при reload/continue.
+	var seed_h1: bool = hour == 1 and requests_spawned == 0 \
+		and registry != null and registry.files.is_empty()
 	var def := _hour_def()
 	var base_files := maxi(0, int(def.get("files", 4)))
 	files_budget = mini(MAX_FILES_PER_HOUR, base_files + maxi(0, carry_files))
@@ -166,8 +177,13 @@ func start_hour(p_hour: int) -> void:
 	hour_elapsed = 0.0
 	spawn_recv_accum = 0.0
 	spawn_send_accum = 0.0
+	_lost_check_accum = 0.0
+	# Анти-голодание: первый запрос может появиться сразу, как только в папке
+	# есть подходящий файл (а не через send_interval).
+	_last_request_attempt_t = -REQUEST_ATTEMPT_MIN_GAP
 	_recv_interval_current = _next_receive_interval()
-	_next_spawn_at = _recv_interval_current
+	# H1: первый пакет приходит сразу, чтобы час не начинался с простоя.
+	_next_spawn_at = 0.0 if hour == 1 else _recv_interval_current
 	_spawn_frozen_notified = false
 	_send_interval_current = _send_interval()
 	_modal_count = 0
@@ -192,12 +208,79 @@ func start_hour(p_hour: int) -> void:
 
 	running = true
 	_finish_guard = false
+	if seed_h1:
+		_bootstrap_h1()
 	slot_changed.emit()
+
+
+## H1-затравка: один text-файл в первой папке + сразу запрос на него.
+func _bootstrap_h1() -> void:
+	if registry == null or not registry.files.is_empty():
+		# Защита от двойного сида: если в реестре уже есть файлы (например,
+		# seed, созданный reset_for_prep()), новый не создаём.
+		return
+	var folder_id := _first_folder_id()
+	if folder_id.is_empty():
+		return
+	var file = registry.create_file(_make_file_name(), "text", folder_id)
+	if file == null:
+		return
+	var req_id := _create_request(1, "tcp", [str(file.id)])
+	if req_id.is_empty():
+		return
+	requests_spawned += 1
+	_last_request_attempt_t = hour_elapsed
+
+
+func _first_folder_id() -> String:
+	if registry == null:
+		return ""
+	for section in registry.sections.values():
+		for folder_id in section.folder_ids:
+			if registry.folders.has(str(folder_id)):
+				return str(folder_id)
+	for folder_id in registry.folders.keys():
+		return str(folder_id)
+	return ""
 
 
 ## Сброс переноса неразобранных файлов. Вызывается на новом забеге/загрузке.
 func reset_carry() -> void:
 	carry_files = 0
+	connect_successes = 0
+
+
+## Чистое состояние директора для экрана подготовки перед H1.
+##
+## Выполняет обычный start_hour(1) (создаёт seed-файл H1), но затем убирает
+## активные запросы/пакеты и все резервации required_by. В подготовке игрок
+## не видит запросов, поэтому зарезервированный seed нельзя оставлять:
+## «уничтожить содержимое» не смогло бы его удалить, а SLA списался бы.
+## Сам запрос появится при старте часа — через starvation guard, либо через
+## bootstrap, если игрок успел уничтожить seed и реестр опустел.
+func reset_for_prep() -> void:
+	_bind()
+	# BUG A: счётчики спавна сбрасываем ДО start_hour(1). start_hour сеет seed
+	# H1 только при requests_spawned == 0, а после сыгранного часа он > 0 —
+	# иначе второй и последующие «Новые забеги» оставались без seed-файла в
+	# подготовке (асимметрия с первым забегом).
+	_reset_spawn_counters()
+	start_hour(1)
+	_clear_entities()
+	# Чистое состояние подготовки: bootstrap-запрос снят, счётчики пусты.
+	_reset_spawn_counters()
+	if registry != null:
+		for file in registry.files.values():
+			if file != null:
+				file.required_by = ""
+	running = false
+
+
+## Счётчики спавна, которые должны быть нулевыми перед/после подготовки.
+func _reset_spawn_counters() -> void:
+	requests_spawned = 0
+	spawned_this_hour = 0
+	_last_request_attempt_t = -REQUEST_ATTEMPT_MIN_GAP
 
 
 func tick(delta: float) -> void:
@@ -249,6 +332,12 @@ func set_time_scale(value: float) -> void:
 
 
 func is_minigame_active() -> bool:
+	# Пока TCP-запрос соединяется, открыта модалка мини-игры соединения.
+	# Флаг мини-игры ещё не выставлен (_minigame == null), поэтому атаки
+	# считали, что экран свободен, и могли наложить второй модал.
+	for req in active_requests.values():
+		if req != null and bool(req.get("connecting")):
+			return true
 	return _minigame != null
 
 
@@ -303,6 +392,52 @@ func max_slots() -> int:
 func request_required_count(req_id: String) -> int:
 	var req = active_requests.get(req_id)
 	return _required_count(req)
+
+
+## Конкретные файлы, которые требует запрос (в порядке required).
+func request_required_ids(req_id: String) -> Array[String]:
+	var out: Array[String] = []
+	var req = active_requests.get(req_id)
+	if req == null:
+		return out
+	for file_id in req.required:
+		out.append(str(file_id))
+	return out
+
+
+func request_required_names(req_id: String) -> Array[String]:
+	var out: Array[String] = []
+	for file_id in request_required_ids(req_id):
+		out.append(request_file_name(file_id))
+	return out
+
+
+## Отображаемое имя файла или «ПОТЕРЯН», если файла уже нет в реестре.
+func request_file_name(file_id: String) -> String:
+	if registry != null and registry.files.has(str(file_id)):
+		var file = registry.files[str(file_id)]
+		if file != null:
+			return str(file.display_name())
+	return "ПОТЕРЯН"
+
+
+## required-файлы, которые ещё не прикреплены (id).
+func request_missing(req_id: String) -> Array[String]:
+	var out: Array[String] = []
+	var req = active_requests.get(req_id)
+	if req == null:
+		return out
+	for file_id in req.required:
+		if not req.attached.has(str(file_id)):
+			out.append(str(file_id))
+	return out
+
+
+func request_missing_names(req_id: String) -> Array[String]:
+	var out: Array[String] = []
+	for file_id in request_missing(req_id):
+		out.append(request_file_name(file_id))
+	return out
 
 
 ## v2-готовность: собраны все слоты, запрос не занят мини-игрой/очередью.
@@ -407,6 +542,55 @@ func spawn_request_now(count_override: int = 0) -> String:
 	return _spawn_random_request(true, int(count_override))
 
 
+## Пул файлов, из которых можно собрать запрос: лежат в разблокированной
+## папке, не прикреплены и ещё не затребованы другим активным запросом.
+func _request_file_pool() -> Array:
+	var pool: Array = []
+	if registry == null:
+		return pool
+	var claimed: Dictionary = {}
+	for req in active_requests.values():
+		for file_id in req.required:
+			claimed[str(file_id)] = true
+	for file in registry.files.values():
+		if str(file.location) != "folder":
+			continue
+		if not str(file.attached_request).is_empty():
+			continue
+		if claimed.has(str(file.id)):
+			continue
+		if not str(file.required_by).is_empty():
+			continue
+		if not file.is_available():
+			continue
+		if is_folder_locked(str(file.folder_id)):
+			continue
+		pool.append(file)
+	return pool
+
+
+## Выбрать N конкретных файлов: один равномерный shuffle пула, первые N.
+func _pick_request_files(pool: Array, count: int) -> Array[String]:
+	var out: Array[String] = []
+	var want := clampi(int(count), 1, MAX_REQUIRED_FILES)
+	if pool.is_empty():
+		return out
+	want = mini(want, pool.size())
+	var shuffled := pool.duplicate()
+	_shuffle_array(shuffled)
+	for i in range(want):
+		out.append(str(shuffled[i].id))
+	return out
+
+
+func _shuffle_array(items: Array) -> void:
+	for i in range(items.size() - 1, 0, -1):
+		var j := _randi_range(0, i)
+		var tmp = items[i]
+		items[i] = items[j]
+		items[j] = tmp
+
+
 func _spawn_random_request(force: bool = false, count_override: int = 0) -> String:
 	if registry == null:
 		return ""
@@ -415,38 +599,56 @@ func _spawn_random_request(force: bool = false, count_override: int = 0) -> Stri
 			return ""
 		if _normal_request_count() >= active_request_limit:
 			return ""
-	var available: Array = []
-	for file in registry.get_available_files():
-		if not is_folder_locked(str(file.folder_id)):
-			available.append(file)
-	if available.is_empty():
+	var pool := _request_file_pool()
+	if pool.is_empty():
 		return ""
-	var count := 0
-	if count_override > 0:
-		if available.size() < count_override:
-			return ""
-		count = count_override
-	else:
-		count = _roll_required_count()
-		if available.size() < count:
-			return ""
+	var count := count_override if count_override > 0 else _roll_required_count()
+	count = clampi(count, 1, MAX_REQUIRED_FILES)
+	count = mini(count, pool.size())
 	if count <= 0:
 		return ""
-	var req_id := _create_request(count, "tcp")
+	var file_ids := _pick_request_files(pool, count)
+	if file_ids.is_empty():
+		return ""
+	var req_id := _create_request(count, "tcp", file_ids)
 	if req_id.is_empty():
 		return ""
 	requests_spawned += 1
 	return req_id
 
 
-## Legacy-хелпер: создать запрос под N слотов (файлы не прикрепляются).
+## Legacy-хелпер: создать запрос на переданные файлы (уже подключённый TCP).
 func _make_request(files: Array, protocol: String, _is_attack: bool,
 		_attack_kind: String, _attack_id: String) -> String:
-	var count := maxi(1, files.size())
-	return _create_request(count, protocol)
+	var file_ids: Array[String] = []
+	for file in files:
+		if file != null:
+			file_ids.append(str(file.id))
+	var count := maxi(1, file_ids.size())
+	return _create_request(count, protocol, file_ids, true)
 
 
-func _create_request(count: int, protocol: String) -> String:
+## Создать запрос с КОНКРЕТНЫМИ required-файлами.
+## file_ids пустой → попытаться выбрать из пула (count будет зажат).
+## connected=false — для TCP потребуется мини-игра соединения.
+func _create_request(count: int, protocol: String, file_ids: Array = [],
+		p_connected: bool = false) -> String:
+	if registry == null:
+		return ""
+	var ids: Array[String] = []
+	for file_id in file_ids:
+		if ids.size() >= MAX_REQUIRED_FILES:
+			break
+		if registry.files.has(str(file_id)) and not ids.has(str(file_id)):
+			ids.append(str(file_id))
+	if ids.is_empty():
+		var pool := _request_file_pool()
+		if pool.is_empty():
+			return ""
+		var want := clampi(int(count), 1, MAX_REQUIRED_FILES)
+		ids = _pick_request_files(pool, mini(want, pool.size()))
+	if ids.is_empty():
+		return ""
 	var req = REQUEST_SCRIPT.new()
 	req.id = "req_%d" % _next_request_num
 	_next_request_num += 1
@@ -460,14 +662,17 @@ func _create_request(count: int, protocol: String) -> String:
 	req.attack_kind = ""
 	req.attack_id = ""
 	req.required.clear()
+	for file_id in ids:
+		req.required.append(file_id)
+		var file = registry.files.get(str(file_id))
+		if file != null and (file.required_by.is_empty() or file.required_by == req.id):
+			file.required_by = req.id
 	req.attached.clear()
-	# required — это слоты контейнера (required_count), а не заранее выбранные
-	# файлы: игрок сам решает, какие файлы положить (attach_file).
-	for i in range(maxi(1, int(count))):
-		req.required.append("__slot_%s_%d" % [req.id, i])
-	# Соединения в v2 нет: TCP/UDP — выбор оплаты/скорости, а не мини-игра.
-	req.connected = true
-	req.set_meta("required_count", maxi(1, int(count)))
+	req.required_types = _types_for_ids(ids)
+	req.connected = bool(p_connected)
+	req.connecting = false
+	req.connect_attempts = 0
+	req.set_meta("required_count", ids.size())
 	req.set_meta("queued", false)
 	active_requests[req.id] = req
 	request_added.emit(req.id)
@@ -475,18 +680,36 @@ func _create_request(count: int, protocol: String) -> String:
 	return req.id
 
 
+func _types_for_ids(file_ids: Array[String]) -> Array[String]:
+	var out: Array[String] = []
+	if registry == null:
+		return out
+	for file_id in file_ids:
+		var file = registry.files.get(str(file_id))
+		if file != null:
+			out.append(str(file.type))
+	return out
+
+
 func attach_file(req_id: String, file_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null or registry == null:
 		return false
-	if req.sending or req.minigame_active or _send_queue.has(req_id):
+	if req.sending or req.minigame_active or req.connecting or _send_queue.has(req_id):
+		return false
+	if req.attached.has(file_id):
+		return true
+	if not req.required.has(file_id):
+		var missing := request_missing(req_id)
+		var shown := file_id
+		if not missing.is_empty():
+			shown = str(missing[0])
+		_emit_toast("Нужен файл: %s" % request_file_name(shown))
 		return false
 	var need := _required_count(req)
 	if req.attached.size() >= need:
 		_emit_toast("Контейнер заполнен")
 		return false
-	if req.attached.has(file_id):
-		return true
 	var file = registry.files.get(file_id)
 	if file == null:
 		return false
@@ -502,8 +725,7 @@ func attach_file(req_id: String, file_id: String) -> bool:
 	if not registry.attach_file(file_id, req_id):
 		return false
 	req.attached.append(file_id)
-	_fill_required_slot(req, file_id)
-	req.required_types = _attached_types(req)
+	# M4: required_types описывает типы required-слотов, а не порядок вложений.
 	request_changed.emit(req_id)
 	return true
 
@@ -512,15 +734,14 @@ func detach_file(req_id: String, file_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null or registry == null:
 		return false
-	if req.sending or req.minigame_active or _send_queue.has(req_id):
+	if req.sending or req.minigame_active or req.connecting or _send_queue.has(req_id):
 		return false
 	if not req.attached.has(file_id):
 		return false
 	if registry.files.has(file_id):
 		registry.detach_file(file_id)
 	req.attached.erase(file_id)
-	_clear_required_slot(req, file_id)
-	req.required_types = _attached_types(req)
+	# M4: порядок вложений не должен переписывать типы required-слотов.
 	request_changed.emit(req_id)
 	return true
 
@@ -529,7 +750,7 @@ func reject_request(req_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
-	if req.sending or req.minigame_active:
+	if req.sending or req.minigame_active or req.connecting:
 		_emit_toast("Запрос уже в работе")
 		return false
 	_add_money(REJECT_FINE_MONEY)
@@ -541,21 +762,108 @@ func reject_request(req_id: String) -> bool:
 	return true
 
 
-## v2: соединения нет. Метод-заглушка, чтобы не ломать старый UI.
+## Legacy: соединения пакетов нет.
 func connect_packet(_packet_id: String) -> bool:
 	return false
 
 
-## v2: соединения нет. Метод-заглушка, чтобы не ломать старый UI.
-func connect_request(_req_id: String) -> bool:
-	return false
+## Начать установку TCP-соединения (мини-игра «полоска»).
+func connect_request(req_id: String) -> bool:
+	var req = active_requests.get(req_id)
+	if req == null:
+		return false
+	if not running or _finish_guard:
+		return false
+	if req.protocol != "tcp" or req.connected or req.connecting:
+		return false
+	if req.sending or req.minigame_active or _send_queue.has(req_id):
+		return false
+	# C1/C2: пока любая модалка владеет экраном, второй мини-игры не создаём.
+	if modal_open:
+		_emit_toast("Сначала закройте текущее окно")
+		return false
+	if _minigame != null:
+		_emit_toast("Сначала закройте мини-игру")
+		return false
+	if hour_elapsed < send_disabled_until:
+		_emit_toast("Отправка временно недоступна")
+		return false
+	if hour_elapsed < req.connect_cooldown_until:
+		_emit_toast("СОЕДИНЕНИЕ: ПОВТОР ЧЕРЕЗ %d с" % int(ceil(req.connect_cooldown_until - hour_elapsed)))
+		return false
+	var problem := _send_ready_error(req)
+	if not problem.is_empty():
+		_emit_toast(problem)
+		return false
+	return _begin_connection(req)
+
+
+## Открыть мини-игру соединения. Возвращает false, если она уже идёт.
+func _begin_connection(req) -> bool:
+	if req == null or req.connected or req.connecting:
+		return false
+	req.connecting = true
+	req.connect_attempts += 1
+	request_changed.emit(str(req.id))
+	show_connection.emit(str(req.id), hour, connect_successes)
+	return true
+
+
+## UI закрыл мини-игру соединения. missed=true — промах (штраф SLA и 8 с),
+## missed=false (Esc/отмена) — только 4 с паузы, без штрафа.
+## Совместимость: старый вызов с двумя аргументами трактуется как отмена.
+func connection_finished(req_id: String, success: bool, missed: bool = false) -> bool:
+	var req = active_requests.get(req_id)
+	if req == null:
+		return false
+	if not req.connecting:
+		return false
+	req.connecting = false
+	if not bool(success):
+		if bool(missed):
+			req.connect_cooldown_until = hour_elapsed + 8.0
+			_add_sla(-4.0)
+		else:
+			req.connect_cooldown_until = hour_elapsed + 4.0
+		request_changed.emit(req_id)
+		_emit_toast("СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО")
+		return true
+	req.connected = true
+	req.connect_cooldown_until = 0.0
+	connect_successes += 1
+	request_changed.emit(req_id)
+	if not running or _finish_guard:
+		return true
+	var problem := _send_ready_error(req)
+	if not problem.is_empty():
+		_emit_toast(problem)
+		return true
+	if _minigame != null:
+		return true
+	return _launch_send_minigame(req_id)
+
+
+func _send_ready_error(req) -> String:
+	if req == null:
+		return "Контейнер не собран"
+	var need := _required_count(req)
+	if need <= 0 or req.attached.size() < need:
+		return "Контейнер не собран"
+	if not _attached_files_valid(req):
+		return "Файл контейнера недоступен"
+	return ""
+
+
+func is_request_connected(req_id: String) -> bool:
+	var req = active_requests.get(req_id)
+	return req != null and bool(req.connected)
 
 
 func set_request_protocol(req_id: String, protocol: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
-	if req.sending or req.minigame_active or _send_queue.has(req_id):
+	if req.sending or req.minigame_active or req.connecting or req.connected or _send_queue.has(req_id):
 		return false
 	var clean := _clean_protocol(protocol)
 	if clean.is_empty():
@@ -572,7 +880,11 @@ func start_send(req_id: String) -> bool:
 		return false
 	if not running or _finish_guard:
 		return false
-	if req.sending or req.minigame_active or _send_queue.has(req_id):
+	if req.sending or req.minigame_active or req.connecting or _send_queue.has(req_id):
+		return false
+	# C1/C2: модалка (атака/отправка/соединение) уже занимает экран.
+	if modal_open:
+		_emit_toast("Сначала закройте текущее окно")
 		return false
 	if _minigame != null:
 		_emit_toast("Сначала закройте мини-игру")
@@ -580,23 +892,34 @@ func start_send(req_id: String) -> bool:
 	if hour_elapsed < send_disabled_until:
 		_emit_toast("Отправка временно недоступна")
 		return false
-	var need := _required_count(req)
-	if need <= 0 or req.attached.size() < need:
-		_emit_toast("Контейнер не собран")
+	if req.protocol == "tcp" and hour_elapsed < req.connect_cooldown_until:
+		_emit_toast("СОЕДИНЕНИЕ: ПОВТОР ЧЕРЕЗ %d с" % int(ceil(req.connect_cooldown_until - hour_elapsed)))
 		return false
-	if _attached_files_valid(req) == false:
-		_emit_toast("Файл контейнера недоступен")
+	var problem := _send_ready_error(req)
+	if not problem.is_empty():
+		_emit_toast(problem)
 		return false
+	# TCP сначала требует мини-игру соединения; UDP шлёт сразу.
+	if req.protocol == "tcp" and not req.connected:
+		return _begin_connection(req)
+	return _launch_send_minigame(req_id)
 
+
+## Собранный запрос проходит в обычную мини-игру отправки.
+func _launch_send_minigame(req_id: String) -> bool:
+	var req = active_requests.get(req_id)
+	if req == null:
+		return false
+	var problem := _send_ready_error(req)
+	if not problem.is_empty():
+		_emit_toast(problem)
+		return false
 	var types := _attached_types(req)
-	req.required_types = types
 	var selection: Dictionary = ECONOMY.send_minigame_for(types)
 	req.send_sum = int(selection.get("sum", 0))
 	req.minigame_id = str(selection.get("id", "dots"))
 	req.minigame_tier = clampi(int(selection.get("tier", 1)), 1, 4)
 	req.minigame_active = true
-	# Legacy Request.is_ready() перестаёт быть true на время мини-игры/отправки.
-	_blank_required_slots(req)
 	request_changed.emit(req_id)
 
 	var context := {
@@ -884,11 +1207,15 @@ func report(packets_left_override: int = -1, requests_left_override: int = -1) -
 
 func _tick_requests(dt: float) -> void:
 	_check_failed_files()
+	_lost_check_accum += dt
+	if _lost_check_accum >= 0.5:
+		_lost_check_accum = 0.0
+		_check_lost_required()
 	for id in active_requests.keys():
 		if not active_requests.has(id):
 			continue
 		var req = active_requests[id]
-		if req.minigame_active or _send_queue.has(str(id)):
+		if req.minigame_active or req.connecting or _send_queue.has(str(id)):
 			continue
 		# D2: отправка уже началась — игрок не может на неё повлиять, поэтому
 		# таймер запроса замирает и тикает только прогресс передачи. Таймаут
@@ -954,20 +1281,71 @@ func _tick_spawns(dt: float) -> void:
 
 
 func _tick_request_spawns(dt: float) -> void:
-	if requests_spawned >= request_cap or _normal_request_count() >= active_request_limit:
+	if requests_spawned >= request_cap:
 		spawn_send_accum = 0.0
 		return
-	spawn_send_accum += dt
-	var steps := 0
-	while spawn_send_accum >= _send_interval_current and steps < MAX_SPAWN_STEPS:
-		steps += 1
-		spawn_send_accum -= _send_interval_current
-		_send_interval_current = _send_interval()
-		if requests_spawned >= request_cap or _normal_request_count() >= active_request_limit:
-			spawn_send_accum = 0.0
-			return
-		if not _spawn_random_request().is_empty():
-			break
+	if _normal_request_count() >= active_request_limit:
+		# Слот занят: «заряд» не копим, чтобы после освобождения соблюсти
+		# интервал между запросами.
+		spawn_send_accum = 0.0
+	else:
+		spawn_send_accum += dt
+		var steps := 0
+		while spawn_send_accum >= _send_interval_current and steps < MAX_SPAWN_STEPS:
+			steps += 1
+			spawn_send_accum -= _send_interval_current
+			_last_request_attempt_t = hour_elapsed
+			var req_id := _spawn_random_request()
+			_send_interval_current = _send_interval()
+			if not req_id.is_empty():
+				spawn_send_accum = 0.0
+				break
+			if requests_spawned >= request_cap \
+					or _normal_request_count() >= active_request_limit:
+				spawn_send_accum = 0.0
+				break
+	# Анти-голодание: пока запросов нет, не ждём полный интервал (22 с в H1).
+	_maybe_starvation_spawn()
+
+
+func _request_starvation_ready() -> bool:
+	if not active_requests.is_empty():
+		return false
+	if requests_spawned >= request_cap:
+		return false
+	if _normal_request_count() >= active_request_limit:
+		return false
+	if hour_elapsed - _last_request_attempt_t < REQUEST_ATTEMPT_MIN_GAP:
+		return false
+	return not _request_file_pool().is_empty()
+
+
+func _maybe_starvation_spawn() -> void:
+	if not _request_starvation_ready():
+		return
+	_last_request_attempt_t = hour_elapsed
+	if not _spawn_random_request().is_empty():
+		spawn_send_accum = 0.0
+
+
+## Подсказка для пустого экрана запросов. "" — подсказка неуместна.
+func next_request_hint() -> String:
+	if not running or _finish_guard:
+		return ""
+	if requests_spawned >= request_cap:
+		return "Все запросы часа выданы"
+	if _normal_request_count() >= active_request_limit:
+		return ""
+	if _request_file_pool().is_empty():
+		return "Нет свободных файлов для запроса"
+	if _request_starvation_ready():
+		return "Следующий запрос ~0 с"
+	var wait := maxf(0.0, _send_interval_current - spawn_send_accum)
+	if active_requests.is_empty():
+		var gap_left := maxf(0.0,
+			REQUEST_ATTEMPT_MIN_GAP - (hour_elapsed - _last_request_attempt_t))
+		wait = minf(wait, gap_left)
+	return "Следующий запрос ~%d с" % int(ceil(wait))
 
 
 func _tick_attacks(dt: float) -> void:
@@ -1091,7 +1469,14 @@ func _complete_send(req_id: String) -> void:
 	if game != null:
 		game.streak = streak + 1
 	_add_stat("requests_done", 1)
-	_emit_toast("Отправлено: +%d $" % payout)
+	var files_word := "файлов"
+	var n10 := n % 10
+	var n100 := n % 100
+	if n10 == 1 and n100 != 11:
+		files_word = "файл"
+	elif n10 >= 2 and n10 <= 4 and (n100 < 12 or n100 > 14):
+		files_word = "файла"
+	_emit_toast("ОТПРАВЛЕНО: %d %s · +%d $" % [n, files_word, payout])
 	_play_sfx(&"money_up")
 
 	# §2.8: при успешной отправке файлы расходуются.
@@ -1111,6 +1496,11 @@ func _cleanup_request(req_id: String, detach: bool) -> void:
 		for file_id in req.attached.duplicate():
 			if registry.files.has(str(file_id)):
 				registry.detach_file(str(file_id))
+	if registry != null:
+		for file_id in req.required:
+			var file = registry.files.get(str(file_id))
+			if file != null and file.required_by == req_id:
+				file.required_by = ""
 	req.attached.clear()
 	req.required_types.clear()
 	_send_queue.erase(req_id)
@@ -1123,6 +1513,7 @@ func _cleanup_request(req_id: String, detach: bool) -> void:
 	req.sending = false
 	req.slot_reserved = false
 	req.minigame_active = false
+	req.connecting = false
 	req.set_meta("queued", false)
 	active_requests.erase(req_id)
 	request_removed.emit(req_id)
@@ -1151,8 +1542,72 @@ func _check_failed_files() -> void:
 				_clear_required_slot(req, str(file_id))
 				changed = true
 		if changed:
-			req.required_types = _attached_types(req)
 			request_changed.emit(str(req_id))
+
+
+func _check_lost_required() -> void:
+	if registry == null or active_requests.is_empty():
+		return
+	for req_id in active_requests.keys().duplicate():
+		if not active_requests.has(req_id):
+			continue
+		var req = active_requests[req_id]
+		if req == null:
+			continue
+		# M5: во время активной передачи файлы уже «в пути» — потерю не
+		# подменяем и не начисляем выплату за уничтоженный посреди отправки файл.
+		if bool(req.sending):
+			continue
+		var changed := false
+		for i in range(req.required.size()):
+			var fid := str(req.required[i])
+			var file = registry.files.get(fid)
+			var lost := file == null
+			if file != null:
+				var loc := str(file.location)
+				lost = loc == "failed" or loc == "malicious"
+			if not lost:
+				continue
+			var lost_type := ""
+			if file != null:
+				lost_type = str(file.type)
+			elif i < req.required_types.size() and req.required_types.size() == req.required.size():
+				lost_type = str(req.required_types[i])
+			if req.attached.has(fid):
+				req.attached.erase(fid)
+				if file != null and str(file.attached_request) == str(req_id):
+					registry.detach_file(fid)
+				changed = true
+			if file != null and file.required_by == str(req_id):
+				file.required_by = ""
+			var replacement := _find_substitute(lost_type)
+			if replacement.is_empty():
+				# Оставляем дырку: запрос можно отклонить, отправка невозможна.
+				continue
+			req.required[i] = replacement
+			var substitute = registry.files.get(replacement)
+			if substitute != null:
+				substitute.required_by = str(req_id)
+				if i < req.required_types.size():
+					req.required_types[i] = str(substitute.type)
+				else:
+					req.required_types.append(str(substitute.type))
+			changed = true
+		if changed:
+			request_changed.emit(str(req_id))
+
+
+## Замена потерянного required-файла: равномерный пул, приоритет — тот же тип.
+func _find_substitute(preferred_type: String) -> String:
+	var pool := _request_file_pool()
+	if pool.is_empty():
+		return ""
+	_shuffle_array(pool)
+	if not preferred_type.is_empty():
+		for file in pool:
+			if str(file.type) == preferred_type:
+				return str(file.id)
+	return str(pool[0].id)
 
 
 func force_close_send_minigame() -> void:
@@ -1396,37 +1851,25 @@ func _default_type_weights(p_hour: int) -> Dictionary:
 func _required_count(req) -> int:
 	if req == null:
 		return 0
-	if req.has_meta("required_count"):
-		return maxi(0, int(req.get_meta("required_count")))
-	return maxi(0, int(req.required_count()))
+	var count := 0
+	if req.required is Array:
+		count = (req.required as Array).size()
+	if count <= 0 and req.has_meta("required_count"):
+		count = int(req.get_meta("required_count"))
+	return clampi(count, 0, MAX_REQUIRED_FILES)
 
 
-## Совместимость со старым UI: required содержит N слотов; заполненный слот
-## несёт id файла, пустой — служебный placeholder "__slot_...".
-func _fill_required_slot(req, file_id: String) -> void:
-	if req == null:
-		return
-	for i in range(req.required.size()):
-		var value := str(req.required[i])
-		if value.begins_with("__slot_"):
-			req.required[i] = file_id
-			return
+## Legacy-совместимость: required теперь хранит конкретные id, слоты не меняем.
+func _fill_required_slot(_req, _file_id: String) -> void:
+	pass
 
 
-func _clear_required_slot(req, file_id: String) -> void:
-	if req == null:
-		return
-	for i in range(req.required.size()):
-		if str(req.required[i]) == file_id:
-			req.required[i] = "__slot_%s_%d" % [req.id, i]
-			return
+func _clear_required_slot(_req, _file_id: String) -> void:
+	pass
 
 
-func _blank_required_slots(req) -> void:
-	if req == null:
-		return
-	for i in range(req.required.size()):
-		req.required[i] = "__slot_%s_%d" % [req.id, i]
+func _blank_required_slots(_req) -> void:
+	pass
 
 
 func _request_ready(req) -> bool:
@@ -1436,19 +1879,30 @@ func _request_ready(req) -> bool:
 		return false
 	if _send_queue.has(str(req.id)):
 		return false
-	return req.attached.size() >= _required_count(req) and _required_count(req) > 0
+	var need := _required_count(req)
+	if need <= 0:
+		return false
+	for file_id in req.required:
+		if not req.attached.has(str(file_id)):
+			return false
+	return true
 
 
 func _attached_files_valid(req) -> bool:
-	if registry == null:
+	if req == null or registry == null:
 		return false
+	# Исчезнувший required-файл (consume/remove) делает запрос неотправляемым.
+	for file_id in req.required:
+		if not registry.files.has(str(file_id)):
+			return false
 	for file_id in req.attached:
 		var file = registry.files.get(str(file_id))
 		if file == null:
 			return false
 		if is_folder_locked(str(file.folder_id)):
 			return false
-		if str(file.location) == "locked" or str(file.location) == "table":
+		var loc := str(file.location)
+		if loc == "locked" or loc == "table" or loc == "failed" or loc == "malicious":
 			return false
 	return true
 
@@ -1489,8 +1943,8 @@ func _roll_required_count() -> int:
 	for i in range(keys.size()):
 		acc += float(weights[i])
 		if roll < acc:
-			return clampi(int(str(keys[i])), 1, 3)
-	return clampi(int(str(keys[keys.size() - 1])), 1, 3)
+			return clampi(int(str(keys[i])), 1, MAX_REQUIRED_FILES)
+	return clampi(int(str(keys[keys.size() - 1])), 1, MAX_REQUIRED_FILES)
 
 
 # --- канал -----------------------------------------------------------------
@@ -1652,9 +2106,14 @@ func _clear_entities() -> void:
 			for file_id in req.attached.duplicate():
 				if registry.files.has(str(file_id)):
 					registry.detach_file(str(file_id))
+			for file_id in req.required:
+				var file = registry.files.get(str(file_id))
+				if file != null and file.required_by == str(req_id):
+					file.required_by = ""
 		req.attached.clear()
 		req.sending = false
 		req.minigame_active = false
+		req.connecting = false
 		req.slot_reserved = false
 	for packet_id in active_packets.keys().duplicate():
 		_remove_packet(str(packet_id))
@@ -1721,9 +2180,7 @@ func _on_show_attack_minigame(game_node, kind: String) -> void:
 	show_attack_minigame.emit(game_node, kind)
 
 
-## Legacy-хук: соединения больше нет.
-func _on_connection_finished(_success: bool, _entity_id: String) -> void:
-	pass
+## Legacy-хук больше не используется: UI зовёт connection_finished(req_id, success).
 
 
 func _add_money(delta: int) -> void:

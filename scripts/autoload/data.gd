@@ -15,28 +15,28 @@ const DEFAULT_TYPES := {
 		"name_ru": "Текст", "ext": "txt", "icon": "text",
 		"size_kb": 64,
 		"cells": 1, "base_time_sec": 3, "recv_fee": 1,
-		"base_pay": 20, "weight": 1, "minigame_coeff": 1, "sla_loss": 2,
+		"base_pay": 18, "weight": 1, "minigame_coeff": 1, "sla_loss": 2,
 		"shapes": ["O1"],
 	},
 	"sound": {
 		"name_ru": "Звук", "ext": "mp3", "icon": "sound",
 		"size_kb": 3072,
 		"cells": 2, "base_time_sec": 5, "recv_fee": 2,
-		"base_pay": 34, "weight": 2, "minigame_coeff": 2, "sla_loss": 4,
+		"base_pay": 30, "weight": 2, "minigame_coeff": 2, "sla_loss": 4,
 		"shapes": ["I2H", "I2V"],
 	},
 	"photo": {
 		"name_ru": "Фото", "ext": "jpg", "icon": "photo",
 		"size_kb": 5120,
 		"cells": 3, "base_time_sec": 8, "recv_fee": 4,
-		"base_pay": 52, "weight": 4, "minigame_coeff": 4, "sla_loss": 8,
+		"base_pay": 44, "weight": 4, "minigame_coeff": 4, "sla_loss": 8,
 		"shapes": ["I3H", "I3V", "L3a", "L3b", "L3c", "L3d"],
 	},
 	"video": {
 		"name_ru": "Видео", "ext": "mp4", "icon": "video",
 		"size_kb": 20480,
 		"cells": 4, "base_time_sec": 12, "recv_fee": 6,
-		"base_pay": 80, "weight": 8, "minigame_coeff": 8, "sla_loss": 16,
+		"base_pay": 69, "weight": 8, "minigame_coeff": 8, "sla_loss": 16,
 		"shapes": ["I4H", "I4V", "O4", "T4a", "T4b", "T4c", "T4d",
 			"L4a", "L4b", "L4c", "L4d", "J4a", "J4b", "J4c", "J4d", "S4", "Z4"],
 	},
@@ -54,8 +54,11 @@ const DEFAULT_DIFFICULTY := [
 	{"hour": 8, "max_requests": 12, "spawn_sec": 4.0},
 ]
 
-const DEFAULT_SEND_ORDER := ["dots", "sound", "wires", "text", "video", "photo", "maze"]
-const DEFAULT_ACHIEVABLE_SUMS := [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 18, 20, 24]
+const DEFAULT_SEND_ORDER := ["dots", "sound", "text", "video", "photo", "maze"]
+const DEFAULT_ACHIEVABLE_SUMS := [
+	1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20,
+	21, 22, 24, 25, 26, 28, 32,
+]
 
 const DEFAULT_HOUR_FILES := [4, 8, 12, 16, 20, 20, 20, 20, 20]
 const DEFAULT_REQUEST_CAP := [2, 5, 7, 9, 10, 11, 11, 12, 12]
@@ -76,18 +79,8 @@ const DEFAULT_TYPE_WEIGHTS := [
 	[0.06, 0.08, 0.32, 0.54],
 	[0.04, 0.04, 0.30, 0.62],
 ]
-## Порядок: 1 файл, 2 файла, 3 файла (§2.6).
-const DEFAULT_REQUEST_MIX := [
-	[0.70, 0.30, 0.00],
-	[0.60, 0.35, 0.05],
-	[0.50, 0.40, 0.10],
-	[0.50, 0.40, 0.10],
-	[0.40, 0.45, 0.15],
-	[0.40, 0.45, 0.15],
-	[0.30, 0.50, 0.20],
-	[0.30, 0.50, 0.20],
-	[0.30, 0.50, 0.20],
-]
+## Доли числа файлов в запросе: 1..4 (§2.6). Добавлен ключ "4" (4 файла).
+const DEFAULT_REQUEST_MIX := {"1": 0.76, "2": 0.24, "3": 0.0, "4": 0.0}
 
 const DEFAULT_LOT_IDS := [
 	"lot_slots", "lot_speed", "lot_sla", "lot_shield",
@@ -102,17 +95,17 @@ const DEFAULT_LOT_EFFECTS := [
 	"connection_slots", "transfer_speed", "sla_cap", "shield_charge",
 	"money_mult", "folder_cells", "channel_capacity", "request_timer",
 ]
-const DEFAULT_LOT_VALUES := [1, 0.08, 35, 1, 0.05, 1, 6, 5]
+const DEFAULT_LOT_VALUES := [1, 0.10, 40, 1, 0.05, 1, 6, 7]
 const DEFAULT_LOT_MAX := [4, 6, 4, 3, 8, 5, 6, 5]
 const DEFAULT_LOT_PRICES := [
-	[120, 300, 650, 1200],
-	[90, 130, 180, 250, 340, 450],
-	[120, 260, 480, 800],
-	[150, 400, 800],
-	[80, 110, 150, 200, 260, 340, 440, 560],
-	[80, 180, 360, 650, 1000],
-	[70, 100, 140, 190, 250, 330],
-	[70, 110, 160, 230, 320],
+	[90, 200, 400, 700],
+	[55, 75, 100, 135, 180, 245],
+	[80, 160, 270, 430],
+	[100, 220, 410],
+	[70, 95, 130, 170, 220, 285, 365, 465],
+	[50, 100, 180, 290, 440],
+	[45, 70, 95, 130, 175, 230],
+	[45, 75, 115, 165, 230],
 ]
 const DEFAULT_LOT_WEIGHTS := [
 	[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.8, 0.8, 0.8],
@@ -135,7 +128,7 @@ const DEFAULT_SHOP_RULES := {
 	"pity_weight": 1.5,
 }
 
-const DEFAULT_GRID_DIMS := [[5, 4], [6, 4], [6, 5], [7, 5], [7, 6], [8, 6]]
+const DEFAULT_GRID_DIMS := [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
 
 var balance: Dictionary = {}
 var constants: Dictionary = {}
@@ -355,7 +348,7 @@ func minigame_selection() -> Dictionary:
 		out["order"] = DEFAULT_SEND_ORDER.duplicate()
 	if not (out.get("achievable_sums", null) is Array) or (out.get("achievable_sums", null) as Array).is_empty():
 		out["achievable_sums"] = DEFAULT_ACHIEVABLE_SUMS.duplicate()
-	out["max_index"] = int(out.get("max_index", 27))
+	out["max_index"] = int(out.get("max_index", 26))
 	var coeff: Dictionary = {}
 	for key in ["text", "sound", "photo", "video"]:
 		coeff[key] = int(type_def(key).get("minigame_coeff", DEFAULT_TYPES[key].get("minigame_coeff", 1)))
@@ -363,9 +356,9 @@ func minigame_selection() -> Dictionary:
 	return out
 
 
-## Legacy-ступень для индекса 0..27 (idx/7 + 1).
+## Legacy-ступень для индекса (idx / 6 + 1), три ступени отправки.
 func minigame_tier(index: int) -> int:
-	return clampi(1 + int(floor(float(maxi(0, index)) / 7.0)), 1, 4)
+	return clampi(1 + int(floor(float(maxi(0, index)) / 6.0)), 1, 3)
 
 
 # --- v2: атаки -------------------------------------------------------------
@@ -602,11 +595,7 @@ func _default_hour_row(hour: int) -> Dictionary:
 		"recv_interval": DEFAULT_RECV_INTERVAL[idx],
 		"send_interval": DEFAULT_SEND_INTERVAL[idx],
 		"type_weights": weights,
-		"request_mix": {
-			"1": DEFAULT_REQUEST_MIX[idx][0],
-			"2": DEFAULT_REQUEST_MIX[idx][1],
-			"3": DEFAULT_REQUEST_MIX[idx][2],
-		},
+		"request_mix": DEFAULT_REQUEST_MIX.duplicate(),
 	}
 
 

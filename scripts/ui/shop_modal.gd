@@ -38,7 +38,7 @@ const FOOTER_Y := H - 52.0
 const FOOTER_H := 28.0
 const MAX_CARDS := 3
 
-const FALLBACK_DIMS := [[5, 4], [6, 4], [6, 5], [7, 5], [7, 6], [8, 6]]
+const FALLBACK_DIMS := [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
 
 ## Текстовые fallback'и (ключи shop.* есть в data/strings_ru.json).
 const FALLBACK := {
@@ -416,13 +416,13 @@ func _effect_values(item: Dictionary, level: int) -> Dictionary:
 			var now_slots := int(game.connection_slots()) if game != null else 1 + level
 			return {"now": str(now_slots), "after": str(now_slots + maxi(1, int(value)))}
 		"transfer_speed":
-			var now_time := float(game.speed_mult()) if game != null else pow(0.92, float(level))
+			var now_time := float(game.speed_mult()) if game != null else pow(0.90, float(level))
 			var after_time := now_time * (1.0 - clampf(value, 0.01, 0.5))
 			return {"now": "×%.2f" % (1.0 / now_time), "after": "×%.2f" % (1.0 / after_time)}
 		"sla_cap":
-			var now_cap := int(game.sla_cap()) if game != null else 60 + 35 * level
+			var now_cap := int(game.sla_cap()) if game != null else 60 + 40 * level
 			var current := int(minf(float(game.sla), float(now_cap))) if game != null else now_cap
-			var after_cap := mini(200, now_cap + int(value))
+			var after_cap := mini(220, now_cap + int(value))
 			var after_current := mini(after_cap, current + int(value))
 			return {"now": "%d / %d" % [current, now_cap],
 				"after": "%d / %d" % [after_current, after_cap]}
@@ -456,7 +456,7 @@ func _effect_values(item: Dictionary, level: int) -> Dictionary:
 			return {"now": "%d / %d" % [now_channel, now_buffer],
 				"after": "%d / %d" % [now_channel + add_channel, now_buffer + add_buffer]}
 		"request_timer":
-			var now_timer := int(game.request_timer()) if game != null else 30 + 5 * level
+			var now_timer := int(game.request_timer()) if game != null else 30 + 7 * level
 			return {"now": "%d с" % now_timer, "after": "%d с" % (now_timer + maxi(1, int(value)))}
 	return {"now": "—", "after": "—"}
 
@@ -799,11 +799,11 @@ func _effect_fallback_desc(effect: String) -> String:
 		"connection_slots":
 			return "Ещё один порт: приём и отправка могут идти параллельно."
 		"transfer_speed":
-			return "Скорость приёма и отправки выше на 8% за уровень."
+			return "Скорость приёма и отправки выше на 10% за уровень."
 		"sla_cap":
-			return "Держит узел живым: кап SLA +35 и сразу +35 SLA."
+			return "Держит узел живым: кап SLA +40 и сразу +40 SLA."
 		"shield_charge":
-			return "Автоматически гасит атаку: 50% награды, без штрафа."
+			return "Автоматически гасит атаку: 70% награды, без штрафа."
 		"money_mult":
 			return "Оплата за контейнеры +5% за уровень."
 		"folder_cells":

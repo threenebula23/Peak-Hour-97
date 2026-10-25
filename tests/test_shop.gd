@@ -11,8 +11,8 @@ const IDS := [
 	"lot_money", "lot_folder", "lot_channel", "lot_timer",
 ]
 const FIRST_PRICES := {
-	"lot_slots": 120, "lot_speed": 90, "lot_sla": 120, "lot_shield": 150,
-	"lot_money": 80, "lot_folder": 80, "lot_channel": 70, "lot_timer": 70,
+	"lot_slots": 90, "lot_speed": 55, "lot_sla": 80, "lot_shield": 100,
+	"lot_money": 70, "lot_folder": 50, "lot_channel": 45, "lot_timer": 45,
 }
 const MAX_LEVELS := {
 	"lot_slots": 4, "lot_speed": 6, "lot_sla": 4, "lot_shield": 3,
@@ -64,7 +64,7 @@ func _test_catalog() -> void:
 		_eq(shop.level(id), 0, "начальный уровень %s" % id)
 		for p in item.get("prices", []):
 			total += int(p)
-	_eq(total, 13100, "сумма цен всех лотов = 13 100")
+	_eq(total, 8085, "сумма цен всех лотов = 8 085")
 	_ok(shop.get_item("scanner").is_empty(), "сканера нет")
 	_eq(shop.max_level("нет_товара"), 0, "неизвестный лот → max_level 0")
 	_eq(shop.price("нет_товара"), 0, "неизвестный лот → price 0")
@@ -145,18 +145,22 @@ func _test_affordable() -> void:
 	shop.refresh(2, 0, true)
 	_eq(shop.offers().size(), 3, "при 0 $ всё равно 3 оффера (без краша)")
 	for i in range(30):
-		_game.money = 71
-		shop.refresh(2, 71, true)
+		_game.money = 49
+		shop.refresh(2, 49, true)
 		var ofs: Array = shop.offers()
-		var has_cheap: bool = ofs.has("lot_channel") or ofs.has("lot_timer")
+		var has_cheap := false
+		for id in ofs:
+			var cost := int(shop.price(str(id)))
+			if cost >= 0 and cost <= 49:
+				has_cheap = true
 		if not has_cheap:
-			_fail("при 71 $ нет доступного лота за 70 (офферы: %s)" % str(ofs))
+			_fail("при 49 $ нет доступного лота (офферы: %s)" % str(ofs))
 			break
-	_ok(true, "при 71 $ всегда есть доступный лот за 70")
+	_ok(true, "при 49 $ всегда есть доступный лот")
 	# Дорогие лоты не заменяются, если доступных нет.
-	_game.money = 60
-	shop.refresh(2, 60, true)
-	_eq(shop.offers().size(), 3, "при 60 $ предложения не ломаются")
+	_game.money = 40
+	shop.refresh(2, 40, true)
+	_eq(shop.offers().size(), 3, "при 40 $ предложения не ломаются")
 
 
 func _test_reroll() -> void:
@@ -227,18 +231,18 @@ func _test_buy_and_effects() -> void:
 	_set_case("buy")
 	var shop = _reset(2, 10000)
 	_set_offers(["lot_sla", "lot_slots", "lot_money"])
-	_eq(shop.price("lot_sla"), 120, "lot_sla цена 120")
+	_eq(shop.price("lot_sla"), 80, "lot_sla цена 80")
 	_ok(shop.buy("lot_sla"), "покупка lot_sla")
-	_eq(int(_game.money), 9880, "списано 120")
+	_eq(int(_game.money), 9920, "списано 80")
 	_eq(shop.level("lot_sla"), 1, "уровень lot_sla = 1")
 	_eq(_game.level("sla_level"), 1, "агрегат sla_level = 1")
-	_approx(_game.sla_cap(), 95.0, 0.0001, "кап SLA 60 → 95")
-	_approx(float(_game.sla), 95.0, 0.0001, "SLA сразу 60 → 95")
-	_eq(shop.price("lot_sla"), 260, "цена 2-го уровня 260")
+	_approx(_game.sla_cap(), 100.0, 0.0001, "кап SLA 60 → 100")
+	_approx(float(_game.sla), 100.0, 0.0001, "SLA сразу 60 → 100")
+	_eq(shop.price("lot_sla"), 160, "цена 2-го уровня 160")
 	_ok(shop.buy("lot_sla"), "покупка lot_sla 2-й раз")
-	_eq(shop.price("lot_sla"), 480, "цена 3-го уровня 480")
-	_eq(int(_game.money), 9620, "после второй покупки 9620")
-	_approx(float(_game.sla), 130.0, 0.0001, "SLA 95 → 130")
+	_eq(shop.price("lot_sla"), 270, "цена 3-го уровня 270")
+	_eq(int(_game.money), 9760, "после второй покупки 9760")
+	_approx(float(_game.sla), 140.0, 0.0001, "SLA 100 → 140")
 
 	_ok(shop.buy("lot_slots"), "покупка lot_slots")
 	_eq(shop.level("lot_slots"), 1, "lot_slots = 1")
@@ -253,9 +257,9 @@ func _test_buy_and_effects() -> void:
 	_approx(_game.channel_capacity(), 16.0, 0.0001, "канал 10 → 16")
 	_eq(_game.buffer_limit(), 7, "буфер 6 → 7")
 	_ok(shop.buy("lot_speed"), "покупка lot_speed")
-	_approx(_game.speed_mult(), 0.92, 0.0001, "скорость ×0.92")
+	_approx(_game.speed_mult(), 0.90, 0.0001, "скорость ×0.90")
 	_ok(shop.buy("lot_timer"), "покупка lot_timer")
-	_approx(_game.request_timer(), 35.0, 0.0001, "таймер запроса 30 → 35")
+	_approx(_game.request_timer(), 37.0, 0.0001, "таймер запроса 30 → 37")
 
 	_set_offers(["lot_shield", "lot_sla", "lot_money"])
 	_ok(shop.buy("lot_shield"), "покупка lot_shield")
@@ -271,10 +275,10 @@ func _test_buy_and_effects() -> void:
 	# Недостаточно денег.
 	shop = _reset(2, 10000)
 	_set_offers(["lot_slots"])
-	_game.money = 119
-	_ok(not shop.can_buy("lot_slots"), "119 $ мало для 120")
+	_game.money = 89
+	_ok(not shop.can_buy("lot_slots"), "89 $ мало для 90")
 	_ok(not shop.buy("lot_slots"), "buy без денег → false")
-	_eq(int(_game.money), 119, "деньги не списаны")
+	_eq(int(_game.money), 89, "деньги не списаны")
 
 
 func _test_slot_and_folder_effects() -> void:
@@ -320,10 +324,10 @@ func _test_slot_and_folder_effects() -> void:
 	for i in range(4):
 		shop.buy("lot_folder")
 	dims = _game.folder_dims()
-	_eq(dims.x, 8, "folder max: 8 столбцов")
+	_eq(dims.x, 9, "folder max: 9 столбцов")
 	_eq(dims.y, 6, "folder max: 6 строк")
 	if folder != null:
-		_eq(int(folder.cols), 8, "существующая папка выросла до 8 столбцов")
+		_eq(int(folder.cols), 9, "существующая папка выросла до 9 столбцов")
 		_eq(int(folder.rows), 6, "существующая папка выросла до 6 строк")
 		if probe != null:
 			_eq(probe.origin, probe_origin, "origin файла не изменился на max")

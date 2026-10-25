@@ -6,10 +6,9 @@ extends MiniGame
 ## новый локальный RNG и ограниченное число попыток; последний рубеж — змейка.
 
 const TIERS := {
-	1: {"cols": 3, "rows": 3, "obstacles": 0, "undo_penalty": 0.05},
-	2: {"cols": 4, "rows": 3, "obstacles": 2, "undo_penalty": 0.04},
-	3: {"cols": 4, "rows": 4, "obstacles": 4, "undo_penalty": 0.04},
-	4: {"cols": 5, "rows": 4, "obstacles": 6, "undo_penalty": 0.03},
+	1: {"cols": 4, "rows": 3, "obstacles": 2, "undo_penalty": 0.04},
+	2: {"cols": 4, "rows": 4, "obstacles": 4, "undo_penalty": 0.04},
+	3: {"cols": 5, "rows": 4, "obstacles": 6, "undo_penalty": 0.03},
 }
 const MAX_BOARD_ATTEMPTS := 16
 const MAX_START_TRIES := 8
@@ -20,6 +19,7 @@ var board: Dictionary = {}
 var _path: Array = []
 var _undos: int = 0
 var _invalid: int = 0
+var _dragging: bool = false
 var _cell_rects: Array[Rect2] = []
 var _cell_ids: Array = []
 var _stride: float = 60.0
@@ -35,13 +35,30 @@ func _setup() -> void:
 	_path.clear()
 	_undos = 0
 	_invalid = 0
+	_dragging = false
 	_build_geometry()
+
+
+func _goal_text() -> String:
+	return "ВЕДИТЕ ЛИНИЮ ОТ «С» ПО ВСЕМ КЛЕТКАМ · R — СБРОС"
+
+
+func _progress_ratio() -> float:
+	var free_count := int(board.get("free_count", 0))
+	if free_count <= 0:
+		return 0.0
+	return clampf(float(_path.size()) / float(free_count), 0.0, 1.0)
+
+
+func _result_stats() -> String:
+	return "ЛИНИЯ %d/%d · ОТКАТОВ %d · ОШИБОК %d" % [_path.size(),
+		int(board.get("free_count", 0)), _undos, _invalid]
 
 
 # --- параметры -------------------------------------------------------------
 
 static func tier_params(p_tier: int) -> Dictionary:
-	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 4), TIERS[1]) as Dictionary).duplicate(true)
+	var base: Dictionary = (TIERS.get(clampi(p_tier, 1, 3), TIERS[1]) as Dictionary).duplicate(true)
 	var row := MiniGame.data_minigame_tier("dots", p_tier)
 	if row.is_empty():
 		return base
@@ -352,45 +369,102 @@ func _on_pointer_pressed(local: Vector2, _event: InputEvent) -> bool:
 	var id := _cell_at(local)
 	if id < 0:
 		return false
+	_dragging = false
 	if _path.is_empty():
 		if id == int(board.get("start", -1)):
 			_path = [id]
+			_dragging = true
 			_play_sfx(&"tick")
 		else:
 			_invalid += 1
 		queue_redraw()
 		return true
 
-	var free := _free_map()
 	var last := int(_path[_path.size() - 1])
 	if _path.size() >= 2 and id == int(_path[_path.size() - 2]):
-		_path.pop_back()
-		_undos += 1
-		_play_sfx(&"tick")
-		queue_redraw()
+		_pop_path()
+		_dragging = true
 		return true
 	if id == last:
+		_dragging = true
 		return true
-	if not free.has(id) or _path.has(id):
+	if _try_append_cell(id):
+		_dragging = true
+	else:
+		# Ошибкой считается только осознанный клик, не движение курсора.
 		_invalid += 1
 		queue_redraw()
-		return true
+	return true
+
+
+## Общая точка роста пути для клика и drag: молча игнорирует недопустимые
+## клетки, чтобы быстрый проход мышью не портил качество.
+func _try_append_cell(id: int) -> bool:
+	if id < 0 or _path.is_empty() or _finished:
+		return false
+	var last := int(_path[_path.size() - 1])
+	if id == last:
+		return false
+	var free := _free_map()
+	if not free.has(id) or _path.has(id):
+		return false
 	var cols := int(board.get("cols", 3))
 	if not _adjacent(last, id, cols):
-		_invalid += 1
-		queue_redraw()
-		return true
-	if id == int(board.get("finish", -1)) and _path.size() < int(board.get("free_count", 0)) - 1:
+		return false
+	if id == int(board.get("finish", -1)) \
+			and _path.size() < int(board.get("free_count", 0)) - 1:
 		# Финиш можно только последним: иначе линия не покроет все порты.
-		_invalid += 1
-		queue_redraw()
-		return true
+		return false
 	_path.append(id)
 	_play_sfx(&"tick")
-	if _path.size() == int(board.get("free_count", 0)) and id == int(board.get("finish", -1)):
+	if _path.size() == int(board.get("free_count", 0)) \
+			and id == int(board.get("finish", -1)):
 		_finish(quality_for(_undos, _invalid, tier))
 	queue_redraw()
 	return true
+
+
+func _pop_path() -> void:
+	if _path.size() < 2:
+		return
+	_path.pop_back()
+	_undos += 1
+	_play_sfx(&"tick")
+	queue_redraw()
+
+
+func _handle_motion_cell(id: int) -> void:
+	if id < 0 or _path.is_empty() or _finished:
+		return
+	var last := int(_path[_path.size() - 1])
+	if id == last:
+		return
+	if _path.size() >= 2 and id == int(_path[_path.size() - 2]):
+		_pop_path()
+		return
+	_try_append_cell(id)
+
+
+func _on_pointer_moved(local: Vector2, _event: InputEvent) -> void:
+	if not _dragging or _finished or _path.is_empty():
+		return
+	# Быстрый drag может проскочить целую клетку между двумя motion-событиями.
+	# Поэтому идём от центра последней клетки к курсору шагами ~полклетки и
+	# скармливаем каждую точку той же логике добавления.
+	var start := _cell_center(int(_path[_path.size() - 1]))
+	var dist := start.distance_to(local)
+	var step := maxf(6.0, _stride * 0.5)
+	var steps := maxi(1, int(ceil(dist / step)))
+	for i in range(1, steps + 1):
+		var point := start.lerp(local, float(i) / float(steps))
+		_handle_motion_cell(_cell_at(point))
+		if _finished:
+			return
+	_handle_motion_cell(_cell_at(local))
+
+
+func _on_pointer_released(_local: Vector2, _event: InputEvent) -> void:
+	_dragging = false
 
 
 func _on_key_pressed(keycode: int, _event: InputEvent) -> bool:
@@ -404,6 +478,7 @@ func _reset_line() -> void:
 	if not _path.is_empty():
 		_undos += 1
 	_path.clear()
+	_dragging = false
 	_play_sfx(&"tick")
 	queue_redraw()
 
@@ -421,7 +496,7 @@ func _draw_game() -> void:
 		Vector2(24.0, 46.0), 10, Theme90.NAVY, 220.0)
 	_draw_label("ПРЕПЯТСТВИЙ %d · ОТКАТОВ %d · ОШИБОК %d" % [
 		int(board.get("obstacles", 0)), _undos, _invalid],
-		Vector2(300.0, 46.0), 10, Theme90.SHADE, 300.0, HORIZONTAL_ALIGNMENT_RIGHT)
+		Vector2(300.0, 46.0), 10, Theme90.DARK, 300.0, HORIZONTAL_ALIGNMENT_RIGHT)
 
 	draw_style_box(Theme90.box(Theme90.PAPER_LO, Theme90.BORDER_SOFT, 4, 1),
 		Rect2(_port_rect.position - Vector2(8, 8), _port_rect.size + Vector2(16, 16)))
@@ -455,9 +530,6 @@ func _draw_game() -> void:
 		if i == _path.size() - 1:
 			draw_circle(b, 4.0, Theme90.NAVY_DEEP)
 
-	if _path.is_empty():
-		_draw_label("НАЧНИТЕ С «С» · КЛИК ПО ПРЕДЫДУЩЕМУ УЗЛУ — ОТКАТ · R — СБРОС",
-			Vector2(24.0, 344.0), 10, Theme90.SHADE, 430.0)
 	_draw_secondary_button(RESET_RECT, "СБРОС (R)")
 
 

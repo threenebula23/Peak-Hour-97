@@ -1,10 +1,9 @@
 extends SceneTree
-## Headless-юнит-тесты чистых функций семи игр отправки.
+## Headless-юнит-тесты чистых функций шести игр отправки.
 ## Запуск: godot --headless --path . --script tests/test_send_games.gd
 
 const DOTS := preload("res://scripts/minigames/send/dots.gd")
 const SOUND := preload("res://scripts/minigames/send/sound.gd")
-const WIRES := preload("res://scripts/minigames/send/wires.gd")
 const TEXT := preload("res://scripts/minigames/send/text.gd")
 const VIDEO := preload("res://scripts/minigames/send/video.gd")
 const PHOTO := preload("res://scripts/minigames/send/photo.gd")
@@ -18,8 +17,8 @@ var _case: String = ""
 func _init() -> void:
 	await process_frame
 	_test_dots()
+	_test_dots_drag()
 	_test_sound()
-	_test_wires()
 	_test_text()
 	_test_video()
 	_test_photo()
@@ -32,12 +31,11 @@ func _init() -> void:
 func _test_dots() -> void:
 	_set_case("dots")
 	var expected := {
-		1: {"cols": 3, "rows": 3, "obstacles": 0},
-		2: {"cols": 4, "rows": 3, "obstacles": 2},
-		3: {"cols": 4, "rows": 4, "obstacles": 4},
-		4: {"cols": 5, "rows": 4, "obstacles": 6},
+		1: {"cols": 4, "rows": 3, "obstacles": 2},
+		2: {"cols": 4, "rows": 4, "obstacles": 4},
+		3: {"cols": 5, "rows": 4, "obstacles": 6},
 	}
-	for tier in range(1, 5):
+	for tier in range(1, 4):
 		var spec: Dictionary = expected[tier]
 		var p := DOTS.tier_params(tier)
 		_eq(int(p["cols"]), int(spec["cols"]), "T%d cols" % tier)
@@ -84,15 +82,82 @@ func _test_dots() -> void:
 	_approx(DOTS.quality_for(2, 0, 2), 0.92, 0.0001, "dots 2 отката T2 = 0.92")
 	_approx(DOTS.quality_for(0, 3, 1), 0.7, 0.0001, "dots 3 ошибки = 0.7")
 	_approx(DOTS.quality_for(50, 50, 4), 0.0, 0.0001, "dots q без нижнего порога 0.3")
+	_eq(int(DOTS.tier_params(4)["cols"]), int(DOTS.tier_params(3)["cols"]),
+		"dots tier 4 клампится в 3")
+
+
+# --- dots: ввод ------------------------------------------------------------
+
+func _test_dots_drag() -> void:
+	_set_case("dots_drag")
+	var mg = DOTS.new()
+	mg.start("dots", 1, 12345)
+	_ok(mg.board.has("path"), "dots drag: доска сгенерирована")
+	var path: Array = mg.board["path"]
+	var start := int(path[0])
+	mg._on_pointer_pressed(mg._cell_center(start), null)
+	_eq(mg._path.size(), 1, "press на «С» начинает линию")
+	_ok(mg._dragging, "press включает drag")
+	mg._on_pointer_released(mg._cell_center(int(path[1])), null)
+	_ok(not mg._dragging, "release выключает drag")
+	# Клик-по-клику продолжает работать.
+	mg._on_pointer_pressed(mg._cell_center(int(path[1])), null)
+	_eq(mg._path.size(), 2, "клик по соседней клетке продлевает линию")
+	# Клик по предыдущей клетке — откат.
+	mg._on_pointer_pressed(mg._cell_center(start), null)
+	_eq(mg._path.size(), 1, "клик по предыдущей клетке откатывает")
+	_eq(mg._undos, 1, "откат учтён один раз")
+	# Дальше ведём drag по всем клеткам пути.
+	for i in range(1, path.size()):
+		mg._on_pointer_moved(mg._cell_center(int(path[i])), null)
+	_ok(mg.is_finished(), "drag по всему пути завершает игру")
+	_approx(mg.quality(), 0.96, 0.0001, "1 откат без ошибок = 0.96")
+	mg.free()
+
+	# Быстрый проход: один motion сразу на две клетки вперёд по прямой.
+	var fast = DOTS.new()
+	var found := false
+	for seed in range(1, 61):
+		fast.start("dots", 1, seed)
+		var fp: Array = fast.board["path"]
+		if fp.size() < 3:
+			continue
+		var a: Vector2 = fast._cell_center(int(fp[0]))
+		var b: Vector2 = fast._cell_center(int(fp[1]))
+		var c: Vector2 = fast._cell_center(int(fp[2]))
+		if (b - a).is_equal_approx(c - b):
+			found = true
+			break
+	if not found:
+		_ok(true, "dots drag: прямой префикс не найден — проверка пропущена")
+		fast.free()
+		return
+	var fpath: Array = fast.board["path"]
+	var blocked: Array = fast.board.get("blocked", [])
+	fast._on_pointer_pressed(fast._cell_center(int(fpath[0])), null)
+	fast._on_pointer_moved(fast._cell_center(int(fpath[2])), null)
+	_ok(fast._path.size() >= 3,
+		"быстрый motion через клетку заполняет обе клетки (%d)" % fast._path.size())
+	# Движение над стеной/недопустимой клеткой не считается ошибкой.
+	var before_invalid: int = fast._invalid
+	if not blocked.is_empty():
+		fast._on_pointer_moved(fast._cell_center(int(blocked[0])), null)
+	_eq(fast._invalid, before_invalid, "motion по стене не увеличивает invalid")
+	# А осознанный клик по стене — считается.
+	fast._on_pointer_pressed(fast._cell_center(int(blocked[0])), null)
+	_eq(fast._invalid, before_invalid + 1, "клик по стене — реальная ошибка")
+	fast._on_pointer_released(Vector2.ZERO, null)
+	_ok(not fast._dragging, "release после drag сбрасывает флаг")
+	fast.free()
 
 
 # --- sound -----------------------------------------------------------------
 
 func _test_sound() -> void:
 	_set_case("sound")
-	var expected_counts := [3, 4, 5, 6]
-	var expected_tol := [0.16, 0.11, 0.08, 0.06]
-	for tier in range(1, 5):
+	var expected_counts := [4, 5, 6]
+	var expected_tol := [0.11, 0.08, 0.06]
+	for tier in range(1, 4):
 		for seed in [1, 7, 42, 99, 1234]:
 			var data := SOUND.generate(tier, seed)
 			var count := int(data["count"])
@@ -114,14 +179,14 @@ func _test_sound() -> void:
 					_ok(absf(float(targets[i]) - float(targets[j])) >= 2.0 * tol - 0.001,
 						"sound T%d цели не сливаются" % tier)
 		var drift := SOUND.generate(tier, 5)
-		if tier <= 2:
-			_approx(float(drift["drift_amp"]), 0.0, 0.0001, "sound T%d без дрейфа" % tier)
-		elif tier == 3:
-			_approx(float(drift["drift_amp"]), 0.02, 0.0001, "sound T3 дрейф 2%")
-			_approx(float(drift["drift_hz"]), 0.15, 0.0001, "sound T3 дрейф 0.15 Гц")
+		if tier == 1:
+			_approx(float(drift["drift_amp"]), 0.0, 0.0001, "sound T1 без дрейфа")
+		elif tier == 2:
+			_approx(float(drift["drift_amp"]), 0.02, 0.0001, "sound T2 дрейф 2%")
+			_approx(float(drift["drift_hz"]), 0.15, 0.0001, "sound T2 дрейф 0.15 Гц")
 		else:
-			_approx(float(drift["drift_amp"]), 0.03, 0.0001, "sound T4 дрейф 3%")
-			_approx(float(drift["drift_hz"]), 0.25, 0.0001, "sound T4 дрейф 0.25 Гц")
+			_approx(float(drift["drift_amp"]), 0.03, 0.0001, "sound T3 дрейф 3%")
+			_approx(float(drift["drift_hz"]), 0.25, 0.0001, "sound T3 дрейф 0.25 Гц")
 
 	_approx(SOUND.channel_quality(0.5, 0.5, 0.16), 1.0, 0.0001, "sound центр = 1")
 	_approx(SOUND.channel_quality(0.66, 0.5, 0.16), 0.5, 0.0001, "sound край = 0.5")
@@ -135,94 +200,16 @@ func _test_sound() -> void:
 		"sound с дрейфом цель смещается")
 
 
-# --- wires -----------------------------------------------------------------
-
-func _test_wires() -> void:
-	_set_case("wires")
-	var expected := {
-		1: {"wires": 3, "sockets": 3},
-		2: {"wires": 4, "sockets": 4},
-		3: {"wires": 5, "sockets": 6},
-		4: {"wires": 6, "sockets": 6},
-	}
-	for tier in range(1, 5):
-		var geo := WIRES.geometry(tier)
-		_approx(float(geo["box"]), 34.0, 0.0001, "wires T%d box 34" % tier)
-		_approx(float(geo["pitch"]), 40.0, 0.0001, "wires T%d pitch 40" % tier)
-		_ok(float(geo["gap"]) >= 300.0 - 0.001, "wires T%d зазор >= 300" % tier)
-		_eq((geo["left_rects"] as Array).size(), int(expected[tier]["wires"]),
-			"wires T%d число левых портов" % tier)
-		_eq((geo["right_rects"] as Array).size(), int(expected[tier]["sockets"]),
-			"wires T%d число правых портов" % tier)
-		var left_rack: Rect2 = geo["left_rack"]
-		var right_rack: Rect2 = geo["right_rack"]
-		_ok(left_rack.end.y <= 320.0, "wires T%d левая стойка <= 320" % tier)
-		_ok(right_rack.end.y <= 320.0, "wires T%d правая стойка <= 320" % tier)
-		for side in ["left_rects", "right_rects"]:
-			var rects: Array = geo[side]
-			var rack := left_rack if side == "left_rects" else right_rack
-			for i in range(rects.size()):
-				var a: Rect2 = rects[i]
-				_ok(a.position.x >= rack.position.x and a.position.y >= rack.position.y
-					and a.end.x <= rack.end.x + 0.001 and a.end.y <= rack.end.y + 0.001,
-					"wires T%d порт внутри стойки" % tier)
-				for j in range(i + 1, rects.size()):
-					_ok(not a.intersects(rects[j]), "wires T%d порты не пересекаются" % tier)
-		var lanes: Array = geo["lanes"]
-		for i in range(1, lanes.size()):
-			_ok(absf(float(lanes[i]) - float(lanes[i - 1])) >= 8.0 - 0.001,
-				"wires T%d полосы >= 8 px" % tier)
-		for seed in [1, 7, 42, 99, 1234, 2026]:
-			var data := WIRES.generate(tier, seed)
-			_eq((data["wires"] as Array).size(), int(expected[tier]["wires"]),
-				"wires T%d wires" % tier)
-			_eq((data["sockets"] as Array).size(), int(expected[tier]["sockets"]),
-				"wires T%d sockets" % tier)
-			_ok(WIRES.validate_pairs(data), "wires T%d seed %d пары уникальны/матчатся" % [tier, seed])
-			var sockets: Array = data["sockets"]
-			var empty_count := 0
-			for socket in sockets:
-				if bool(socket.get("empty", false)):
-					empty_count += 1
-			if tier == 3:
-				_eq(empty_count, 1, "wires T3 одно пустое гнездо")
-			else:
-				_eq(empty_count, 0, "wires T%d без пустых" % tier)
-			if tier >= 4:
-				var color_counts := {}
-				var shape_counts := {}
-				for wire in data["wires"]:
-					var c := str(wire["color"])
-					var s := str(wire["shape"])
-					color_counts[c] = int(color_counts.get(c, 0)) + 1
-					shape_counts[s] = int(shape_counts.get(s, 0)) + 1
-				var shared_colors := 0
-				var shared_shapes := 0
-				for k in color_counts.keys():
-					if int(color_counts[k]) >= 2:
-						shared_colors += 1
-				for k in shape_counts.keys():
-					if int(shape_counts[k]) >= 2:
-						shared_shapes += 1
-				_ok(shared_colors >= 2, "wires T4 два общих цвета")
-				_ok(shared_shapes >= 2, "wires T4 две общие формы")
-
-	_approx(WIRES.quality_for(3, 0, 3), 1.0, 0.0001, "wires все подключены = 1")
-	_approx(WIRES.quality_for(2, 1, 4), 0.4375, 0.0001, "wires 2/4 и 1 ошибка = 0.4375")
-	_approx(WIRES.quality_for(0, 20, 6), 0.0, 0.0001, "wires q клампится в 0")
-
-
 # --- text ------------------------------------------------------------------
 
 func _test_text() -> void:
 	_set_case("text")
 	var expected := {
-		1: {"words": 11, "aliens": 1, "lines": 2},
-		2: {"words": 15, "aliens": 2, "lines": 2},
-		3: {"words": 19, "aliens": 3, "lines": 3},
-		4: {"words": 24, "aliens": 4, "lines": 3},
+		1: {"words": 15, "aliens": 2, "lines": 2},
+		2: {"words": 19, "aliens": 3, "lines": 3},
+		3: {"words": 24, "aliens": 4, "lines": 3},
 	}
-	for tier in range(1, 5):
+	for tier in range(1, 4):
 		for seed in [1, 7, 42, 99, 1234, 2026]:
 			var data := TEXT.generate(tier, seed)
 			_eq((data["words"] as Array).size(), int(expected[tier]["words"]),
@@ -256,13 +243,12 @@ func _test_text() -> void:
 func _test_video() -> void:
 	_set_case("video")
 	var expected := {
-		1: {"cards": 3, "slots": 3},
-		2: {"cards": 4, "slots": 4},
-		3: {"cards": 5, "slots": 4},
-		4: {"cards": 6, "slots": 5},
+		1: {"cards": 4, "slots": 4},
+		2: {"cards": 5, "slots": 4},
+		3: {"cards": 6, "slots": 5},
 	}
 	var seen_timecodes := {}
-	for tier in range(1, 5):
+	for tier in range(1, 4):
 		for seed in [1, 7, 42, 99, 1234, 2026]:
 			var data := VIDEO.generate(tier, seed)
 			_eq((data["cards"] as Array).size(), int(expected[tier]["cards"]),
@@ -282,7 +268,7 @@ func _test_video() -> void:
 			for i in range(int(expected[tier]["slots"])):
 				_ok(real_slots.has(i), "video T%d слот %d имеет реальный кадр" % [tier, i])
 			_eq(real_slots.size(), int(expected[tier]["slots"]), "video T%d уникальные верные слоты" % tier)
-			if tier <= 2:
+			if tier == 1:
 				_eq(decoys, 0, "video T%d без брака" % tier)
 				_eq(mirrored, 0, "video T%d без зеркала" % tier)
 			else:
@@ -295,8 +281,8 @@ func _test_video() -> void:
 					if int(card.get("id", -1)) == int(info["duplicate_real"]):
 						real_shape = str(card.get("shape", ""))
 				_ok(real_shape != str(info["decoy_shape"]), "video T%d силуэт брака отличается" % tier)
-			if tier == 4:
-				_eq(mirrored, 1, "video T4 ровно 1 зеркальный кадр")
+			if tier == 3:
+				_eq(mirrored, 1, "video T3 ровно 1 зеркальный кадр")
 			else:
 				_eq(mirrored, 0, "video T%d без зеркала" % tier)
 			var tc_key := "|".join(data.get("slot_timecodes", []))
@@ -314,11 +300,11 @@ func _test_video() -> void:
 
 func _test_photo() -> void:
 	_set_case("photo")
-	var speeds := [90.0, 140.0, 200.0, 260.0]
-	var frame_w := [220.0, 180.0, 150.0, 120.0]
-	var frame_h := [150.0, 120.0, 100.0, 80.0]
-	var shots := [3, 4, 5, 6]
-	for tier in range(1, 5):
+	var speeds := [140.0, 200.0, 260.0]
+	var frame_w := [180.0, 150.0, 120.0]
+	var frame_h := [120.0, 100.0, 80.0]
+	var shots := [4, 5, 6]
+	for tier in range(1, 4):
 		var p := PHOTO.tier_params(tier)
 		_approx(float(p["speed"]), speeds[tier - 1], 0.0001, "photo T%d speed" % tier)
 		_approx(float(p["frame_w"]), frame_w[tier - 1], 0.0001, "photo T%d frame_w" % tier)
@@ -359,12 +345,11 @@ func _test_photo() -> void:
 func _test_maze() -> void:
 	_set_case("maze")
 	var expected := {
-		1: {"cols": 9, "rows": 4, "field_w": 360.0, "field_h": 160.0, "corridor": 28.0, "speed": 420.0},
-		2: {"cols": 11, "rows": 4, "field_w": 440.0, "field_h": 160.0, "corridor": 24.0, "speed": 470.0},
-		3: {"cols": 13, "rows": 4, "field_w": 494.0, "field_h": 152.0, "corridor": 20.0, "speed": 520.0},
-		4: {"cols": 15, "rows": 5, "field_w": 520.0, "field_h": 180.0, "corridor": 18.0, "speed": 560.0},
+		1: {"cols": 11, "rows": 4, "field_w": 440.0, "field_h": 160.0, "corridor": 24.0, "speed": 470.0},
+		2: {"cols": 13, "rows": 4, "field_w": 494.0, "field_h": 152.0, "corridor": 20.0, "speed": 520.0},
+		3: {"cols": 15, "rows": 5, "field_w": 520.0, "field_h": 180.0, "corridor": 18.0, "speed": 560.0},
 	}
-	for tier in range(1, 5):
+	for tier in range(1, 4):
 		var p := MAZE.tier_params(tier)
 		var spec: Dictionary = expected[tier]
 		for key in ["cols", "rows"]:

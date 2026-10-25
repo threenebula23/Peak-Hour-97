@@ -18,6 +18,12 @@ var timer_total: float = 0.0
 
 var slot_reserved: bool = false
 var connected: bool = false
+## TCP: идёт мини-игра установления соединения (полоска). Таймер заморожен.
+var connecting: bool = false
+## TCP: сколько раз игрок пытался установить соединение в этом часе.
+var connect_attempts: int = 0
+## TCP: до какого hour_elapsed действует пауза после неудачи.
+var connect_cooldown_until: float = 0.0
 var minigame_active: bool = false
 var sending: bool = false
 
@@ -91,6 +97,9 @@ func to_dict() -> Dictionary:
 		"timer_total": timer_total,
 		"slot_reserved": slot_reserved,
 		"connected": connected,
+		"connecting": connecting,
+		"connect_attempts": connect_attempts,
+		"connect_cooldown_until": connect_cooldown_until,
 		"minigame_active": minigame_active,
 		"sending": sending,
 		"quality": quality,
@@ -120,6 +129,9 @@ static func from_dict(d: Dictionary):
 	r.timer_total = float(d.get("timer_total", 0.0))
 	r.slot_reserved = bool(d.get("slot_reserved", false))
 	r.connected = bool(d.get("connected", false))
+	r.connecting = bool(d.get("connecting", false))
+	r.connect_attempts = maxi(0, int(d.get("connect_attempts", 0)))
+	r.connect_cooldown_until = maxf(0.0, float(d.get("connect_cooldown_until", 0.0)))
 	r.minigame_active = bool(d.get("minigame_active", false))
 	r.sending = bool(d.get("sending", false))
 	r.quality = clampf(float(d.get("quality", 1.0)), 0.0, 1.0)
