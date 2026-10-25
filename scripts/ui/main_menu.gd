@@ -31,6 +31,9 @@ var _btn_about: Button90
 
 static var _card_style: StyleBoxFlat = null
 
+## Накопитель для перерисовки VHS на 12 Гц.
+var _vhs_clock := 0.0
+
 func _ready() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
 	mouse_filter = Control.MOUSE_FILTER_STOP
@@ -61,6 +64,18 @@ func is_vhs_enabled() -> bool:
 	return vhs != null and vhs.enabled
 
 
+## Медленная анимация: полоса и зерно. Перерисовываем меню на 12 Гц —
+## чаще для такого эффекта не нужно, а текст остаётся тем же.
+func _process(delta: float) -> void:
+	if vhs == null or not vhs.enabled or not vhs.is_available() or not visible:
+		return
+	vhs.advance(delta)
+	_vhs_clock += delta
+	if _vhs_clock >= 1.0 / 12.0:
+		_vhs_clock = 0.0
+		queue_redraw()
+
+
 func _build() -> void:
 	_btn_continue = _make_button("Продолжить")
 	_btn_continue.disabled = not has_save
@@ -79,14 +94,11 @@ func _build() -> void:
 	_btn_about.pressed.connect(func() -> void: about.emit())
 
 
-## VHS-слой — полноэкранный ColorRect поверх меню. Он фильтрует карточку,
-## текст и кнопки, но остаётся внутри MainMenu; модалки — отдельные соседи
-## в modal_root, они рисуются поверх и не фильтруются.
+## VHS-слой — процедурный помощник (RefCounted, без Node/Control).
+## Меню рисует его само в _draw(), поэтому ничто не перекрывает меню
+## и не перехватывает мышь. Модалки — отдельные соседи в modal_root.
 func _build_vhs() -> void:
 	vhs = VHS_OVERLAY.new()
-	vhs.name = "VhsOverlay"
-	add_child(vhs)
-	vhs.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 
 
 func _tr(key: String, fallback: String) -> String:
@@ -138,12 +150,22 @@ func _draw() -> void:
 		Color(Theme90.ACCENT_LIGHT.r, Theme90.ACCENT_LIGHT.g, Theme90.ACCENT_LIGHT.b, 0.10))
 	draw_circle(Vector2(full.size.x * 0.06, full.size.y * 0.96), 300.0,
 		Color(0.96, 0.80, 0.72, 0.09))
-	# 2. Карточка, панель, декоративные фигуры и текст. VHS — отдельный
-	#    full-rect слой-ребёнок, он фильтрует весь кадр меню в native-res.
+	# 2. VHS на бумаге.
+	if vhs != null:
+		vhs.draw_layer(self, full)
+
 	var w := _window()
+	var panel := _panel_rect(w)
+	# 3. Поверхности: карточка, панель, декоративные фигуры.
 	_draw_card(w)
 	_draw_actions_surface(w)
 	_draw_hero_shapes(w)
+	# 4. Мягкий VHS-проход по карточке и панели — ДО текста, поэтому буквы
+	#    и кнопки остаются резкими.
+	if vhs != null:
+		vhs.draw_layer(self, w, true)
+		vhs.draw_layer(self, panel, true)
+	# 5. Текст поверх эффекта.
 	_draw_hero_text(w)
 	_draw_actions_text(w)
 

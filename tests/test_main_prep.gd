@@ -254,13 +254,9 @@ func _test_vhs(main) -> void:
 	_ok(overlay != null, "VHS-слой создан")
 	if overlay == null:
 		return
-	_ok(overlay.get_parent() == main.main_menu, "VHS-слой — ребёнок главного меню")
-	_ok(main.main_menu.get_child(main.main_menu.get_child_count() - 1) == overlay,
-		"VHS-слой поверх карточки и кнопок меню")
-	_eq(overlay.mouse_filter, Control.MOUSE_FILTER_IGNORE, "VHS не ловит мышь")
-	_eq(overlay.process_mode, Node.PROCESS_MODE_ALWAYS, "VHS работает при паузе")
-	_ok(not overlay.is_available(), "в headless VHS-материал не создаётся")
-	_ok(not overlay.visible, "в headless VHS-слой не рендерится")
+	_ok(overlay is RefCounted and not (overlay is Node),
+		"VHS — RefCounted, не создаёт Node/Control")
+	_ok(not overlay.is_available(), "в headless VHS-текстуры не создаются")
 	_ok(main.main_menu.is_vhs_enabled(), "VHS включён по умолчанию")
 
 	main.main_menu.set_vhs_enabled(true)
