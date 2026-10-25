@@ -10,7 +10,7 @@ test-writer, explorer, feis-regulator, oracle):
 | **DeepSeek V4.1 Flash** | оркестратор, основной код Godot/GDScript |
 | **GLM-5.3-Flash** | документация, RU-тексты, данные |
 | **MiniMax M3.1 Flash** | баланс, экономика, прогрессия |
-| **MiMo-V2.6-Flash** | аудио: синтез SFX и фона |
+| **MiMo-V2.6-Flash** | аудио: SFX, ambient, фон |
 | дефолтные модели субагентов | поиск, тесты, ревью |
 
 MR-ревью — агент **oracle** (`opencode-go/deepseek-v4.1-flash`): dry-run
@@ -18,18 +18,17 @@ MR-ревью — агент **oracle** (`opencode-go/deepseek-v4.1-flash`): dry
 
 ## 2. Где применялся ИИ
 
-- **Код Godot/GDScript:** `GameController`, `HourDirector`, `AttackDirector`,
-  `FileRegistry`, `SlotManager`, `Shop`, `SaveManager`, мини-игры.
-- **UI v2 «Kaleidos»:** тёплая бумага, 1 px контуры, тени, бирюзовый акцент;
-  маскот **БАЙТ** и туториал.
-- **Баланс и мета:** SLA 128/200, штрафы по типам, 10 апгрейдов, grace
-  таймеров, канал, прогрессивные открытия после 3/5/9 часов.
-- **Аудит-фиксы:** calm-фон, Esc на итогах → меню, уничтожение папки
-  (−5 SLA), мета `run_meta_awards`, час 1 без атак, стабильные тосты и
-  fullscreen.
-- **Тесты:** unit, fuzz, интеграция, полный забег, UI-смоук.
-- **Документация:** `docs/`, `README.md`, `ASSETS.md`, `strings_ru.json`.
-- **Звук:** `audio/generate_sfx.py` — 18 SFX и `hum.wav` на Python.
+- **Код:** `GameController`, `HourDirector`, `AttackDirector`, `Shop`,
+  `SaveManager`, UI, мини-игры.
+- **UI v2:** Kaleidos, маскот **БАЙТ**, туториал.
+- **Ambient:** 4 WAV (`audio/amb`, PSU/fan/room/seek), генератор
+  `generate_ambient.py`, autoload после первого жеста, mute/пауза/громкость.
+- **VHS:** `shaders/vhs.gdshader` + `vhs_overlay.gd`, только главное меню,
+  чекбокс в настройках, HEADLESS без рендера.
+- **Баланс/мета:** SLA, 10 апгрейдов, таймеры, канал, мета 3/5/9.
+- **Аудит:** calm-фон, Esc итогов, уничтожение, тосты/fullscreen.
+- **Тесты/доки/звук:** unit/fuzz/интеграция/полный забег; `docs/`;
+  18 SFX + `hum.wav` на Python.
 
 ## 3. Приём: «враждебный критик»
 
@@ -60,26 +59,19 @@ coeff = {text: 1.0, sound: 2.0, photo: 3.0, video: 4.0}
 - Pixelify Sans в теме не используется (нет глифов `О`/`П`); файл и OFL
   оставлены в `art/fonts/`.
 - UI, иконки и `icon.svg` — команда проекта, MIT.
-- SFX и `hum.wav` — скрипт проекта, MIT/CC0.
+- SFX, ambient и `hum.wav` — скрипты проекта, MIT/CC0.
 - Код — MIT (`LICENSE`); OFL-шрифты совместимы с MIT при сохранении
   лицензий. Подробности — в `ASSETS.md`.
 
 ## 6. Проверки и ограничения
 
-- `run_tests.gd` — **543**; `test_hour` — **133**; `test_shop` — **116**;
-  `test_minigame` — **51**; `test_slots` — **34**; `test_audio` — **37**.
-- `test_fuzz` — **3249**; `test_integration` — **231**; `test_attacks` —
-  **173**; `test_controller` — **143**.
-- `test_full_playthrough` — **294** на сидах `1/42/777`: 3/3 victory,
-  9/9 часов, SLA 200;
-  `test_main_*` — **317**, `test_toast` — **14**, `test_main_fullscreen` —
-  **31**; `ui_smoke` — **132**.
-- Итого **≈5 460** проверок, **0 провалов**; `run_all_tests.sh` — **21/21
-  PASS**.
-- `godot --headless --path . --quit` — exit 0; Web-экспорт — exit 0;
-  браузерный смоук Chromium: 1600×900, меню → «Новый забег» → подготовка,
-  JS-ошибок нет.
+- **22/22 PASS** (21 тест + parse). Core 543, hour 133, shop 116, minigame
+  51, slots 34, audio 37; fuzz 3249, integration 231, attacks 173,
+  controller 143.
+- `test_full_playthrough` — 294 на сидах `1/42/777`: 3/3 victory, 9/9,
+  SLA 200; main 350, toast 14, fullscreen 31, ui 135, ambient 74.
+- Web-экспорт — exit 0; Chromium **1920×1080**: меню → «Новый забег» →
+  подготовка, JS-ошибок нет.
 
-Ограничения: туториал — маскот и подсказки, без пошагового сценария;
-web-save зависит от IndexedDB; плейтест, громкость и масштаб — за
-человеком; remote push ещё не выполнен.
+Ограничения: туториал — маскот и подсказки; web-save — IndexedDB; плейтест,
+громкость и масштаб — за человеком; remote push ещё не выполнен.

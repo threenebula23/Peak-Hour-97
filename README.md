@@ -9,7 +9,7 @@
 
 **Жанр:** менеджмент / тайм-менеджмент, retro UI.
 **Платформа:** Godot **4.7.2** → **Web (HTML5, без threads)**, RU-only.
-**Окно:** 1600×900, логический viewport 1280×720, fractional scale.
+**Окно:** 1920×1080, логический viewport 1280×720, fractional scale.
 **Забег:** 9 игровых часов по 5 минут (≈45 минут) + подготовка между часами.
 
 ## Статус v1.2
@@ -40,6 +40,10 @@
 - «Спокойный фон» — плоская бумага без dither; Esc на итогах забега ведёт
   в главное меню.
 - UI v2 «Kaleidos», маскот **БАЙТ** и короткий туториал первого часа.
+- Ambient машинного зала: 4 WAV, автозапуск после первого жеста, mute/пауза/
+  громкость; генератор `audio/generate_ambient.py`.
+- VHS-эффект только в главном меню (настройки → «ЭКРАН»); игровой UI остаётся
+  чистым, без CRT на весь интерфейс.
 - Handjet + Press Start 2P, 18 SFX + фоновый `hum`.
 
 Ограничения:
@@ -100,7 +104,7 @@ python3 -m http.server 8000 --directory build/web
 
 ## Тесты
 
-Полный прогон (20 наборов + parse-check):
+Полный прогон (21 набор + parse-check):
 
 ```bash
 bash scripts/run_all_tests.sh
@@ -115,29 +119,31 @@ bash scripts/run_all_tests.sh
 "$GODOT" --headless --path . --script scripts/ui/ui_smoke.gd
 ```
 
-Фактический итог: **около 5 460 проверок, 0 провалов**; `run_all_tests.sh` —
-**21/21 PASS** (20 наборов + parse-check). Подробности — в
+Фактический итог: **22/22 PASS** (21 набор + parse-check); ключевые
+счётчики — `test_main_prep` 92/0, `ui_smoke` 135/0, `test_ambient` 74/0.
+Подробности — в
 [AI_REPORT](AI_REPORT.md).
 
 ## Структура
 
 ```
 peak-hour/
-├─ project.godot              # 1600×900 / 1280×720, GL Compatibility
+├─ project.godot              # 1920×1080 / 1280×720, GL Compatibility
 ├─ export_presets.cfg         # Web (no threads)
 ├─ scenes/                    # Main + dev-превью
 ├─ scripts/
 │  ├─ game_controller.gd      # цикл menu → prep → hour → results
 │  ├─ run_all_tests.sh        # полный headless-прогон
-│  ├─ autoload/               # Game, Data, Audio, Rng
+│  ├─ autoload/               # Game, Data, Audio, Rng, Ambient
 │  ├─ core/                   # HourDirector, FileRegistry, SlotManager, Economy
 │  ├─ entities/               # файлы, пакеты, запросы, папки, слоты
 │  ├─ systems/                # атаки, магазин, сохранения
-│  ├─ ui/                     # Theme90 v2, компоненты, модалки, маскот
+│  ├─ ui/                     # Theme90 v2, модалки, маскот, VHS-оверлей
 │  └─ minigames/              # ConnectionGame, MiniGame
 ├─ data/                      # balance.json, strings_ru.json, names_ru.json
 ├─ art/fonts/                 # Handjet, Press Start 2P + OFL
-├─ audio/                     # generate_sfx.py, sfx/, music/
+├─ audio/                     # sfx/, music/, amb/, generate_*py
+├─ shaders/                   # vhs.gdshader (только главное меню)
 ├─ tests/                     # headless-наборы
 ├─ docs/                      # GDD, DECISIONS, UI_REFRESH, screenshots
 └─ build/                     # артефакты экспорта (gitignored)
