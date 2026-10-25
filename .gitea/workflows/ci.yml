@@ -1,0 +1,32 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [dev, main]
+  push:
+    branches: [dev, main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  tests:
+    runs-on: host
+    # Fork-guard: self-hosted runner в host-mode не должен исполнять код форков.
+    if: "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+    timeout-minutes: 25
+    env:
+      GODOT_BIN: /home/eq/techlb/tools/godot/Godot_v4.7.2-stable_linux.x86_64
+    steps:
+      - name: Checkout
+        uses: https://github.com/actions/checkout@v4
+
+      - name: Import project
+        run: '"$GODOT_BIN" --headless --path . --import'
+
+      - name: Run all headless tests
+        run: bash scripts/run_all_tests.sh
+
+      - name: Parse / boot smoke check
+        run: '"$GODOT_BIN" --headless --path . --quit'

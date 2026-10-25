@@ -1,0 +1,29 @@
+name: MR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    branches: [dev]
+
+concurrency:
+  group: review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    runs-on: host
+    # Fork-guard: не исполнять код внешних форков на self-hosted runner.
+    if: "github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository"
+    timeout-minutes: 25
+    env:
+      GITEA_TOKEN: ${{ secrets.REVIEWER_TOKEN }}
+      GITEA_URL: https://git.194-146-38-78.sslip.io
+      REPO: admin/Game-JAM
+    steps:
+      - name: Checkout (full history)
+        uses: https://github.com/actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: OpenCode MR review
+        run: bash scripts/review_mr.sh

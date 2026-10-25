@@ -14,6 +14,9 @@ export/
 .DS_Store
 Thumbs.db
 
+# Локальный конфиг инструментов (Serena MCP и т.п.)
+.serena/
+
 # Python (тулинг/скрипты проверок)
 __pycache__/
 *.pyc
