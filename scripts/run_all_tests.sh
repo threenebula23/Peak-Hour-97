@@ -55,7 +55,9 @@ TESTS=(
   "res://tests/test_main_interactions.gd"
   "res://tests/test_main_attacks.gd"
   "res://tests/test_main_pause.gd"
+  "res://tests/test_main_fullscreen.gd"
   "res://tests/test_main_polish.gd"
+  "res://tests/test_toast.gd"
   "res://tests/test_full_playthrough.gd"
   "res://scripts/ui/ui_smoke.gd"
 )

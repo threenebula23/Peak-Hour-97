@@ -20,6 +20,9 @@ func toast(text: String, kind: String = "info") -> void:
 	if _items.size() >= 3:
 		var old: Control = _items.pop_front()
 		if is_instance_valid(old):
+			# Гасим life-tween до освобождения узла: иначе его callback через
+			# 3.45 с сработает на уже удалённом объекте (null capture).
+			_stop_life(old)
 			old.queue_free()
 	var item := ToastItem.new(text, kind)
 	item.size = Vector2(W, H)
@@ -33,9 +36,25 @@ func toast(text: String, kind: String = "info") -> void:
 	life.tween_interval(3.0)
 	life.tween_property(item, "modulate:a", 0.0, 0.45)
 	life.tween_callback(func() -> void:
+		if not is_instance_valid(item):
+			# Тост уже удалён извне — не трогаем освобождённый узел.
+			_relayout()
+			return
 		_items.erase(item)
 		item.queue_free()
 		_relayout())
+	item.set_meta("life_tween", life)
+	# Любое внешнее удаление тоста тоже не должно оставлять висящий tween.
+	item.tree_exiting.connect(func() -> void:
+		_stop_life(item))
+
+
+func _stop_life(item: Control) -> void:
+	if item == null or not is_instance_valid(item) or not item.has_meta("life_tween"):
+		return
+	var tw = item.get_meta("life_tween")
+	if tw is Tween and (tw as Tween).is_valid():
+		(tw as Tween).kill()
 
 
 func _slot_y(index: int) -> float:
@@ -47,6 +66,11 @@ func _target_pos(index: int) -> Vector2:
 
 
 func _relayout() -> void:
+	# Индексное удаление: erase()/has() на освобождённом объекте внутри
+	# типизированного массива дают ошибку, remove_at() — нет.
+	for i in range(_items.size() - 1, -1, -1):
+		if not is_instance_valid(_items[i]):
+			_items.remove_at(i)
 	for i in _items.size():
 		var item := _items[i]
 		if not is_instance_valid(item):

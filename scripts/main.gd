@@ -224,11 +224,19 @@ func _open_settings() -> void:
 	var calm := false
 	if _backdrop != null:
 		calm = bool(_backdrop.calm)
+	# Полный экран — фактический режим окна ИЛИ уже применённая настройка.
+	# DisplayServer не всегда успевает/может сообщить FULLSCREEN (web-iframe,
+	# асинхронный WM, headless), и тогда галочка сбрасывалась при открытии.
+	var full := bool(_settings_cache.get("fullscreen", false))
+	if DisplayServer.get_name() != "headless":
+		var mode := DisplayServer.window_get_mode()
+		full = full or mode == DisplayServer.WINDOW_MODE_FULLSCREEN \
+			or mode == DisplayServer.WINDOW_MODE_EXCLUSIVE_FULLSCREEN
 	settings_modal.open({
 		"sfx": int(round(Audio.sfx_volume * 100.0)),
 		"music": int(round(Audio.music_volume * 100.0)),
 		"calm_bg": calm,
-		"fullscreen": DisplayServer.window_get_mode() == DisplayServer.WINDOW_MODE_FULLSCREEN,
+		"fullscreen": full,
 	})
 
 
