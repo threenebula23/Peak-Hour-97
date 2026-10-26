@@ -16,7 +16,10 @@ extends Node
 ##   доступны пулу запросов (cooldown — только из constants);
 ## - мини-игра отправки не ставит час на паузу (это делает только атака);
 ## - если час кончается с открытой мини-игрой отправки — она принудительно
-##   закрывается (B5, вариант b): q=0, файлы открепляются, отправки нет.
+##   закрывается (B5, вариант b): q=0, файлы открепляются, отправки нет;
+## - если время вышло, а запросы ещё активны — начинается overtime: новые
+##   файлы/запросы/атаки не приходят, запросы можно доделать/отклонить,
+##   час завершается только когда активных запросов не осталось.
 
 signal packet_added(id: String)
 signal packet_changed(id: String)
@@ -105,6 +108,8 @@ var hour: int = 1
 var time_left: float = DEFAULT_HOUR_SECONDS
 var hour_elapsed: float = 0.0
 var running: bool = false
+## Время часа вышло, но активные запросы ещё ждут игрока (см. _begin_overtime).
+var overtime := false
 var paused: bool = false
 var modal_open: bool = false
 var time_scale: float = 1.0
@@ -165,6 +170,8 @@ var _space_ok_cache: bool = true
 var _no_space_notified: bool = false
 var _finish_guard: bool = false
 var _attack_paused: bool = false
+## Внутренний флаг: атака снимается на старте overtime, не считаем её провалом.
+var _overtime_cancel: bool = false
 ## Текст последнего тоста директора. Main читает сразу после вызова, чтобы
 ## не дублировать отказ, который backend уже озвучил.
 var last_toast_text: String = ""
@@ -248,6 +255,7 @@ func start_hour(p_hour: int) -> void:
 	_send_interval_current = _send_interval()
 	_modal_count = 0
 	modal_open = false
+	overtime = false
 	paused = false
 	_attack_paused = false
 	successes_this_hour = 0
@@ -358,7 +366,13 @@ func tick(delta: float) -> void:
 	_tick_requests(dt)
 	if not running or _finish_guard:
 		return
-	if not modal_open:
+	if overtime:
+		# Overtime: запросы/пакеты доигрываются, спавн (файлы, запросы, атаки)
+		# остановлен. Модалка отправки не мешает пакетам/таймерам.
+		_tick_packets(dt)
+		if not running or _finish_guard:
+			return
+	elif not modal_open:
 		_tick_packets(dt)
 		if not running or _finish_guard:
 			return
@@ -375,7 +389,9 @@ func tick(delta: float) -> void:
 	if not running or _finish_guard:
 		return
 	_tick_folder_blocks()
-	if time_left <= 0.0:
+	if not overtime and time_left <= 0.0:
+		_begin_overtime()
+	if overtime and active_requests.is_empty():
 		_finish_hour()
 
 
@@ -418,6 +434,11 @@ func set_attack_paused(value: bool) -> void:
 
 func is_attack_paused() -> bool:
 	return _attack_paused
+
+
+## Идёт ли overtime: время вышло, но активные запросы ещё не закрыты.
+func is_overtime() -> bool:
+	return overtime
 
 
 func set_time_scale(value: float) -> void:
@@ -1717,6 +1738,7 @@ func report(packets_left_override: int = -1, requests_left_override: int = -1) -
 		"udp_lost": _udp_lost,
 		"sla_delta": sla_delta,
 		"time_left": time_left,
+		"overtime": overtime,
 		"packets_left": packets_left,
 		"requests_left": requests_left,
 		"files_carry": 0,
@@ -1911,6 +1933,8 @@ func _maybe_starvation_spawn() -> void:
 func next_request_hint() -> String:
 	if not running or _finish_guard:
 		return ""
+	if overtime:
+		return "ЧАС ЗАВЕРШЁН · ЗАВЕРШИТЕ ЗАПРОСЫ" if not active_requests.is_empty() else ""
 	if _request_spawn_cutoff_reached():
 		return "До конца часа запросов не будет"
 	if _normal_request_count() >= active_request_limit:
@@ -2243,6 +2267,26 @@ func force_close_send_minigame() -> void:
 
 
 # --- конец часа ------------------------------------------------------------
+
+## Время вышло, но остались активные запросы: останавливаем только приток
+## (файлы/запросы/атаки). Запросы можно доделать, отклонить или дождаться
+## их таймаута; час завершится, когда список запросов опустеет.
+func _begin_overtime() -> void:
+	if overtime:
+		return
+	overtime = true
+	time_left = 0.0
+	if attack_director != null:
+		if attack_director.has_method("set_allow_spawn"):
+			attack_director.set_allow_spawn(false)
+		if attack_director.has_method("cancel_active"):
+			# Отмена без штрафа и без учёта в отчёте как провала.
+			_overtime_cancel = true
+			attack_director.cancel_active()
+			_overtime_cancel = false
+	set_attack_paused(false)
+	_emit_toast("ЧАС ЗАВЕРШЁН · ЗАВЕРШИТЕ ЗАПРОСЫ")
+
 
 func _finish_hour() -> void:
 	if _finish_guard:
@@ -2876,6 +2920,8 @@ func _on_attack_resolved(_id: String, _success: bool) -> void:
 
 
 func _on_attack_resolved_detail(kind: String, success: bool, tier: int) -> void:
+	if _overtime_cancel:
+		return
 	if success:
 		_attacks_blocked += 1
 		_add_stat("attacks_blocked", 1)

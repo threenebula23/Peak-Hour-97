@@ -32,6 +32,12 @@ const CELL_MAX := 104.0
 ## запаса клип Control (и clip_contents родителя) срезал левый/правый край
 ## файла в клетках (0,*) и (cols-1,*).
 const GRID_PAD := 5.0
+## Нижний резерв: под сеткой идёт футер (hairline на size.y-17 + текст на
+## size.y-13), а заливка/контур фигуры и ghost выступают за клетку на
+## GAP/2 + 1.3 px (ghost dashed-box — +2.6). Если центрировать сетку на всю
+## высоту, нижний ряд, outline и ghost уходят под футер и срезаются
+## clip_contents. Поэтому низ сетки держим не ниже size.y - GRID_BOTTOM.
+const GRID_BOTTOM := 20.0
 const DEFAULT_COLS := 5
 const DEFAULT_ROWS := 4
 
@@ -606,19 +612,25 @@ func _on_resized() -> void:
 
 
 func _recalc_layout() -> void:
-	# Клетку считаем как раньше, но если сетка упирается в край ближе GRID_PAD,
-	# пересчитываем по уменьшенному view. Так outline/label/ghost у крайних
-	# клеток не попадают под clip, а обычный 5×4 не раздувается.
+	# Клетку считаем как раньше, но если сетка упирается в край ближе GRID_PAD
+	# (сверху/по бокам) или GRID_BOTTOM (снизу), пересчитываем по уменьшенному
+	# view. Так outline/label/ghost у крайних клеток не попадают под clip и под
+	# футер, а обычный 5×4 не раздувается.
 	_cell = cell_size(size, _cols, _rows)
+	var avail := Vector2(maxf(0.0, size.x - GRID_PAD * 2.0),
+		maxf(0.0, size.y - GRID_PAD - GRID_BOTTOM))
 	var gs := grid_size_of(_cols, _rows, _cell, GAP)
-	if gs.x + GRID_PAD * 2.0 > size.x or gs.y + GRID_PAD * 2.0 > size.y:
-		var inner := Vector2(maxf(0.0, size.x - GRID_PAD * 2.0),
-			maxf(0.0, size.y - GRID_PAD * 2.0))
-		_cell = cell_size(inner, _cols, _rows)
+	if gs.x > avail.x or gs.y > avail.y:
+		_cell = cell_size(avail, _cols, _rows)
 		gs = grid_size_of(_cols, _rows, _cell, GAP)
+	# По X центрируем в полной ширине (как раньше), по Y — в полосе между
+	# GRID_PAD и GRID_BOTTOM. Финальный clamp — жёсткая гарантия, что низ
+	# сетки не залезает в резерв (актуально при CELL_MIN на малом view).
 	_grid_origin = Vector2(
 		maxf(GRID_PAD, roundf((size.x - gs.x) * 0.5)),
-		maxf(GRID_PAD, roundf((size.y - gs.y) * 0.5)))
+		GRID_PAD + maxf(0.0, roundf((avail.y - gs.y) * 0.5)))
+	_grid_origin.y = clampf(_grid_origin.y, GRID_PAD,
+		maxf(GRID_PAD, size.y - GRID_BOTTOM - gs.y))
 
 
 func _cell_rect(c: int, r: int) -> Rect2:

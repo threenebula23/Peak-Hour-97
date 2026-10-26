@@ -751,15 +751,23 @@ func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
 	var hov := _draw_hover()
-	var off := _shake_offset()
-	if off.x != 0.0:
+	var accent := Theme90.ACCENT if protocol == "TCP" else Theme90.WARN
+	var off := _shake_offset() + Vector2(0.0, -1.5 * hov)
+	if off != Vector2.ZERO:
 		draw_set_transform(off, 0.0, Vector2.ONE)
 	var bg := Theme90.PAPER_HI.lerp(Theme90.WHITE, hov)
-	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
-	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.11), hov)
+	bg = bg.lerp(Theme90.paper_tint(accent, 1.0), 0.03 + 0.03 * hov)
+	var border := Theme90.BORDER.lerp(accent, hov)
+	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.13), hov)
 	draw_style_box(Theme90.box(bg, border, 4, 1, shadow), r)
+	# Цветная шапка по протоколу + мягкий ореол наведения (draw-only).
+	draw_rect(Rect2(6, 1.2, maxf(0.0, size.x - 12.0), 2.0),
+		Theme90.alpha_of(accent, 0.62 + 0.25 * hov))
+	if hov > 0.02:
+		draw_style_box(Theme90.box(Theme90.alpha_of(accent, 0.055 * hov),
+			Color(0, 0, 0, 0), 4, 0), r.grow(-2.0))
 
-	_draw_avatar(Rect2(8, 6, 20, 20))
+	_draw_avatar(Rect2(8, 6, 20, 20), accent, hov)
 
 	Theme90.text(self, f, Vector2(32, 4), Theme90.fit(f, client_name, 12, 140), 12,
 		Theme90.INK, 140)
@@ -807,7 +815,7 @@ func _draw() -> void:
 			Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, ea), 4, 2),
 			r.grow(-1.0))
 
-	if off.x != 0.0:
+	if off != Vector2.ZERO:
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
@@ -988,14 +996,18 @@ func _time_color() -> Color:
 	return Theme90.SUCCESS
 
 
-func _draw_avatar(r: Rect2) -> void:
-	var bg := Theme90.ACCENT
-	draw_style_box(Theme90.box(bg, Color(0, 0, 0, 0), 5, 0), r)
+func _draw_avatar(r: Rect2, col: Color, hov: float) -> void:
+	var grow := 1.0 * hov
+	var rr := r.grow(grow)
+	draw_style_box(Theme90.box(col, Color(0, 0, 0, 0), 5, 0), rr)
+	if hov > 0.02:
+		draw_arc(rr.get_center(), rr.size.x * 0.60, 0.0, TAU, 20,
+			Theme90.alpha_of(col, 0.30 * hov), 1.2, true)
 	var f := Theme90.ui()
-	Theme90.text(self, f, Vector2(r.position.x, r.position.y + 3), _monogram(), 12,
-		Theme90.WHITE, r.size.x, HORIZONTAL_ALIGNMENT_CENTER)
-	draw_circle(Vector2(r.end.x - 3, r.end.y - 3), 2.5, Theme90.PAPER_HI)
-	draw_circle(Vector2(r.end.x - 3, r.end.y - 3), 1.6, Theme90.SUCCESS)
+	Theme90.text(self, f, Vector2(rr.position.x, rr.position.y + 3), _monogram(), 12,
+		Theme90.WHITE, rr.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	draw_circle(Vector2(rr.end.x - 3, rr.end.y - 3), 2.5, Theme90.PAPER_HI)
+	draw_circle(Vector2(rr.end.x - 3, rr.end.y - 3), 1.6, Theme90.SUCCESS)
 
 
 func _monogram() -> String:

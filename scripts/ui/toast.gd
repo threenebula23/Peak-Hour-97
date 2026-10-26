@@ -148,8 +148,15 @@ class ToastItem:
 		var r := Rect2(Vector2.ZERO, size)
 		var col := _kind_color()
 		Theme90.draw_bevel(self, r, false, 1.0, Theme90.PAPER_HI)
-		# цветная точка-статус вместо тяжёлой иконки; при входе чуть крупнее
+		# Цветная кромка и мягкая подложка по типу сообщения: тост заметнее,
+		# но текст остаётся на бумаге (контраст не меняется).
 		var ps := clampf(pop_scale, 0.0, 1.6)
+		draw_rect(Rect2(1.0, 1.0, 3.0, maxf(0.0, size.y - 2.0)),
+			Theme90.alpha_of(col, 0.55 + 0.35 * clampf(ps - 0.55, 0.0, 1.0)))
+		draw_style_box(Theme90.box(Theme90.alpha_of(col, 0.045 * ps),
+			Theme90.alpha_of(col, 0.26 * clampf(ps, 0.0, 1.0)), 3, 1),
+			r.grow(-1.5))
+		# цветная точка-статус вместо тяжёлой иконки; при входе чуть крупнее
 		draw_circle(Vector2(15, size.y * 0.5), 4.0 * ps,
 			Color(col.r, col.g, col.b, 0.18))
 		draw_circle(Vector2(15, size.y * 0.5), 2.4 * ps, col)

@@ -12,6 +12,8 @@ var _fails := 0
 
 const SHOP := preload("res://scripts/systems/shop.gd")
 const REGISTRY_SCRIPT := preload("res://scripts/core/file_registry.gd")
+const FG := preload("res://scripts/ui/file_grid.gd")
+const ST := preload("res://scripts/ui/sorting_table.gd")
 
 
 func _init() -> void:
@@ -63,6 +65,12 @@ func _init() -> void:
 	_eq(int(grid_stats.get("total", 0)), 20, "сетка 5×4 = 20 клеток")
 	_eq(int(main.grid.grid_metrics().get("cols", 0)), 5, "сетка: 5 столбцов")
 	_eq(int(main.grid.grid_metrics().get("rows", 0)), 4, "сетка: 4 строки")
+	var gm: Dictionary = main.grid.grid_metrics()
+	var gsize: Vector2 = FG.grid_size_of(5, 4, float(gm["cell"]), FG.GAP)
+	_ok(float(gm["origin"].y) + gsize.y <= main.grid.size.y - FG.GRID_BOTTOM + 0.01,
+		"сетка: низ над резервом GRID_BOTTOM (%.1f <= %.1f)" % [
+			float(gm["origin"].y) + gsize.y,
+			main.grid.size.y - FG.GRID_BOTTOM])
 	var footer_files := int(grid_stats.get("files", 0))
 	_eq(str(main.grid.footer_text()),
 		"%d %s · 20 клеток" % [footer_files, _plural_files(footer_files)],
@@ -91,6 +99,14 @@ func _init() -> void:
 		_eq(main.sorting_table.total_cells(), 24, "стол сортировки 4×6 = 24 клетки")
 		_eq(main.sorting_table.grid_metrics().get("cols", 0), 4, "стол: 4 столбца")
 		_eq(main.sorting_table.grid_metrics().get("rows", 0), 6, "стол: 6 строк")
+		var tm: Dictionary = main.sorting_table.grid_metrics()
+		var tcell: Vector2 = tm["cell"]
+		var tsize: Vector2 = FG.grid_size_pair(4, 6, tcell, FG.GAP)
+		_ok(float(tm["origin"].y) + tsize.y <= main.sorting_table.size.y \
+				- ST.GRID_BOTTOM + 0.01,
+			"стол: низ над резервом GRID_BOTTOM (%.1f <= %.1f)" % [
+				float(tm["origin"].y) + tsize.y,
+				main.sorting_table.size.y - ST.GRID_BOTTOM])
 
 	# --- Магазин в H1 скрыт --------------------------------------------------
 	_ok(main._shop_btn != null and not main._shop_btn.visible,
@@ -458,6 +474,11 @@ func _test_shop_after_hour(main, game) -> void:
 	_ok(main.sorting_table != null and not main.sorting_table.visible,
 		"стол сортировки скрыт в час")
 	var director = main.controller.hour_director
+	# v4 overtime: H1 стартует с bootstrap-запросом, поэтому час не закроется,
+	# пока запрос активен. Закрываем его и запрещаем новые спавны в этом тике.
+	for req_id in director.active_requests.keys().duplicate():
+		director._cleanup_request(str(req_id), true)
+	director.active_request_limit = 0
 	director.time_left = 0.05
 	main.controller.tick(0.1)
 	await process_frame

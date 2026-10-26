@@ -85,37 +85,85 @@ var _pulse_tweens: Dictionary = {}
 ## M2: шаг обучения «send» подтверждается один раз за открытие мини-игры.
 var _send_tutorial_notified := false
 
-## Туториал первого часа показывается один раз за забег/реплей.
+## Обучение — отдельный режим «ЧАС ПИК 0». Никогда не запускается само:
+## только по кнопке «ОБУЧЕНИЕ» в главном меню.
 var _tutorial_shown := false
-var _tutorial_intro_shown := false
-var _tutorial_after_shown := false
-## Шаги обучения: key — событие завершения, timeout — аварийный автопереход.
+## Фиксированный сид: все спавны/мини-игры детерминированы.
+const TUTORIAL_SEED := 970097
+## Сколько секунд держим финальную карточку перед возвратом в меню.
+const TUTORIAL_CLOSE_SECONDS := 1.2
+const TUTORIAL_ACK_SECONDS := 0.55
+const TUTORIAL_BACKUP_PATH := "user://save.tutorial_backup.json"
+const TUTORIAL_SAVE_PATH := "user://save.json"
+
+## Подписи-описания элементов: игра на паузе, переход по «ДАЛЕЕ».
+const TUTORIAL_INTRO := [
+	{"target": "welcome", "title": "ЧАС ПИК 0",
+		"text": "Я БАЙТ, кот-диспетчер. Это учебная смена без риска: сначала я покажу элементы, потом ты сделаешь всё сам. Игра на паузе."},
+	{"target": "receive", "title": "ПРИЁМ",
+		"text": "Сюда приходят пакеты. Полоса «МЕСТО В ПРИЁМЕ» — буфер. Пакет ждёт ограниченное время, а на складе занимает клетки по форме."},
+	{"target": "files", "title": "ПАПКИ И СКЛАД",
+		"text": "Слева — диски и папки, справа — файлы открытой папки. Пакеты и файлы перетаскиваются мышью; фигура занимает несколько клеток."},
+	{"target": "send", "title": "ОТПРАВКА",
+		"text": "Здесь запросы клиентов. Чипы показывают, каких файлов не хватает. Прикрепи нужные файлы к карточке — и заказ готов к отправке."},
+	{"target": "slots", "title": "СЛОТЫ И TCP",
+		"text": "Для TCP-заказа сначала «ПОДКЛЮЧИТЬСЯ»: мини-игра открывает соединение и занимает слот. Без свободного слота отправка не начнётся."},
+	{"target": "shop", "title": "МАГАЗИН",
+		"text": "После часа появляются апгрейды: скорость, слоты, буфер, защита. В обучении магазин открыт сразу — просто посмотри ассортимент."},
+	{"target": "sla", "title": "SLA И АТАКИ",
+		"text": "SLA — репутация узла. Провал запроса и пропущенная атака снижают её. Атаки отражаются мини-игрой; следи за шкалой."},
+	{"target": "reject", "title": "ОТКАЗ И ТАЙМАУТ",
+		"text": "Иногда заказ выгоднее отклонить: штраф меньше потерь. Если не успеть — сработает таймаут, и SLA тоже просядет."},
+	{"target": "practice", "title": "ПОЕХАЛИ",
+		"text": "Теперь твоя очередь. Я подскажу каждый шаг и не дам часу закончиться. Любой шаг можно пропустить."},
+]
+## Интерактивные шаги: key — событие завершения, timeout — аварийный автопереход.
+## Индексы сохранены совместимыми со старым обучением (3 = send).
 const TUTORIAL_STEPS := [
 	{"key": "packet",
-		"text": "Перетащи пакет из «ПРИЁМА» в папку", "timeout": 30.0},
+		"text": "Перетащи пакет из «ПРИЁМА» в открытую папку. Он займёт клетки по форме.",
+		"timeout": 60.0},
 	{"key": "attach",
-		"text": "Открой папку и перетащи файл в карточку запроса", "timeout": 40.0},
+		"text": "Открой файл в папке и перетащи его в карточку запроса. Сначала файл, потом «ПОДКЛЮЧИТЬСЯ».",
+		"timeout": 70.0},
 	{"key": "connect",
-		"text": "Нажми «ПОДКЛЮЧИТЬСЯ» и попади в зелёную зону три раза",
-		"timeout": 45.0},
+		"text": "Нажми «ПОДКЛЮЧИТЬСЯ» и попади в зелёную зону три раза. Так занимается слот TCP.",
+		"timeout": 70.0},
 	{"key": "send",
-		"text": "Пройди мини-игру: качество влияет на оплату", "timeout": 40.0},
-	{"key": "sla", "text": "Следи за SLA и отражай атаки", "timeout": 12.0},
+		"text": "Нажми «ОТПРАВИТЬ» и пройди мини-игру. Качество влияет на оплату.",
+		"timeout": 70.0},
+	{"key": "folder",
+		"text": "Перетащи любой файл в другую папку — так работает склад. Клетки освобождаются и занимаются.",
+		"timeout": 60.0},
+	{"key": "shop",
+		"text": "Открой «МАГАЗИН», посмотри апгрейды и закрой окно. Покупки усиливают смену.",
+		"timeout": 60.0},
+	{"key": "attack",
+		"text": "Идёт учебная атака. Отрази её — пропуск сильно бьёт по SLA.",
+		"timeout": 75.0},
+	{"key": "reject",
+		"text": "У этого запроса плохие условия — нажми «ОТКЛОНИТЬ». Таймаут тоже возможен, но штраф больше.",
+		"timeout": 60.0},
 ]
-const TUTORIAL_ACK_SECONDS := 0.6
-const TUTORIAL_CLOSE_SECONDS := 0.9
 
+var _tutorial_mode := false
 var _tutorial_active := false
-var _tutorial_pending := false
 var _tutorial_closing := false
+var _tutorial_phase := ""  # intro / practice
+var _tutorial_intro_index := -1
 var _tutorial_step := -1
 var _tutorial_step_elapsed := 0.0
 var _tutorial_ack_left := 0.0
 var _tutorial_close_left := 0.0
-var _tutorial_waiting_spawn := false
-var _tutorial_force_show := false
+var _tutorial_paused := false
+var _tutorial_pending_spawn := ""
+var _tutorial_spawn_left := 0.0
+var _tutorial_cleanup_guard := false
+var _tutorial_request_id := ""
+var _tutorial_had_save := false
 var _tutorial_overlay = null
 var _tutorial_next_btn: Button90 = null
+var _tutorial_skip_btn: Button90 = null
 ## Пустое состояние ОТПРАВКИ: неинтерактивная плашка внутри content.
 var _requests_empty: Control = null
 var _requests_empty_hint: Label = null
@@ -191,6 +239,8 @@ func _ready() -> void:
 	main_menu.visible = true
 	_apply_phase_panels(true)
 	_update_shop_visibility()
+	Audio.set_scene("menu")
+	Audio.set_low_sla(false)
 	_fade_modal(main_menu, 0.20)
 	if _demo_requested():
 		call_deferred("_start_demo")
@@ -526,6 +576,9 @@ func _show_about() -> void:
 
 
 func _to_menu() -> void:
+	if _tutorial_mode:
+		_tutorial_finish()
+		return
 	if controller != null:
 		controller.save()
 	if pause_modal != null:
@@ -538,6 +591,9 @@ func _to_menu() -> void:
 	if controller != null:
 		# В час фаза остаётся hour: таймер держим на паузе до «Продолжить».
 		controller.set_paused(controller.phase == GAME_CONTROLLER.PHASE_HOUR)
+	Audio.set_scene("menu")
+	Audio.set_low_sla(false)
+	Audio.set_shop_open(false)
 	if main_menu != null:
 		_refresh_menu_save_state()
 		main_menu.visible = true
@@ -573,7 +629,10 @@ func _build_modals() -> void:
 	shop_modal.buy_requested.connect(_on_shop_buy)
 	shop_modal.reroll_requested.connect(_on_shop_reroll)
 	shop_modal.lock_toggled.connect(_on_shop_lock)
-	shop_modal.closed.connect(func() -> void: shop_modal.visible = false)
+	shop_modal.closed.connect(func() -> void:
+		Audio.set_shop_open(false)
+		shop_modal.visible = false
+		_on_tutorial_shop_closed())
 	shop_modal.visible = false
 
 	hour_result_modal = HourResultModal.new()
@@ -644,14 +703,7 @@ func _start_new_run() -> void:
 		return
 	_hour_ui_shown = false
 	_tutorial_shown = false
-	_tutorial_intro_shown = false
-	_tutorial_after_shown = false
-	# start_tutorial(replay) из меню до «Нового забега» не должен теряться.
-	var tutorial_replay_pending := _tutorial_pending or _tutorial_force_show
-	_tutorial_reset()
-	if tutorial_replay_pending:
-		_tutorial_pending = true
-		_tutorial_force_show = true
+	_tutorial_abort(false)
 	if mascot != null:
 		mascot.hide_message()
 	if hour_result_modal != null:
@@ -659,6 +711,8 @@ func _start_new_run() -> void:
 	if run_result_modal != null:
 		run_result_modal.visible = false
 	controller.new_run(int(Time.get_unix_time_from_system()))
+	Audio.set_shop_open(false)
+	Audio.set_scene("game")
 	# new_run сбрасывает stats — возвращаем настройки, чтобы они жили между забегами.
 	if not _settings_cache.is_empty() and Game.stats != null:
 		Game.stats["settings"] = _settings_cache.duplicate(true)
@@ -674,15 +728,15 @@ func start_new_run() -> void:
 	_start_new_run()
 
 
-## «ОБУЧЕНИЕ» в главном меню: сбрасываем tutorial_done и стартуем новый забег,
-## чтобы обучение прошло в подготовке и первом часу. Если забег уже идёт,
-## не начинаем второй — просто перезапускаем обучение на текущем часу.
+## «ОБУЧЕНИЕ» в главном меню: отдельный режим «ЧАС ПИК 0».
+## Ничего не продолжает и не сохраняет: после финала — возврат в меню.
 func _on_menu_tutorial() -> void:
-	if controller != null and controller.phase != GAME_CONTROLLER.PHASE_MENU:
-		start_tutorial(true)
-		return
-	start_tutorial(true)
-	_start_new_run()
+	_start_tutorial_mode()
+
+
+## Публичный алиас для dev_capture/тестов.
+func start_tutorial(_replay: bool = false) -> void:
+	_start_tutorial_mode()
 
 
 # --------------------------------------------------------------------------
@@ -737,6 +791,8 @@ func _continue_run() -> void:
 	# load_game восстанавливает реестр — сигналы старого больше не нужны.
 	_bind_registry_signals()
 	_apply_saved_settings()
+	Audio.set_shop_open(false)
+	Audio.set_scene("game")
 	main_menu.visible = false
 	_refresh_prep()
 
@@ -792,7 +848,6 @@ func _refresh_prep() -> void:
 	_apply_phase_panels(true)
 	_update_status(d)
 	_update_shop_visibility()
-	_maybe_show_prep_tutorial()
 
 
 ## v2: prep_data контроллера ещё отдаёт capacity=16; заменяем на реальные
@@ -855,24 +910,24 @@ func _show_folder(folder_id: String, folder_name: String, section_id: String, d:
 
 
 # --------------------------------------------------------------------------
-# Маскот-туториал (БАЙТ)
+# Обучение «ЧАС ПИК 0» (кот БАЙТ)
 # --------------------------------------------------------------------------
 
 func _init_mascot() -> void:
 	mascot = TutorialMascot.new()
 	mascot.name = "TutorialMascot"
-	# Компактный БАЙТ: 64 px робот + облачко 210 px, в свободном низу сетки.
-	mascot.bubble_width = 210.0
-	mascot.set_robot_scale(0.67)
+	# Кот 76 px + облачко 300 px: читаемо и не закрывает центр стола.
+	mascot.bubble_width = 300.0
+	mascot.set_robot_scale(0.8)
 	add_child(mascot)
-	mascot.position = Vector2(548, 492)
+	mascot.position = Vector2(458, 420)
 	mascot.visible = false
 	# Маскот живёт под модалками, но над рабочим столом.
 	if modal_root != null:
 		move_child(mascot, modal_root.get_index())
 
 
-## Подсветка цели и маленький «ДАЛЕЕ»: оба не перекрывают игровой ввод.
+## Подсветка цели, «ДАЛЕЕ» и «ПРОПУСТИТЬ»: оба не перекрывают игровой ввод.
 func _init_tutorial_hud() -> void:
 	_tutorial_overlay = TutorialHighlight.new()
 	_tutorial_overlay.name = "TutorialHighlight"
@@ -883,107 +938,579 @@ func _init_tutorial_hud() -> void:
 	_tutorial_next_btn = Button90.new()
 	_tutorial_next_btn.name = "TutorialNext"
 	_tutorial_next_btn.caption = "ДАЛЕЕ"
-	_tutorial_next_btn.caption_size = 10
-	_tutorial_next_btn.flat_style = true
-	_tutorial_next_btn.size = Vector2(58, 16)
-	_tutorial_next_btn.tooltip_text = "Пропустить шаг обучения"
-	_tutorial_next_btn.pressed.connect(_tutorial_skip_current)
+	_tutorial_next_btn.caption_size = 11
+	_tutorial_next_btn.accent = true
+	_tutorial_next_btn.size = Vector2(90, 22)
+	_tutorial_next_btn.tooltip_text = "Следующая подпись"
+	_tutorial_next_btn.pressed.connect(_tutorial_next)
 	add_child(_tutorial_next_btn)
 	_tutorial_next_btn.visible = false
+
+	_tutorial_skip_btn = Button90.new()
+	_tutorial_skip_btn.name = "TutorialSkip"
+	_tutorial_skip_btn.caption = "ПРОПУСТИТЬ"
+	_tutorial_skip_btn.caption_size = 9
+	_tutorial_skip_btn.flat_style = true
+	_tutorial_skip_btn.size = Vector2(104, 22)
+	_tutorial_skip_btn.tooltip_text = "Пропустить текущий шаг"
+	_tutorial_skip_btn.pressed.connect(_tutorial_skip_current)
+	add_child(_tutorial_skip_btn)
+	_tutorial_skip_btn.visible = false
 	if modal_root != null:
 		move_child(_tutorial_overlay, modal_root.get_index())
 		move_child(_tutorial_next_btn, modal_root.get_index())
+		move_child(_tutorial_skip_btn, modal_root.get_index())
 
 
-## В headless маскот не показываем: он не должен влиять на тесты.
+## В headless маскот/подсветку не рисуем, но состояние обучения работает.
 func _tutorial_enabled() -> bool:
 	return mascot != null and DisplayServer.get_name() != "headless"
 
 
-func _maybe_show_prep_tutorial() -> void:
-	if not _tutorial_enabled() or controller == null:
+func _tutorial_total_steps() -> int:
+	return TUTORIAL_INTRO.size() + TUTORIAL_STEPS.size()
+
+
+## Отдельный режим: фиксированный сид, детерминированные файлы и спавны.
+func _start_tutorial_mode() -> void:
+	if controller == null:
 		return
-	if controller.phase != GAME_CONTROLLER.PHASE_PREP:
+	if _tutorial_mode:
+		_tutorial_abort(true)
+	_tutorial_backup_save()
+	_tutorial_mode = true
+	_tutorial_shown = true
+	Audio.set_scene("game")
+	Audio.set_low_sla(false)
+	_tutorial_active = true
+	_tutorial_closing = false
+	_tutorial_phase = ""
+	_tutorial_intro_index = -1
+	_tutorial_step = -1
+	_tutorial_close_left = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_pending_spawn = ""
+	_tutorial_spawn_left = 0.0
+	_tutorial_request_id = ""
+	_auto_paused = false
+	if hour_result_modal != null:
+		hour_result_modal.visible = false
+	if run_result_modal != null:
+		run_result_modal.visible = false
+	if pause_modal != null:
+		pause_modal.visible = false
+	if shop_modal != null:
+		shop_modal.visible = false
+	if main_menu != null:
+		main_menu.visible = false
+	if title_bar != null:
+		title_bar.title = "PEAK HOUR 97 · ОБУЧЕНИЕ"
+	controller.new_run(TUTORIAL_SEED)
+	_seed_tutorial_world()
+	_refresh_prep()
+	if not controller.start_hour():
+		_tutorial_finish()
 		return
-	if not _tutorial_intro_shown:
-		_tutorial_intro_shown = true
-		mascot.set_step(0)
-		mascot.show_message("Привет, я БАЙТ. Час пик начинается с приёма пакетов.", 8.0)
+	_configure_tutorial_hour()
+	_on_phase(GAME_CONTROLLER.PHASE_HOUR)
+	# Детерминированный набор: один пакет в приём и один TCP-запрос.
+	var director = _hour_director()
+	if director != null:
+		director.spawn_packet_now("text", "tcp")
+		_tutorial_request_id = str(director.spawn_request_now(1, "tcp"))
+		_soften_tutorial_timers()
+	_refresh_hour()
+	_tutorial_enter_intro(0)
+
+
+## Постоянный склад: 2 папки по умолчанию + третья для шага «папки».
+func _seed_tutorial_world() -> void:
+	if Game.registry == null:
 		return
-	var hours_done := int(Game.stats.get("hours_done", 0)) if Game.stats != null else 0
-	if _tutorial_after_shown or Game.hour <= 1 or hours_done <= 0:
+	var first := ""
+	for section in Game.registry.sections.values():
+		for folder_id in section.folder_ids:
+			if first.is_empty():
+				first = str(folder_id)
+	if first.is_empty():
 		return
-	_tutorial_after_shown = true
-	mascot.set_step(0)
-	if Game.feature_unlocked("shop"):
-		mascot.show_message("Магазин открылся — загляни в «МАГАЗИН» в строке меню.", 7.0)
+	var existing := {}
+	for file in Game.registry.files.values():
+		existing[str(file.name)] = true
+	var names := ["договор_0", "смета_0", "акт_0", "образец_0"]
+	for i in names.size():
+		if existing.has(names[i]):
+			continue
+		Game.registry.create_file(names[i], "text", first)
+	# Вторая папка для перемещения файлов.
+	var has_second := false
+	for folder in Game.registry.folders.values():
+		if str(folder.id) != first:
+			has_second = true
+			break
+	if not has_second:
+		Game.registry.create_folder("C", "Обучение")
+
+
+## Учебные сущности не должны сгорать по таймеру, пока игрок читает шаг.
+func _soften_tutorial_timers() -> void:
+	var director = _hour_director()
+	if director == null:
+		return
+	for packet in director.active_packets.values():
+		packet.time_left = 900.0
+		packet.timer_total = 900.0
+	for req in director.active_requests.values():
+		req.time_left = 900.0
+		req.timer_total = 900.0
+
+
+## Гасим автоспавн и overtime: час 0 идёт только по шагам игрока.
+func _configure_tutorial_hour() -> void:
+	var director = _hour_director()
+	if director == null:
+		return
+	director.spawn_window = -1.0
+	director._next_spawn_at = 999999.0
+	director.active_request_limit = 0
+	director.requests_spawned = 1
+	director.time_left = 9999.0
+	director.overtime = false
+	if director.attack_director != null:
+		director.attack_director._schedule.clear()
+		director.attack_director._next_index = 0
+		if director.attack_director.has_method("set_allow_spawn"):
+			director.attack_director.set_allow_spawn(false)
+
+
+func _tutorial_pause_game(value: bool) -> void:
+	_tutorial_paused = bool(value)
+	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_HOUR:
+		controller.set_paused(_tutorial_paused)
+
+
+func _tutorial_enter_intro(index: int) -> void:
+	if not _tutorial_active or _tutorial_closing:
+		return
+	if index < 0 or index >= TUTORIAL_INTRO.size():
+		_tutorial_enter_practice(0)
+		return
+	_tutorial_phase = "intro"
+	_tutorial_intro_index = index
+	_tutorial_step = -1
+	_tutorial_ack_left = 0.0
+	_tutorial_pending_spawn = ""
+	_tutorial_pause_game(true)
+	var def: Dictionary = TUTORIAL_INTRO[index]
+	if _tutorial_enabled() and mascot != null:
+		mascot.show_tutorial(str(def.get("title", "")), str(def.get("text", "")), -1.0)
+		mascot.set_step(index + 1)
+		mascot.set_progress(index + 1, _tutorial_total_steps())
+	if _tutorial_overlay != null:
+		_tutorial_overlay.set_dim(0.09)
+	_tutorial_update_targets()
+	_tutorial_show_buttons(true)
+
+
+func _tutorial_enter_practice(index: int) -> void:
+	if not _tutorial_active or _tutorial_closing:
+		return
+	if index >= TUTORIAL_STEPS.size():
+		_tutorial_close()
+		return
+	_tutorial_phase = "practice"
+	_tutorial_intro_index = -1
+	_tutorial_step = index
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_pending_spawn = ""
+	_tutorial_spawn_left = 0.0
+	_tutorial_pause_game(false)
+	var step_no := TUTORIAL_INTRO.size() + index + 1
+	var step: Dictionary = TUTORIAL_STEPS[index]
+	if _tutorial_enabled() and mascot != null:
+		mascot.show_tutorial("ПРАКТИКА %d / %d" % [index + 1, TUTORIAL_STEPS.size()],
+			str(step.get("text", "")), -1.0)
+		mascot.set_step(step_no)
+		mascot.set_progress(step_no, _tutorial_total_steps())
+	_prepare_practice_step(str(step.get("key", "")))
+	if _tutorial_overlay != null:
+		_tutorial_overlay.set_dim(0.0)
+	_tutorial_update_targets()
+	_tutorial_show_buttons(false)
+
+
+## Точечная подготовка шага: запрос/атака/магазин появляются ровно тогда, когда нужны.
+func _prepare_practice_step(key: String) -> void:
+	var director = _hour_director()
+	if director == null:
+		return
+	match key:
+		"packet":
+			if not _has_hour_packet():
+				_tutorial_pending_spawn = "packet"
+				_tutorial_spawn_left = 0.4
+		"attach", "connect", "send":
+			if _tutorial_request_id.is_empty() or not director.has_request(_tutorial_request_id):
+				_tutorial_request_id = str(director.spawn_request_now(1, "tcp"))
+				_soften_tutorial_timers()
+		"shop":
+			if controller != null and controller.shop != null:
+				controller.shop.refresh(2, int(Game.money))
+			_update_shop_visibility()
+		"attack":
+			_tutorial_pending_spawn = "attack"
+			_tutorial_spawn_left = 0.5
+		"reject":
+			_tutorial_pending_spawn = "reject"
+			_tutorial_spawn_left = 0.5
+	_update_shop_visibility()
+
+
+func _tutorial_show_buttons(intro: bool) -> void:
+	if _tutorial_next_btn == null or _tutorial_skip_btn == null:
+		return
+	var on := _tutorial_enabled()
+	_tutorial_next_btn.visible = on and intro
+	_tutorial_skip_btn.visible = on
+	if intro:
+		var last := _tutorial_intro_index >= TUTORIAL_INTRO.size() - 1
+		_tutorial_next_btn.caption = "НАЧАТЬ" if last else "ДАЛЕЕ"
+		_tutorial_skip_btn.caption = "ПРОПУСТИТЬ"
+		_tutorial_skip_btn.tooltip_text = "Перейти сразу к практике"
 	else:
-		mascot.show_message("Дальше будет сложнее. Держи SLA выше нуля.", 7.0)
+		_tutorial_skip_btn.caption = "ПРОПУСТИТЬ ШАГ"
+		_tutorial_skip_btn.tooltip_text = "Пропустить текущий шаг"
+	_tutorial_position_buttons()
+
+
+func _tutorial_position_buttons() -> void:
+	if mascot == null or _tutorial_next_btn == null or _tutorial_skip_btn == null:
+		return
+	var right := mascot.position.x + mascot.size.x
+	var y := mascot.position.y + mascot.size.y + 6.0
+	_tutorial_skip_btn.position = Vector2(right - _tutorial_skip_btn.size.x, y)
+	_tutorial_next_btn.position = Vector2(
+		_tutorial_skip_btn.position.x - _tutorial_next_btn.size.x - 6.0, y)
+
+
+func _tutorial_next() -> void:
+	if not _tutorial_active or _tutorial_closing:
+		return
+	if _tutorial_phase == "intro":
+		if _tutorial_intro_index >= TUTORIAL_INTRO.size() - 1:
+			_tutorial_enter_practice(0)
+		else:
+			_tutorial_enter_intro(_tutorial_intro_index + 1)
+	else:
+		_tutorial_advance(false)
+
+
+func _tutorial_skip_current() -> void:
+	if not _tutorial_active or _tutorial_closing:
+		return
+	if _tutorial_phase == "intro":
+		_tutorial_enter_practice(0)
+		return
+	_tutorial_advance(true)
+
+
+func _tutorial_tick(delta: float) -> void:
+	if _tutorial_mode and _tutorial_closing:
+		_tutorial_close_left = maxf(0.0, _tutorial_close_left - delta)
+		if _tutorial_close_left <= 0.0:
+			_tutorial_finish()
+		return
+	if not _tutorial_active:
+		return
+	if _tutorial_pending_spawn != "":
+		_tutorial_spawn_left = maxf(0.0, _tutorial_spawn_left - delta)
+		if _tutorial_spawn_left <= 0.0:
+			var spawn := _tutorial_pending_spawn
+			_tutorial_pending_spawn = ""
+			_tutorial_spawn_pending(spawn)
+	if _tutorial_phase != "practice" or _tutorial_step < 0:
+		return
+	if _tutorial_step >= TUTORIAL_STEPS.size():
+		return
+	if _tutorial_ack_left > 0.0:
+		_tutorial_ack_left = maxf(0.0, _tutorial_ack_left - delta)
+		if _tutorial_ack_left <= 0.0:
+			_tutorial_enter_practice(_tutorial_step)
+		return
+	_tutorial_step_elapsed += delta
+	var step: Dictionary = TUTORIAL_STEPS[_tutorial_step]
+	if _tutorial_step_elapsed >= float(step.get("timeout", 60.0)):
+		_tutorial_advance(true)
+
+
+func _tutorial_spawn_pending(which: String) -> void:
+	var director = _hour_director()
+	if director == null:
+		return
+	match which:
+		"packet":
+			director.spawn_packet_now("text", "tcp")
+		"attack":
+			if director.attack_director != null:
+				director.attack_director.spawn_attack("junk")
+		"reject":
+			if _tutorial_request_id.is_empty() or not director.has_request(_tutorial_request_id):
+				_tutorial_request_id = str(director.spawn_request_now(1, "tcp"))
+				_soften_tutorial_timers()
+	_soften_tutorial_timers()
+	_refresh_hour()
+
+
+## Событие шага: принимаем только текущий key (остальные игнорируем).
+func _tutorial_notify(key: String) -> void:
+	if _tutorial_cleanup_guard:
+		return
+	if not _tutorial_active or _tutorial_closing or _tutorial_step < 0:
+		return
+	if _tutorial_phase != "" and _tutorial_phase != "practice":
+		return
+	if _tutorial_ack_left > 0.0 or _tutorial_step >= TUTORIAL_STEPS.size():
+		return
+	if str(TUTORIAL_STEPS[_tutorial_step].get("key", "")) != key:
+		return
+	_tutorial_advance(false)
+
+
+func _tutorial_advance(skipped: bool) -> void:
+	if not _tutorial_active or _tutorial_step < 0:
+		return
+	var current_key := str(TUTORIAL_STEPS[_tutorial_step].get("key", ""))
+	if skipped:
+		_tutorial_cleanup_step(current_key)
+	if _tutorial_step >= TUTORIAL_STEPS.size() - 1:
+		_tutorial_close()
+		return
+	_tutorial_step += 1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = TUTORIAL_ACK_SECONDS
+	_tutorial_pending_spawn = ""
+	if _tutorial_enabled() and mascot != null:
+		mascot.show_tutorial("ПРАКТИКА",
+			"ПРОПУСК" if skipped else "ГОТОВО", -1.0)
+		mascot.set_step(TUTORIAL_INTRO.size() + _tutorial_step + 1)
+		mascot.set_progress(TUTORIAL_INTRO.size() + _tutorial_step + 1,
+			_tutorial_total_steps())
+	_tutorial_hide_targets()
+	if _tutorial_next_btn != null:
+		_tutorial_next_btn.visible = false
+	if _tutorial_skip_btn != null:
+		_tutorial_skip_btn.visible = false
+
+
+## Пропуск шага не должен оставлять открытую мини-игру/магазин поверх следующего.
+func _tutorial_cleanup_step(key: String) -> void:
+	var director = _hour_director()
+	_tutorial_cleanup_guard = true
+	match key:
+		"attack":
+			if director != null and director.attack_director != null \
+					and director.attack_director.has_method("cancel_active"):
+				director.attack_director.cancel_active()
+		"shop":
+			if shop_modal != null and shop_modal.visible:
+				shop_modal.close()
+		"connect", "send":
+			_drop_active_game_modal()
+			if director != null and director.has_method("force_close_send_minigame"):
+				director.force_close_send_minigame()
+		"reject":
+			if director != null and not _tutorial_request_id.is_empty() \
+					and director.has_request(_tutorial_request_id):
+				director.reject_request(_tutorial_request_id)
+	_tutorial_pending_spawn = ""
+	_tutorial_spawn_left = 0.0
+	_tutorial_cleanup_guard = false
+func _tutorial_close() -> void:
+	if not _tutorial_active:
+		return
+	_tutorial_active = false
+	_tutorial_closing = true
+	_tutorial_close_left = TUTORIAL_CLOSE_SECONDS
+	_tutorial_step = -1
+	_tutorial_intro_index = -1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_pending_spawn = ""
+	_tutorial_hide_targets()
+	_tutorial_pause_game(true)
+	if _tutorial_enabled() and mascot != null:
+		mascot.show_tutorial("ГОТОВО", "Обучение завершено. Возвращаю в главное меню.", -1.0)
+		mascot.set_step(0)
+		mascot.set_progress(_tutorial_total_steps(), _tutorial_total_steps())
+	if Game.stats != null:
+		Game.stats["tutorial_done"] = true
+
+
+func _tutorial_hide() -> void:
+	_tutorial_active = false
+	_tutorial_closing = false
+	_tutorial_phase = ""
+	_tutorial_intro_index = -1
+	_tutorial_step = -1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_close_left = 0.0
+	_tutorial_pending_spawn = ""
+	_tutorial_spawn_left = 0.0
+	if mascot != null:
+		mascot.hide_message()
+	_tutorial_hide_targets()
+
+
+func _tutorial_reset() -> void:
+	_tutorial_active = false
+	_tutorial_closing = false
+	_tutorial_phase = ""
+	_tutorial_intro_index = -1
+	_tutorial_step = -1
+	_tutorial_step_elapsed = 0.0
+	_tutorial_ack_left = 0.0
+	_tutorial_close_left = 0.0
+	_tutorial_pending_spawn = ""
+	_tutorial_spawn_left = 0.0
+	_tutorial_request_id = ""
+	_tutorial_hide_targets()
+	if mascot != null:
+		mascot.hide_message()
+
+
+## Возврат из модалки/меню: восстановить текущую карточку и подсветку.
+func _tutorial_restore_bubble() -> void:
+	if not _tutorial_mode or not _tutorial_active or _tutorial_closing:
+		return
+	if _tutorial_phase == "intro" and _tutorial_intro_index >= 0:
+		_tutorial_enter_intro(_tutorial_intro_index)
+	elif _tutorial_phase == "practice" and _tutorial_step >= 0:
+		var keep_elapsed := _tutorial_step_elapsed
+		_tutorial_enter_practice(_tutorial_step)
+		_tutorial_step_elapsed = keep_elapsed
+
+
+## Завершение режима: остановить час, убрать забег и вернуть главное меню.
+func _tutorial_finish() -> void:
+	if not _tutorial_mode:
+		return
+	_tutorial_mode = false
+	_tutorial_hide()
+	var director = _hour_director()
+	if director != null:
+		director.overtime = false
+		if director.has_method("stop_for_run_end"):
+			director.stop_for_run_end()
+	_drop_active_game_modal()
+	if controller != null:
+		controller.phase = GAME_CONTROLLER.PHASE_MENU
+		controller.paused = false
+		controller.modal_open = false
+	_clear_hour_panels()
+	_hour_ui_shown = false
+	Game.reset_run()
+	if title_bar != null:
+		title_bar.title = "PEAK HOUR 97"
+	_apply_phase_panels(true)
+	_update_shop_visibility()
+	_tutorial_restore_save()
+	Audio.set_shop_open(false)
+	Audio.set_scene("menu")
+	Audio.set_low_sla(false)
+	if main_menu != null:
+		main_menu.visible = true
+		_refresh_menu_save_state()
+		_fade_modal(main_menu, 0.20)
+	_toast("ОБУЧЕНИЕ ЗАВЕРШЕНО · ЗАБЕГ НЕ СОХРАНЁН", "info")
+
+
+## Прервать режим без показа финала (новый забег/выход в меню).
+func _tutorial_abort(restore_save: bool = true) -> void:
+	if not _tutorial_mode:
+		_tutorial_reset()
+		return
+	_tutorial_mode = false
+	_tutorial_hide()
+	var director = _hour_director()
+	if director != null:
+		director.overtime = false
+		if director.has_method("stop_for_run_end"):
+			director.stop_for_run_end()
+	if restore_save:
+		_tutorial_restore_save()
+	Audio.set_shop_open(false)
+
+
+## Сохраняем прежний забег и возвращаем его после обучения.
+func _tutorial_backup_save() -> void:
+	_tutorial_had_save = FileAccess.file_exists(TUTORIAL_SAVE_PATH)
+	_remove_user_file(TUTORIAL_BACKUP_PATH)
+	if not _tutorial_had_save:
+		return
+	var src := FileAccess.open(TUTORIAL_SAVE_PATH, FileAccess.READ)
+	if src == null:
+		_tutorial_had_save = false
+		return
+	var bytes := src.get_buffer(src.get_length())
+	src.close()
+	var dst := FileAccess.open(TUTORIAL_BACKUP_PATH, FileAccess.WRITE)
+	if dst == null:
+		_tutorial_had_save = false
+		return
+	dst.store_buffer(bytes)
+	dst.close()
+
+
+func _tutorial_restore_save() -> void:
+	if _tutorial_had_save and FileAccess.file_exists(TUTORIAL_BACKUP_PATH):
+		var src := FileAccess.open(TUTORIAL_BACKUP_PATH, FileAccess.READ)
+		if src != null:
+			var bytes := src.get_buffer(src.get_length())
+			src.close()
+			var dst := FileAccess.open(TUTORIAL_SAVE_PATH, FileAccess.WRITE)
+			if dst != null:
+				dst.store_buffer(bytes)
+				dst.close()
+	else:
+		_remove_user_file(TUTORIAL_SAVE_PATH)
+	_remove_user_file(TUTORIAL_BACKUP_PATH)
+	_tutorial_had_save = false
+
+
+func _remove_user_file(path: String) -> void:
+	if not FileAccess.file_exists(path):
+		return
+	DirAccess.remove_absolute(ProjectSettings.globalize_path(path))
 
 
 ## Совместимость с dev_capture: показать конкретный шаг без таймеров.
 func _show_tutorial_step(index: int) -> void:
-	if not _tutorial_enabled():
+	if not _tutorial_mode:
+		_start_tutorial_mode()
+	if not _tutorial_mode:
 		return
-	_tutorial_reset()
-	_tutorial_shown = true
-	_tutorial_active = true
-	_tutorial_force_show = true
-	_tutorial_begin_step(clampi(int(index), 0, TUTORIAL_STEPS.size() - 1))
-
-
-## Публичный запуск/реплей обучения (вызывает главное меню или тесты).
-func start_tutorial(replay: bool = false) -> void:
-	if replay and Game.stats != null:
-		Game.stats["tutorial_done"] = false
-	_tutorial_reset()
-	_tutorial_shown = true
-	_tutorial_active = true
-	_tutorial_pending = true
-	_tutorial_force_show = true
-	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_HOUR:
-		_tutorial_pending = false
-		_tutorial_begin_auto()
-
-
-## Автозапуск только на первом часу и только пока обучение не пройдено.
-func _maybe_show_tutorial() -> void:
-	if not _tutorial_enabled() or controller == null:
-		return
-	if controller.phase != GAME_CONTROLLER.PHASE_HOUR:
-		return
-	if _tutorial_active:
-		# Возврат из меню/настроек: bubble мог быть скрыт — восстанавливаем.
-		_tutorial_restore_bubble()
-		return
-	if _tutorial_pending:
-		_tutorial_pending = false
-		_tutorial_begin_auto()
-		return
-	if _tutorial_shown or int(Game.hour) != 1:
-		return
-	if Game.stats != null and bool(Game.stats.get("tutorial_done", false)):
-		return
-	_tutorial_shown = true
-	_tutorial_begin_auto()
-
-
-## Сразу начинаем шаг (a), если пакет уже есть; иначе ждём packet_added.
-func _tutorial_begin_auto() -> void:
-	_tutorial_active = true
-	_tutorial_closing = false
-	_tutorial_step = -1
-	_tutorial_step_elapsed = 0.0
-	_tutorial_ack_left = 0.0
-	_tutorial_waiting_spawn = false
-	if _tutorial_force_show or _has_hour_packet():
-		_tutorial_begin_step(0)
+	var i := clampi(int(index), 0, TUTORIAL_INTRO.size() + TUTORIAL_STEPS.size() - 1)
+	if i < TUTORIAL_INTRO.size():
+		_tutorial_enter_intro(i)
 	else:
-		_tutorial_waiting_spawn = true
-		if mascot != null:
-			mascot.set_step(1)
-			mascot.show_message("Ждём первый пакет…", -1.0)
-		_tutorial_hide_targets()
+		_tutorial_enter_practice(i - TUTORIAL_INTRO.size())
+
+
+## Автозапуск удалён: вне режима «ЧАС ПИК 0» обучение не появляется.
+func _maybe_show_prep_tutorial() -> void:
+	pass
+
+
+func _maybe_show_tutorial() -> void:
+	if _tutorial_mode:
+		_tutorial_restore_bubble()
+
+
+## Совместимость со старым кодом/тестами.
+func _tutorial_begin_auto() -> void:
+	_tutorial_enter_practice(0)
 
 
 func _has_hour_packet() -> bool:
@@ -1000,165 +1527,10 @@ func _hour_director():
 
 func _on_hour_packet_added(_id: String) -> void:
 	_kick_panels(1)
-	if _tutorial_active and _tutorial_waiting_spawn:
-		_tutorial_waiting_spawn = false
-		_tutorial_begin_step(0)
 
 
 func _on_hour_request_added(_id: String) -> void:
 	_kick_panels(1)
-
-
-func _tutorial_begin_step(index: int) -> void:
-	if not _tutorial_active:
-		return
-	if index >= TUTORIAL_STEPS.size():
-		_tutorial_close()
-		return
-	_tutorial_step = index
-	_tutorial_step_elapsed = 0.0
-	_tutorial_ack_left = 0.0
-	_tutorial_waiting_spawn = false
-	_tutorial_closing = false
-	var step: Dictionary = TUTORIAL_STEPS[index]
-	if mascot != null:
-		mascot.set_step(index + 1)
-		mascot.show_message(str(step.get("text", "")), -1.0)
-	_tutorial_update_targets()
-	_position_tutorial_next()
-	if _tutorial_next_btn != null:
-		_tutorial_next_btn.visible = true
-
-
-func _tutorial_tick(delta: float) -> void:
-	if controller != null and controller.phase != GAME_CONTROLLER.PHASE_HOUR:
-		return
-	if _tutorial_closing:
-		_tutorial_close_left = maxf(0.0, _tutorial_close_left - delta)
-		if _tutorial_close_left <= 0.0:
-			_tutorial_hide()
-		return
-	if not _tutorial_active or _tutorial_step < 0:
-		return
-	if _tutorial_step >= TUTORIAL_STEPS.size():
-		return
-	if _tutorial_ack_left > 0.0:
-		_tutorial_ack_left = maxf(0.0, _tutorial_ack_left - delta)
-		if _tutorial_ack_left <= 0.0:
-			_tutorial_begin_step(_tutorial_step)
-		return
-	_tutorial_step_elapsed += delta
-	var step: Dictionary = TUTORIAL_STEPS[_tutorial_step]
-	if _tutorial_step_elapsed >= float(step.get("timeout", 30.0)):
-		_tutorial_advance(true)
-
-
-## Событие шага: принимаем только текущий key (остальные игнорируем).
-func _tutorial_notify(key: String) -> void:
-	if not _tutorial_active or _tutorial_closing or _tutorial_step < 0:
-		return
-	if _tutorial_ack_left > 0.0 or _tutorial_step >= TUTORIAL_STEPS.size():
-		return
-	if str(TUTORIAL_STEPS[_tutorial_step].get("key", "")) != key:
-		return
-	_tutorial_advance(false)
-
-
-## Пропуск текущего шага кнопкой «ДАЛЕЕ».
-func _tutorial_skip_current() -> void:
-	if not _tutorial_active or _tutorial_closing:
-		return
-	_tutorial_advance(true)
-
-
-func _tutorial_advance(skipped: bool) -> void:
-	if not _tutorial_active or _tutorial_step < 0:
-		return
-	if _tutorial_step >= TUTORIAL_STEPS.size() - 1:
-		_tutorial_close()
-		return
-	_tutorial_step += 1
-	_tutorial_step_elapsed = 0.0
-	_tutorial_ack_left = TUTORIAL_ACK_SECONDS
-	if mascot != null:
-		mascot.set_step(0)
-		mascot.show_message("ПРОПУСК" if skipped else "ГОТОВО", -1.0)
-	_tutorial_hide_targets()
-	if _tutorial_next_btn != null:
-		_tutorial_next_btn.visible = false
-
-
-## Финал: фиксируем прохождение в stats (они уже сохраняются в save.json).
-func _tutorial_close() -> void:
-	_tutorial_active = false
-	_tutorial_closing = true
-	_tutorial_close_left = TUTORIAL_CLOSE_SECONDS
-	_tutorial_step = -1
-	_tutorial_step_elapsed = 0.0
-	_tutorial_ack_left = 0.0
-	_tutorial_waiting_spawn = false
-	_tutorial_hide_targets()
-	if mascot != null:
-		mascot.set_step(0)
-		mascot.show_message("ГОТОВО · ОБУЧЕНИЕ ЗАВЕРШЕНО", -1.0)
-	if Game.stats != null:
-		Game.stats["tutorial_done"] = true
-	if controller != null:
-		controller.save()
-
-
-func _tutorial_hide() -> void:
-	_tutorial_active = false
-	_tutorial_pending = false
-	_tutorial_closing = false
-	_tutorial_step = -1
-	_tutorial_step_elapsed = 0.0
-	_tutorial_ack_left = 0.0
-	_tutorial_waiting_spawn = false
-	_tutorial_force_show = false
-	if mascot != null:
-		mascot.hide_message()
-	_tutorial_hide_targets()
-
-
-func _tutorial_reset() -> void:
-	_tutorial_active = false
-	_tutorial_pending = false
-	_tutorial_closing = false
-	_tutorial_step = -1
-	_tutorial_step_elapsed = 0.0
-	_tutorial_ack_left = 0.0
-	_tutorial_close_left = 0.0
-	_tutorial_waiting_spawn = false
-	_tutorial_force_show = false
-	_tutorial_hide_targets()
-	if mascot != null:
-		mascot.hide_message()
-
-
-func _tutorial_restore_bubble() -> void:
-	if not _tutorial_active or _tutorial_closing or mascot == null:
-		return
-	if mascot.visible:
-		return
-	if _tutorial_step >= 0 and _tutorial_step < TUTORIAL_STEPS.size():
-		mascot.set_step(_tutorial_step + 1)
-		mascot.show_message(str(TUTORIAL_STEPS[_tutorial_step].get("text", "")), -1.0)
-		_tutorial_update_targets()
-		_position_tutorial_next()
-		if _tutorial_next_btn != null:
-			_tutorial_next_btn.visible = true
-	elif _tutorial_waiting_spawn:
-		mascot.set_step(1)
-		mascot.show_message("Ждём первый пакет…", -1.0)
-
-
-func _position_tutorial_next() -> void:
-	if mascot == null or _tutorial_next_btn == null:
-		return
-	_tutorial_next_btn.position = mascot.position + Vector2(
-		maxf(0.0, mascot.size.x - _tutorial_next_btn.size.x),
-		mascot.size.y + 2.0)
 
 
 func _tutorial_hide_targets() -> void:
@@ -1167,14 +1539,44 @@ func _tutorial_hide_targets() -> void:
 		_tutorial_overlay.visible = false
 	if _tutorial_next_btn != null:
 		_tutorial_next_btn.visible = false
+	if _tutorial_skip_btn != null:
+		_tutorial_skip_btn.visible = false
 
 
 func _tutorial_update_targets() -> void:
 	if _tutorial_overlay == null:
 		return
-	var rects: Array = _tutorial_targets(_tutorial_step)
+	var rects: Array = []
+	if _tutorial_phase == "intro" and _tutorial_intro_index >= 0:
+		rects = _intro_targets(str(TUTORIAL_INTRO[_tutorial_intro_index].get("target", "")))
+	elif _tutorial_phase == "practice" and _tutorial_step >= 0:
+		rects = _tutorial_targets(_tutorial_step)
 	_tutorial_overlay.set_targets(rects)
-	_tutorial_overlay.visible = not rects.is_empty()
+	_tutorial_overlay.visible = _tutorial_enabled() and not rects.is_empty()
+	if _tutorial_overlay.visible:
+		_tutorial_position_buttons()
+
+
+func _intro_targets(target: String) -> Array:
+	match target:
+		"receive":
+			return [_control_rect(receive_window)]
+		"files":
+			return [_control_rect(tree_window), _control_rect(files_window)]
+		"send":
+			return [_control_rect(send_window)]
+		"slots":
+			return [_control_rect(slots_strip), _status_segment_rect("tcp")]
+		"shop":
+			return [_control_rect(_shop_btn)]
+		"sla":
+			return [_status_segment_rect("sla")]
+		"reject":
+			return [_control_rect(send_window)]
+		"practice":
+			return []
+		_:
+			return [_control_rect(status_bar)]
 
 
 func _tutorial_targets(index: int) -> Array:
@@ -1183,19 +1585,21 @@ func _tutorial_targets(index: int) -> Array:
 	var key := str(TUTORIAL_STEPS[index].get("key", ""))
 	match key:
 		"packet":
-			return [_control_rect(receive_window)]
+			return [_control_rect(receive_window), _control_rect(tree_window)]
 		"attach":
-			return [_control_rect(files_window.content if files_window != null else null),
-				_control_rect(send_window)]
+			return [_control_rect(files_window), _control_rect(send_window)]
 		"connect":
-			for card in requests:
-				if card != null and is_instance_valid(card):
-					return [_control_rect(card)]
-			return [_control_rect(send_window)]
+			return [_control_rect(send_window), _status_segment_rect("tcp")]
 		"send":
 			return [_control_rect(send_window)]
-		"sla":
+		"folder":
+			return [_control_rect(tree_window), _control_rect(files_window)]
+		"shop":
+			return [_control_rect(_shop_btn)]
+		"attack":
 			return [_status_segment_rect("sla")]
+		"reject":
+			return [_control_rect(send_window)]
 	return []
 
 
@@ -1356,6 +1760,12 @@ func _update_shop_visibility() -> void:
 		return
 	var in_prep: bool = controller != null \
 		and controller.phase == GAME_CONTROLLER.PHASE_PREP
+	if _tutorial_mode:
+		# В «ЧАС ПИК 0» магазин доступен с первого шага.
+		_shop_btn.visible = true
+		if _start_btn != null:
+			_start_btn.visible = false
+		return
 	# Магазин появляется после первого часа и скрыт во время часа.
 	_shop_btn.visible = in_prep and int(Game.hour) > 1
 	if _start_btn != null:
@@ -1456,12 +1866,16 @@ func _update_status(d: Dictionary) -> void:
 	status_bar.set_metric("money", "$ %d" % int(d.get("money", 0)))
 	status_bar.set_metric("sla", "%d / %d" % [sla, sla_cap],
 		clampf(float(sla) / float(sla_cap), 0.0, 1.0))
-	status_bar.set_metric("hour", "ЧАС %d" % hour,
-		float(hour - 1) / float(GAME_CONTROLLER.HOURS_PER_RUN))
+	if _tutorial_mode:
+		status_bar.set_metric("hour", "ЧАС ПИК 0", 0.0)
+	else:
+		status_bar.set_metric("hour", "ЧАС %d" % hour,
+			float(hour - 1) / float(GAME_CONTROLLER.HOURS_PER_RUN))
 	status_bar.set_metric("tcp", "0 / %d" % slots_max, 0.0)
 	status_bar.set_metric("buffer", "0 / %d" % buffer_max, 0.0)
 	status_bar.set_metric("channel", "0/%d" % channel_cap, 0.0, false)
 	_channel_hot = false
+	Audio.set_low_sla(false)
 
 
 func _clear_hour_panels() -> void:
@@ -1507,12 +1921,18 @@ func _on_phase(phase: StringName) -> void:
 		_attack_alert.finish_now()
 		_attack_alert = null
 	_clear_modal_if_dead()
+	if _tutorial_mode and (phase == GAME_CONTROLLER.PHASE_HOUR_RESULT
+			or phase == GAME_CONTROLLER.PHASE_RUN_RESULT):
+		# Учебная смена не показывает отчёты часа/забега и не ждёт overtime.
+		_tutorial_finish()
+		return
 	if phase != GAME_CONTROLLER.PHASE_HOUR:
 		# Вне часа не должно оставаться ни одной игровой модалки: send/attack
 		# иначе висят поверх итогов часа/забега.
-		_drop_active_game_modal()
-		# Обучение живёт только внутри часа 1; вне часа шаги не тикают.
-		if _tutorial_active or _tutorial_closing:
+		if not _tutorial_mode:
+			_drop_active_game_modal()
+		# Обучение живёт только внутри «ЧАС ПИК 0»; вне режима шаги не тикают.
+		if (_tutorial_active or _tutorial_closing) and not _tutorial_mode:
 			_tutorial_hide()
 	match phase:
 		GAME_CONTROLLER.PHASE_PREP:
@@ -1541,6 +1961,14 @@ func _on_phase(phase: StringName) -> void:
 			_show_run_result()
 		_:
 			pass
+	if phase == GAME_CONTROLLER.PHASE_MENU:
+		Audio.set_scene("menu")
+		Audio.set_low_sla(false)
+		Audio.set_shop_open(false)
+	elif phase == GAME_CONTROLLER.PHASE_PREP \
+			or phase == GAME_CONTROLLER.PHASE_HOUR:
+		Audio.set_scene("game")
+		Audio.set_shop_open(false)
 	_update_shop_visibility()
 	_fade_phase()
 
@@ -1562,7 +1990,7 @@ func _show_hour() -> void:
 		_refresh_hour()
 		return
 	_hour_ui_shown = true
-	if mascot != null:
+	if mascot != null and not _tutorial_mode:
 		mascot.hide_message()
 	_reset_stress()
 	var active_director = _hour_director()
@@ -1575,7 +2003,10 @@ func _show_hour() -> void:
 	_bind_attack_stress_signals()
 	_refresh_hour()
 	_update_shop_visibility()
-	_toast("ЧАС %d НАЧАЛСЯ" % Game.hour, "success")
+	if _tutorial_mode:
+		_toast("ЧАС ПИК 0 · ТРЕНИРОВКА", "success")
+	else:
+		_toast("ЧАС %d НАЧАЛСЯ" % Game.hour, "success")
 
 
 ## Сигналы контроллера, которые нужны UI часа (подключаются один раз).
@@ -1902,6 +2333,9 @@ func _on_attack_resolved_ui(_kind: String, success: bool, _tier: int) -> void:
 	if stress_overlay != null:
 		stress_overlay.notify("relief" if success else "attack_fail")
 	_clear_modal_if_dead()
+	if _tutorial_mode:
+		_tutorial_notify("attack")
+		_tutorial_restore_bubble()
 
 
 ## Сбрасывает _modal_game, если нода освобождена или стоит в очереди на free.
@@ -2566,10 +3000,21 @@ func _refresh_hour_status(status: Dictionary) -> void:
 	status_bar.set_metric("buffer", "%d / %d" % [buffer_used, buffer_max],
 		clampf(float(buffer_used) / float(buffer_max), 0.0, 1.0))
 	status_bar.set_metric("money", "$ %d" % int(status.get("money", 0)))
-	status_bar.set_metric("hour", "ЧАС %d  %02d:%02d" % [hour, secs / 60, secs % 60],
-		float(hour - 1) / float(GAME_CONTROLLER.HOURS_PER_RUN))
+	if _tutorial_mode:
+		# Учебный час не уходит в overtime: финал обучения решает Main.
+		status_bar.set_metric("hour", "ЧАС ПИК 0", 0.0)
+	elif bool(status.get("overtime", false)):
+		var left_requests := int(status.get("requests_active", 0))
+		var finish_text := "ДОБИВАЕМ" if left_requests <= 0 \
+			else "ФИНИШ · %d ЗАПР." % left_requests
+		status_bar.set_metric("hour", finish_text, 1.0, true)
+	else:
+		status_bar.set_metric("hour", "ЧАС %d  %02d:%02d" % [hour, secs / 60, secs % 60],
+			float(hour - 1) / float(GAME_CONTROLLER.HOURS_PER_RUN))
 	if slot_count_label != null:
 		slot_count_label.text = "%d/%d" % [used, max_slots]
+	var sla_ratio := clampf(float(sla) / float(sla_cap), 0.0, 1.0)
+	Audio.set_low_sla(sla_ratio < 0.4, sla_ratio)
 
 
 # --------------------------------------------------------------------------
@@ -2976,8 +3421,13 @@ func _show_run_result() -> void:
 	if run_result_modal.visible:
 		return
 	var r: Dictionary = controller.run_result()
+	var won := bool(r.get("won", false))
+	if won:
+		Audio.set_scene("game")
+	else:
+		Audio.play_defeat()
 	run_result_modal.open({
-		"won": bool(r.get("won", false)),
+		"won": won,
 		"reason": _run_reason_text(str(r.get("reason", ""))),
 		"score": int(r.get("score", 0)),
 		"best": int(r.get("best", 0)),
@@ -3014,6 +3464,9 @@ func _on_run_result_menu() -> void:
 	if hour_result_modal != null:
 		hour_result_modal.visible = false
 	_hour_ui_shown = false
+	Audio.set_scene("menu")
+	Audio.set_low_sla(false)
+	Audio.set_shop_open(false)
 	if main_menu != null:
 		_refresh_menu_save_state()
 		main_menu.visible = true
@@ -3763,6 +4216,7 @@ func _on_request_reject(id: String) -> void:
 	if controller == null or controller.hour_director == null:
 		return
 	if controller.hour_director.reject_request(id):
+		_tutorial_notify("reject")
 		_refresh_hour()
 		_purge_rejected_card(id)
 	elif str(controller.hour_director.last_toast_text).is_empty():
@@ -3967,6 +4421,7 @@ func _on_tree_file_drop(folder_id: String, payload: Dictionary) -> void:
 		# Та же причина, что и у пакетов: drop на строку неоткрытой папки
 		# раньше оставлял файл вне текущей сетки.
 		_focus_folder(folder_id)
+		_tutorial_notify("folder")
 		if controller.phase == GAME_CONTROLLER.PHASE_PREP:
 			var d: Dictionary = controller.prep_data()
 			_refresh_tree_counts(d)
@@ -4439,6 +4894,15 @@ func _section_of_folder(folder_id: String) -> String:
 func _on_shop() -> void:
 	if shop_modal == null or controller == null:
 		return
+	if _tutorial_mode:
+		# В «ЧАС ПИК 0» магазин доступен сразу; ассортимент фиксирован для часа 2.
+		if controller.shop != null:
+			controller.shop.refresh(2, int(Game.money))
+		shop_modal.open_prep(controller.shop, int(Game.money), 2)
+		_fade_modal(shop_modal, 0.16)
+		Audio.set_shop_open(true)
+		_tutorial_pause_game(true)
+		return
 	# Магазин доступен только в подготовке, после первого часа.
 	if controller.phase != GAME_CONTROLLER.PHASE_PREP:
 		_toast("МАГАЗИН ДОСТУПЕН В ПОДГОТОВКЕ", "warn")
@@ -4450,6 +4914,19 @@ func _on_shop() -> void:
 		mascot.hide_message()
 	shop_modal.open_prep(controller.shop, int(Game.money), int(Game.hour))
 	_fade_modal(shop_modal, 0.16)
+	Audio.set_shop_open(true)
+
+
+## Закрытие магазина в обучении засчитывает шаг и снимает паузу.
+func _on_tutorial_shop_closed() -> void:
+	if not _tutorial_mode:
+		return
+	if _tutorial_phase == "intro":
+		_tutorial_pause_game(true)
+	else:
+		_tutorial_pause_game(false)
+		_tutorial_notify("shop")
+	_tutorial_restore_bubble()
 
 
 func _on_shop_buy(id: String) -> void:
@@ -4539,37 +5016,99 @@ func _tr_or(key: String, fallback: String) -> String:
 
 class TutorialHighlight:
 	extends Control
-	## Тонкая пульсирующая рамка вокруг цели шага. Мышь не перехватывает.
+	## Подсветка цели шага: пульсирующая рамка, мягкий «уголок» и затемнение
+	## фона для интро. Мышь не перехватывает.
 
 	var rects: Array = []
+	var dim := 0.0
 	var _t := 0.0
+	var _anim := 0.0
 
 	func _ready() -> void:
 		mouse_filter = Control.MOUSE_FILTER_IGNORE
 		focus_mode = Control.FOCUS_NONE
 		set_process(false)
 
+	func set_dim(value: float) -> void:
+		dim = clampf(value, 0.0, 0.5)
+		queue_redraw()
+
 	func set_targets(value: Array) -> void:
 		rects = value
 		visible = not rects.is_empty()
+		_anim = 0.0
 		set_process(visible)
 		queue_redraw()
 
 	func _process(delta: float) -> void:
 		_t += delta
+		_anim = minf(1.0, _anim + delta * 5.0)
 		queue_redraw()
 
 	func _draw() -> void:
-		var pulse := 0.5 + 0.5 * sin(_t * 4.2)
-		var col := Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b,
-			0.55 + 0.35 * pulse)
+		var unit := Rect2(Vector2.ZERO, size)
+		var union := Rect2()
+		var has_union := false
 		for r in rects:
 			if not (r is Rect2):
 				continue
 			var rect := r as Rect2
 			if rect.size.x <= 0.0 or rect.size.y <= 0.0:
 				continue
-			draw_rect(rect.grow(2.0), col, false, 2.0)
+			union = rect if not has_union else union.merge(rect)
+			has_union = true
+		if dim > 0.0 and size.x > 0.0 and size.y > 0.0:
+			_draw_dim(unit, union, has_union)
+		var pulse := 0.5 + 0.5 * sin(_t * 4.2)
+		var eased := ease(_anim, 0.35)
+		for r in rects:
+			if not (r is Rect2):
+				continue
+			var rect := r as Rect2
+			if rect.size.x <= 0.0 or rect.size.y <= 0.0:
+				continue
+			var accent := Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b,
+				0.45 + 0.35 * pulse)
+			# Мягкая заливка цели.
+			draw_rect(rect, Color(Theme90.ACCENT.r, Theme90.ACCENT.g,
+				Theme90.ACCENT.b, 0.055))
+			# Внешнее кольцо «схлопывается» на смене шага.
+			if eased < 1.0:
+				var ring := rect.grow(2.0 + 8.0 * (1.0 - eased))
+				draw_rect(ring, Color(Theme90.ACCENT.r, Theme90.ACCENT.g,
+					Theme90.ACCENT.b, 0.35 * (1.0 - eased)), false, 1.0)
+			draw_rect(rect.grow(2.0), accent, false, 2.0)
+			# Уголки.
+			var corner := Color(Theme90.ACCENT.r, Theme90.ACCENT.g,
+				Theme90.ACCENT.b, 0.95)
+			var arm := 8.0
+			draw_line(Vector2(rect.position.x, rect.position.y),
+				Vector2(rect.position.x + arm, rect.position.y), corner, 2.0)
+			draw_line(Vector2(rect.position.x, rect.position.y),
+				Vector2(rect.position.x, rect.position.y + arm), corner, 2.0)
+			draw_line(Vector2(rect.end.x, rect.end.y),
+				Vector2(rect.end.x - arm, rect.end.y), corner, 2.0)
+			draw_line(Vector2(rect.end.x, rect.end.y),
+				Vector2(rect.end.x, rect.end.y - arm), corner, 2.0)
+
+	## Затемнение всего экрана, кроме области целей (4 прямоугольника).
+	func _draw_dim(unit: Rect2, union: Rect2, has_union: bool) -> void:
+		var shade := Color(Theme90.NAVY_DEEP.r, Theme90.NAVY_DEEP.g,
+			Theme90.NAVY_DEEP.b, dim)
+		if not has_union:
+			draw_rect(unit, shade)
+			return
+		var hole := union.grow(4.0)
+		draw_rect(Rect2(unit.position, Vector2(unit.size.x, maxf(0.0,
+			hole.position.y - unit.position.y))), shade)
+		draw_rect(Rect2(Vector2(unit.position.x, hole.end.y),
+			Vector2(unit.size.x, maxf(0.0, unit.end.y - hole.end.y))), shade)
+		draw_rect(Rect2(Vector2(unit.position.x, hole.position.y),
+			Vector2(maxf(0.0, hole.position.x - unit.position.x),
+				hole.size.y)), shade)
+		draw_rect(Rect2(Vector2(hole.end.x, hole.position.y),
+			Vector2(maxf(0.0, unit.end.x - hole.end.x),
+				hole.size.y)), shade)
 
 
 class Backdrop:

@@ -629,12 +629,30 @@ func _init() -> void:
 		director.time_left = 0.05
 		main.controller.tick(0.1)
 		await process_frame
+		# v4 overtime: час не закрывается, пока запрос активен, даже если
+		# открыта мини-игра. Модалка остаётся на экране до её разрешения.
+		_ok(director.is_overtime(), "час ушёл в overtime с открытой мини-игрой")
+		_eq(main.controller.phase, &"hour", "overtime: фаза остаётся hour")
+		_ok(main._modal_game == ghost, "overtime: мини-игра остаётся открытой")
+		_ok(bool(main.controller.modal_open), "overtime: modal_open не сброшен")
+		# Resolve: закрываем прочие запросы и доигрываем мини-игру третьего.
+		for other_id in director.active_requests.keys().duplicate():
+			if str(other_id) != rid3:
+				director._cleanup_request(str(other_id), true)
+		if ghost != null and is_instance_valid(ghost):
+			ghost.finished.emit(0.8)
 		await process_frame
-		_eq(main.controller.phase, &"hour_result", "час завершился с открытой мини-игрой")
-		_ok(main._modal_game == null, "force_close очистил _modal_game")
-		_ok(not bool(main.controller.modal_open), "modal_open сброшен при force-close")
+		await process_frame
+		for i in range(400):
+			if main.controller.phase != &"hour":
+				break
+			main.controller.tick(0.1)
+			await process_frame
+		_eq(main.controller.phase, &"hour_result", "после завершения запроса час закрылся")
+		_ok(main._modal_game == null, "закрытие мини-игры очистило _modal_game")
+		_ok(not bool(main.controller.modal_open), "modal_open сброшен после мини-игры")
 		_ok(ghost == null or not is_instance_valid(ghost) or ghost.is_queued_for_deletion(),
-			"нода принудительно закрытой мини-игры освобождена")
+			"нода завершённой мини-игры освобождена")
 		director.send_game_factory = Callable()
 		holder2.clear()
 
@@ -668,6 +686,10 @@ func _init() -> void:
 	var director2 = main.controller.hour_director
 	_ok(director2 != null, "hour_director часа 2 доступен")
 	if director2 != null:
+		# v4 overtime: без активных запросов час закрывается сразу при времени 0.
+		for req_id in director2.active_requests.keys().duplicate():
+			director2._cleanup_request(str(req_id), true)
+		director2.active_request_limit = 0
 		director2.time_left = 0.05
 		main.controller.tick(0.1)
 		await process_frame

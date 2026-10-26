@@ -239,6 +239,8 @@ func _draw() -> void:
 	var locked := state == "locked"
 	var hov := _draw_hover()
 	var sel := _draw_sel()
+	if locked:
+		tc = Theme90.SHADE
 
 	var bg := Theme90.PAPER_HI.lerp(Theme90.WHITE, hov)
 	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
@@ -254,20 +256,27 @@ func _draw() -> void:
 		draw_set_transform(Vector2(0, off), 0.0, Vector2.ONE)
 
 	draw_style_box(Theme90.box(bg, border, 4, 1, shadow), r)
+	# Цветная лента типа — карточки читаются по цвету даже без иконки.
+	draw_rect(Rect2(6, 1.5, maxf(0.0, size.x - 12.0), 2.0),
+		Theme90.alpha_of(tc, 0.55 + 0.30 * maxf(hov, sel)))
 	# Мягкое свечение внутри рамки при наведении/выделении (draw-only).
 	var glow := maxf(hov, sel)
 	if glow > 0.02:
-		var gc := Theme90.ACCENT_LIGHT if sel < 0.5 else Theme90.ACCENT
+		var gc := tc if sel < 0.5 else Theme90.ACCENT
 		draw_style_box(Theme90.box(Color(gc.r, gc.g, gc.b, 0.10 * glow),
 			Color(0, 0, 0, 0), 4, 0), r.grow(-2.0))
+		# Цветной ореол вокруг иконки — «иконка оживает» на hover.
+		if hov > 0.02 and not locked:
+			draw_circle(Vector2(22, 22), 15.0 + 2.0 * hov,
+				Theme90.alpha_of(tc, 0.10 * hov))
 	if sel > 0.01:
 		var bar_h := size.y - 24.0 + 4.0 * _sel_bounce()
 		draw_rect(Rect2(1.5, (size.y - bar_h) * 0.5, 2.5, bar_h),
 			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, sel))
 
-	if locked:
-		tc = Theme90.SHADE
-	Theme90.draw_doc_icon(self, Rect2(10, 10, 24, 24), type, tc, ext)
+	var icon_side := 24.0 + 1.4 * hov
+	Theme90.draw_doc_icon(self, Rect2(10 - (icon_side - 24.0) * 0.5,
+		10 - (icon_side - 24.0) * 0.5, icon_side, icon_side), type, tc, ext)
 
 	# состояние — только маленькими значками, без подписей
 	if state == "attached":

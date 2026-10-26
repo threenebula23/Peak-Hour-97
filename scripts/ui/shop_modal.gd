@@ -40,6 +40,14 @@ const FOOTER_Y := H - 52.0
 const FOOTER_H := 28.0
 const MAX_CARDS := 3
 
+# --- Motion: появление карточек, hover, клик, пульс доступной покупки -------
+const OPEN_DUR := 0.20
+const OPEN_RISE := 7.0
+const HOVER_DUR := 0.09
+const HOVER_LIFT := 2.0
+const PRESS_DUR := 0.16
+const PULSE_DUR := 1.6
+
 const FALLBACK_DIMS := [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
 
 ## Текстовые fallback'и (ключи shop.* есть в data/strings_ru.json).
@@ -77,6 +85,15 @@ var _buy_buttons: Array = []
 var _locks: Array = []
 var _reroll_btn: Button90
 var _close_btn: Button90
+
+## -1 — курсор вне карточек. hover/press/появление — draw-only.
+var _hover_card := -1
+var _hover_amts: Array[float] = []
+var _press_card := -1
+var _press_amt := 1.0
+var _open_amt := 1.0
+var _pulse_phase := 0.0
+var _motion_on := true
 
 
 # --- замок в углу карточки -------------------------------------------------
@@ -126,6 +143,22 @@ func _ready() -> void:
 	resized.connect(_layout)
 	_layout()
 	visible = false
+	set_process(false)
+
+
+## Внешний выключатель движения (настройки «Снизить эффекты»).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+	if _reduced():
+		for i in _hover_amts.size():
+			_hover_amts[i] = 1.0 if i == _hover_card else 0.0
+		_open_amt = 1.0
+		_press_amt = 1.0
+	queue_redraw()
+
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
 
 
 # --- публичный API ---------------------------------------------------------
@@ -155,6 +188,7 @@ func open_prep(shop, money: int = -1, hour: int = 0) -> void:
 	_ensure_offers()
 	_rebuild()
 	visible = true
+	_arm_show()
 
 
 ## Перечитать данные. Для v2 без аргументов берёт Game.money; для legacy
@@ -173,17 +207,30 @@ func refresh(p_money: int = -1, p_levels: Dictionary = {}) -> void:
 	_rebuild()
 	if visible:
 		visible = true
+		set_process(true)
 
 
 func close() -> void:
 	if not visible:
 		return
 	visible = false
+	set_process(false)
 	closed.emit()
 
 
 func is_open() -> bool:
 	return visible
+
+
+## Общая подготовка анимации при открытии (draw-only, layout не меняется).
+func _arm_show() -> void:
+	_hover_card = -1
+	_press_card = -1
+	_press_amt = 1.0
+	_open_amt = 1.0 if _reduced() else 0.0
+	_pulse_phase = 0.0
+	set_process(true)
+	queue_redraw()
 
 
 # --- тестовые/интеграционные геттеры --------------------------------------
@@ -322,6 +369,9 @@ func _rebuild() -> void:
 			_card_ids.append(id)
 
 	_sync_controls()
+	_hover_amts.resize(_cards.size())
+	for i in _hover_amts.size():
+		_hover_amts[i] = 1.0 if i == _hover_card and _reduced() else 0.0
 	_layout()
 	queue_redraw()
 
@@ -407,6 +457,7 @@ func _open_legacy(p_money: int, p_levels: Dictionary) -> void:
 	_legacy_items_cache.clear()
 	_rebuild()
 	visible = true
+	_arm_show()
 
 
 # --- эффекты: конкретные «СЕЙЧАС» и «ПОСЛЕ» --------------------------------
@@ -617,6 +668,9 @@ func _on_buy_pressed(index: int) -> void:
 	var card: Dictionary = _cards[index]
 	if bool(card["maxed"]) or not bool(card["affordable"]):
 		return
+	_press_card = index
+	_press_amt = 0.0 if not _reduced() else 1.0
+	set_process(true)
 	buy_requested.emit(_card_ids[index])
 
 
@@ -643,6 +697,76 @@ func _unhandled_input(event: InputEvent) -> void:
 		get_viewport().set_input_as_handled()
 
 
+# --- hover/press/появление -------------------------------------------------
+
+func _process(delta: float) -> void:
+	if not visible:
+		set_process(false)
+		return
+	var changed := false
+	if _reduced():
+		for i in _hover_amts.size():
+			var v := 1.0 if i == _hover_card else 0.0
+			if not is_equal_approx(_hover_amts[i], v):
+				_hover_amts[i] = v
+				changed = true
+		if _open_amt < 1.0:
+			_open_amt = 1.0
+			changed = true
+		if _press_amt < 1.0:
+			_press_amt = 1.0
+			changed = true
+	else:
+		for i in _hover_amts.size():
+			var target := 1.0 if i == _hover_card else 0.0
+			if not is_equal_approx(_hover_amts[i], target):
+				_hover_amts[i] = move_toward(_hover_amts[i], target, delta / HOVER_DUR)
+				changed = true
+		if _open_amt < 1.0:
+			_open_amt = minf(1.0, _open_amt + delta / OPEN_DUR)
+			changed = true
+		if _press_amt < 1.0:
+			_press_amt = minf(1.0, _press_amt + delta / PRESS_DUR)
+			changed = true
+		_pulse_phase = fmod(_pulse_phase + delta, PULSE_DUR)
+	if changed or (not _reduced() and _has_affordable()):
+		queue_redraw()
+
+
+func _input(event: InputEvent) -> void:
+	if not visible:
+		return
+	if event is InputEventMouseMotion:
+		_hover_card = _card_at(get_local_mouse_position())
+		set_process(true)
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_MOUSE_EXIT:
+		if _hover_card != -1:
+			_hover_card = -1
+			set_process(true)
+
+
+func _card_at(pos: Vector2) -> int:
+	for i in _card_rects.size():
+		if _card_rects[i].has_point(pos):
+			return i
+	return -1
+
+
+func _has_affordable() -> bool:
+	for card in _cards:
+		if bool(card.get("affordable", false)) and not bool(card.get("maxed", false)):
+			return true
+	return false
+
+
+## Публичный геттер для dev/скриншотов и тестов.
+func hovered_card() -> int:
+	return _hover_card
+
+
 # --- отрисовка -------------------------------------------------------------
 
 func _draw() -> void:
@@ -665,21 +789,25 @@ func _draw_frame(win: Rect2) -> void:
 		Color(0, 0, 0, 0.16)), win)
 	var header := Rect2(win.position.x + 1, win.position.y + 1,
 		win.size.x - 2, HEADER_H - 1)
-	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 6), header)
+	draw_style_box(Theme90.top_box(Theme90.paper_tint(Theme90.PURPLE, 0.10), 6), header)
+	draw_rect(Rect2(header.position.x + 1, header.position.y, header.size.x - 2, 2.0),
+		Theme90.alpha_of(Theme90.PURPLE, 0.75))
+	draw_rect(Rect2(header.position.x + 1, header.position.y + 2.0, 2.0,
+		header.size.y - 2.0), Theme90.alpha_of(Theme90.PURPLE, 0.35))
 	draw_circle(Vector2(header.position.x + 20, header.position.y + HEADER_H * 0.5),
-		3.5, Theme90.ACCENT)
+		3.5, Theme90.GOLD)
 
 	var f := Theme90.ui()
 	Theme90.text_vcenter(self, f, Rect2(header.position.x + 31, header.position.y,
 		header.size.x - 260, HEADER_H),
 		_tr("shop.title_offers", FALLBACK["title_offers"]), Theme90.FS_HEAD,
-		Theme90.NAVY, -1, HORIZONTAL_ALIGNMENT_LEFT)
+		Theme90.PURPLE_DEEP, -1, HORIZONTAL_ALIGNMENT_LEFT)
 	Theme90.text_vcenter(self, f, Rect2(header.position.x + 40, header.position.y,
 		header.size.x - 60, HEADER_H), _balance_line(), Theme90.FS_BODY,
-		Theme90.INK, -1, HORIZONTAL_ALIGNMENT_RIGHT)
+		Theme90.SUCCESS_DEEP, -1, HORIZONTAL_ALIGNMENT_RIGHT)
 
 	draw_rect(Rect2(win.position.x + 1, win.position.y + HEADER_H,
-		win.size.x - 2, 1), Theme90.HAIRLINE)
+		win.size.x - 2, 1), Theme90.alpha_of(Theme90.PURPLE, 0.30))
 	Theme90.text(self, f, Vector2(win.position.x + 22, win.position.y + HEADER_H + 7),
 		_tr("shop.subtitle", FALLBACK["subtitle"]), Theme90.FS_MICRO,
 		Theme90.SHADE, win.size.x - 44)
@@ -690,7 +818,7 @@ func _draw_empty(win: Rect2) -> void:
 	var cy := win.position.y + CARD_Y + CARD_H * 0.5
 	Theme90.text_vcenter(self, f, Rect2(win.position.x + 20, cy - 20,
 		win.size.x - 40, 40), _tr("shop.all_bought", FALLBACK["all_bought"]),
-		Theme90.FS_LOGO, Theme90.NAVY, -1, HORIZONTAL_ALIGNMENT_CENTER)
+		Theme90.FS_LOGO, Theme90.PURPLE_DEEP, -1, HORIZONTAL_ALIGNMENT_CENTER)
 	Theme90.text_vcenter(self, f, Rect2(win.position.x + 20, cy + 24,
 		win.size.x - 40, 20), _tr("shop.reroll_limit", FALLBACK["reroll_limit"]),
 		Theme90.FS_MICRO, Theme90.SHADE, -1, HORIZONTAL_ALIGNMENT_CENTER)
@@ -702,25 +830,62 @@ func _draw_card(index: int) -> void:
 	var card: Dictionary = _cards[index]
 	var r: Rect2 = _card_rects[index]
 	var locked := bool(card.get("locked", false))
-	var bg := Theme90.ACCENT_PALE if locked else Theme90.WHITE
-	var border := Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.65) \
-		if locked else Theme90.BORDER
-	draw_style_box(Theme90.box(bg, border, 4, 1, Color(0, 0, 0, 0.13)), r)
+	var effect := str(card.get("effect", ""))
+	var ec := _effect_color(effect)
+	var ink := _effect_ink(effect)
+	var hov := 0.0
+	if index < _hover_amts.size():
+		hov = _hover_amts[index]
+	var press := 0.0
+	if _press_card == index and _press_amt < 1.0:
+		press = clampf(1.0 - _press_amt, 0.0, 1.0)
+	var open_p := clampf(_open_amt, 0.0, 1.0)
+	var dy := -HOVER_LIFT * hov + OPEN_RISE * (1.0 - open_p) + press
+	if absf(dy) > 0.01:
+		draw_set_transform(Vector2(0.0, dy), 0.0, Vector2.ONE)
+
+	var bg := Theme90.paper_tint(ec, 0.045 + 0.075 * hov)
+	if locked:
+		bg = bg.lerp(Theme90.ACCENT_PALE, 0.70)
+	var border := Theme90.alpha_of(ec, 0.42 + 0.45 * hov)
+	if locked:
+		border = Theme90.alpha_of(Theme90.ACCENT, 0.65)
+	var shadow := Color(0, 0, 0, 0.12 + 0.05 * hov)
+	draw_style_box(Theme90.box(bg, border, 4, 1, shadow), r)
+	if hov > 0.02:
+		draw_style_box(Theme90.box(Theme90.alpha_of(ec, 0.05 * hov),
+			Theme90.alpha_of(ec, 0.40 * hov), 4, 1), r.grow(1.0))
+	# Доступная покупка «дышит» цветом эффекта — важный индикатор.
+	if bool(card.get("affordable", false)) and not bool(card.get("maxed", false)) \
+			and not _reduced():
+		var pulse := 0.5 + 0.5 * sin(TAU * _pulse_phase / PULSE_DUR)
+		draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+			Theme90.alpha_of(ec, (0.12 + 0.22 * pulse) * (0.7 + 0.3 * hov)), 4, 1),
+			r.grow(-1.0))
+	if press > 0.01:
+		draw_style_box(Theme90.box(Theme90.alpha_of(ec, 0.10 * press),
+			Theme90.alpha_of(ec, 0.65 * press), 4, 1), r.grow(-1.0))
 
 	var f := Theme90.ui()
 	var x := r.position.x
 	var y := r.position.y
 	var inner := CARD_W - CARD_PAD * 2.0
 
-	# Цветная полоска эффекта — маркер категории.
-	draw_rect(Rect2(x + 1, y + 1, CARD_W - 2, 3),
-		_effect_color(str(card.get("effect", ""))))
+	# Цветная полоска эффекта — маркер категории + левая кромка.
+	draw_rect(Rect2(x + 1, y + 1, CARD_W - 2, 4),
+		Theme90.alpha_of(ec, 0.80 + 0.20 * hov))
+	draw_rect(Rect2(x + 1, y + 5, 2.0, CARD_H - 6),
+		Theme90.alpha_of(ec, 0.24 + 0.16 * hov))
 
 	# Иконка лота в левом верхнем углу: заголовок сдвигается вправо, чтобы
 	# не наезжать. Нет текстуры — карточка рисуется как раньше (fallback).
-	var has_icon := Theme90.draw_shop_icon(self,
-		Rect2(x + CARD_PAD, y + 11, ICON_SIZE, ICON_SIZE),
-		str(card.get("id", "")), str(card.get("effect", "")))
+	var icon_grow := 3.0 * hov
+	var icon_rect := Rect2(x + CARD_PAD - icon_grow * 0.5, y + 11 - icon_grow * 0.5,
+		ICON_SIZE + icon_grow, ICON_SIZE + icon_grow)
+	draw_style_box(Theme90.fill_box(Theme90.alpha_of(ec, 0.10 + 0.06 * hov), 5),
+		icon_rect.grow(3.0))
+	var has_icon := Theme90.draw_shop_icon(self, icon_rect,
+		str(card.get("id", "")), effect)
 	var title_x := x + CARD_PAD
 	var title_w := inner - 30.0
 	if has_icon:
@@ -737,13 +902,14 @@ func _draw_card(index: int) -> void:
 	# Практическое описание: 10 px, 2–3 строки.
 	var desc := str(card.get("desc", ""))
 	if desc.is_empty():
-		desc = _effect_fallback_desc(str(card.get("effect", "")))
+		desc = _effect_fallback_desc(effect)
 	var desc_lines := Theme90.wrap(f, desc, Theme90.FS_MICRO, inner, 3)
 	for i in desc_lines.size():
 		Theme90.text(self, f, Vector2(x + CARD_PAD, y + 56 + i * 12),
 			desc_lines[i], Theme90.FS_MICRO, Theme90.SHADE, inner)
 
-	draw_rect(Rect2(x + CARD_PAD, y + 100, inner, 1), Theme90.HAIRLINE)
+	draw_rect(Rect2(x + CARD_PAD, y + 100, inner, 1),
+		Theme90.alpha_of(ec, 0.30))
 
 	# Уровень + пипсы.
 	Theme90.text(self, f, Vector2(x + CARD_PAD, y + 108),
@@ -754,14 +920,14 @@ func _draw_card(index: int) -> void:
 	for i in max_level:
 		var pip := Rect2(x + CARD_PAD + i * 10.0, pip_y, 7, 6)
 		if i < level:
-			draw_style_box(Theme90.fill_box(Theme90.ACCENT, 3), pip)
+			draw_style_box(Theme90.fill_box(ec, 3), pip)
 		else:
 			draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 3, 1), pip)
 
 	_draw_stat_row(r, y + 140.0, _tr("shop.now", FALLBACK["now"]),
-		str(card.get("now_text", "")), Theme90.PAPER)
+		str(card.get("now_text", "")), Theme90.PAPER, ec, ink)
 	_draw_stat_row(r, y + 168.0, _tr("shop.after", FALLBACK["after"]),
-		str(card.get("after_text", "")), Theme90.PAPER_HI)
+		str(card.get("after_text", "")), Theme90.PAPER_HI, ec, ink)
 
 	var next_name := str(card.get("next_name", ""))
 	if not next_name.is_empty():
@@ -776,18 +942,23 @@ func _draw_card(index: int) -> void:
 			Theme90.fit(f, lock_label, Theme90.FS_MICRO, inner), Theme90.FS_MICRO,
 			Theme90.ACCENT, inner)
 
+	if absf(dy) > 0.01:
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
 
 func _draw_stat_row(card_rect: Rect2, y: float, label: String, value: String,
-		bg: Color) -> void:
+		bg: Color, accent: Color, ink: Color) -> void:
 	var box := Rect2(card_rect.position.x + CARD_PAD, y,
 		CARD_W - CARD_PAD * 2.0, 24)
 	draw_style_box(Theme90.box(bg, Theme90.BORDER_SOFT, 3, 1), box)
+	draw_rect(Rect2(box.position.x, box.position.y + 3, 2.0, box.size.y - 6),
+		Theme90.alpha_of(accent, 0.55))
 	var f := Theme90.ui()
 	Theme90.text_vcenter(self, f, Rect2(box.position.x + 8, box.position.y,
 		box.size.x - 16, box.size.y), label, Theme90.FS_MICRO, Theme90.SHADE,
 		box.size.x - 16, HORIZONTAL_ALIGNMENT_LEFT)
 	Theme90.text_vcenter(self, f, Rect2(box.position.x + 8, box.position.y,
-		box.size.x - 16, box.size.y), value, Theme90.FS_BODY, Theme90.INK,
+		box.size.x - 16, box.size.y), value, Theme90.FS_BODY, ink,
 		box.size.x - 16, HORIZONTAL_ALIGNMENT_RIGHT)
 
 
@@ -806,19 +977,49 @@ func _balance_line() -> String:
 
 func _effect_color(effect: String) -> Color:
 	match effect:
-		"connection_slots", "channel_capacity":
+		"connection_slots":
+			return Theme90.BLUE
+		"transfer_speed":
 			return Theme90.ACCENT
-		"transfer_speed", "request_timer":
-			return Theme90.NAVY
-		"sla_cap", "shield_charge":
+		"sla_cap":
 			return Theme90.SUCCESS
-		"folder_cells":
-			return Theme90.WARN
+		"shield_charge":
+			return Theme90.PURPLE
 		"money_mult":
-			return Theme90.ERROR
+			return Theme90.GOLD
+		"folder_cells":
+			return Theme90.ORANGE
+		"channel_capacity":
+			return Theme90.PINK
+		"request_timer":
+			return Theme90.NAVY
 		"udp_success":
-			return Theme90.WARN
+			return Theme90.LIME
 	return Theme90.ACCENT
+
+
+## Тёмный парный цвет для чисел «СЕЙЧАС/ПОСЛЕ»: контраст на бумаге ≥ 4.5:1.
+func _effect_ink(effect: String) -> Color:
+	match effect:
+		"connection_slots":
+			return Theme90.BLUE_DEEP
+		"transfer_speed":
+			return Theme90.NAVY_DEEP
+		"sla_cap":
+			return Theme90.SUCCESS_DEEP
+		"shield_charge":
+			return Theme90.PURPLE_DEEP
+		"money_mult":
+			return Theme90.GOLD_DEEP
+		"folder_cells":
+			return Theme90.ORANGE_DEEP
+		"channel_capacity":
+			return Theme90.PINK_DEEP
+		"request_timer":
+			return Theme90.NAVY_DEEP
+		"udp_success":
+			return Theme90.LIME_DEEP
+	return Theme90.NAVY_DEEP
 
 
 func _effect_fallback_desc(effect: String) -> String:

@@ -296,6 +296,7 @@ func hour_data() -> Dictionary:
 		"money": int(game.money) if game != null else 0,
 		"hour": int(game.hour) if game != null else 1,
 		"time_left": 0.0,
+		"overtime": false,
 	}
 	if hour_director == null:
 		return {"packets": packets, "requests": requests, "slots": slots_data, "status": status}
@@ -379,6 +380,7 @@ func hour_data() -> Dictionary:
 		"hour": int(game.hour) if game != null else int(hour_director.hour),
 		"time_left": float(hour_director.time_left),
 		"hour_total": float(hour_director.hour_seconds()),
+		"overtime": hour_director.is_overtime(),
 		"requests_active": int(hour_director.active_requests.size()),
 		"request_limit": int(hour_director.active_request_limit),
 		"attacks_active": attacks_active,

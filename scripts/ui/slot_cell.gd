@@ -27,6 +27,8 @@ const DROP_FLASH_DUR := 0.18
 const ERROR_FLASH_DUR := 0.22
 ## Пульс прогресс-полосы активной передачи.
 const PROGRESS_PULSE := 0.9
+## Клик по слоту: короткая цветная вспышка кромки.
+const CLICK_FLASH_DUR := 0.16
 
 var id := ""
 var file_name := ""
@@ -70,6 +72,7 @@ var _link_phase := 0.0
 var _pulse_phase := 0.0
 var _drop_clock := -1.0
 var _error_clock := -1.0
+var _click_clock := -1.0
 var _motion_on := true
 
 
@@ -137,6 +140,7 @@ func set_motion_enabled(on: bool) -> void:
 		_flash_clock = -1.0
 		_drop_clock = -1.0
 		_error_clock = -1.0
+		_click_clock = -1.0
 		_link_phase = 0.0
 	queue_redraw()
 
@@ -149,6 +153,8 @@ func _proc_needed() -> bool:
 	if _enter_elapsed < ENTER_DUR:
 		return true
 	if _flash_clock >= 0.0 or _drop_clock >= 0.0 or _error_clock >= 0.0:
+		return true
+	if _click_clock >= 0.0:
 		return true
 	if not is_equal_approx(_hover_amt, 1.0 if hovered else 0.0):
 		return true
@@ -186,6 +192,10 @@ func _process(delta: float) -> void:
 		_error_clock += delta
 		if _error_clock >= ERROR_FLASH_DUR:
 			_error_clock = -1.0
+	if _click_clock >= 0.0:
+		_click_clock += delta
+		if _click_clock >= CLICK_FLASH_DUR:
+			_click_clock = -1.0
 	if not _meter_ready:
 		_meter = progress
 		_meter_ready = true
@@ -209,6 +219,27 @@ func _draw_hover() -> float:
 	if _reduced():
 		return 1.0 if hovered else 0.0
 	return _hover_amt
+
+
+## Цвет направления/состояния слота: приём — зелёный, отправка — фиолетовый,
+## соединение — teal, заблокирован — тёплый янтарь.
+func _accent() -> Color:
+	if kind == "tcp_connection":
+		return Theme90.ACCENT
+	if state == "locked":
+		return Theme90.ORANGE
+	if direction == "down":
+		return Theme90.SUCCESS
+	return Theme90.PURPLE
+
+
+## Мягкий ореол наведения поверх любого состояния (draw-only).
+func _draw_hover_glow(r: Rect2, col: Color) -> void:
+	var hov := _draw_hover()
+	if hov <= 0.01:
+		return
+	draw_style_box(Theme90.box(Theme90.alpha_of(col, 0.06 * hov),
+		Theme90.alpha_of(col, 0.30 * hov), 4, 1), r.grow(-1.0))
 
 
 ## 0..1 — насколько ярко светится рамка сразу после появления.
@@ -300,9 +331,10 @@ func _draw() -> void:
 		return
 
 	if state == "active":
-		var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, _draw_hover())
+		var accent := _accent()
+		var border := Theme90.BORDER.lerp(accent, _draw_hover())
 		draw_style_box(Theme90.box(Theme90.WHITE, border, 4, 1, Theme90.SHADOW), r)
-		var accent := Theme90.SUCCESS if direction == "down" else Theme90.ACCENT
+		draw_rect(Rect2(3, 6, 2.0, maxf(0.0, size.y - 12)), Theme90.alpha_of(accent, 0.72))
 		draw_style_box(Theme90.box(Color(accent.r, accent.g, accent.b, 0.12),
 			Color(0, 0, 0, 0), 3, 0), Rect2(8, 11, 20, 20))
 		Theme90.draw_arrow(self, Rect2(8, 11, 20, 20), 1 if direction == "down" else 0,
@@ -316,20 +348,26 @@ func _draw() -> void:
 			10, accent)
 		_draw_progress(Rect2(34, 33, 160, 4),
 			_meter if _meter_ready else progress, accent)
+		_draw_hover_glow(r, accent)
 		_draw_flashes(r)
 		return
 
 	if state == "locked":
 		draw_style_box(Theme90.box(Theme90.PAPER, Theme90.BORDER_SOFT, 4, 1), r)
-		Theme90.draw_lock_icon(self, Vector2(11, 15), Theme90.SHADE)
+		draw_rect(Rect2(3, 6, 2.0, maxf(0.0, size.y - 12)),
+			Theme90.alpha_of(Theme90.ORANGE, 0.55))
+		Theme90.draw_lock_icon(self, Vector2(11, 15), Theme90.ORANGE.darkened(0.12))
 		Theme90.text(self, f, Vector2(28, 4), "СЛОТ %s" % slot_label, 11, Theme90.DARK, 120)
 		Theme90.text(self, f, Vector2(28, 20), sub_text if not sub_text.is_empty()
-			else "КУПИТЬ В МАГАЗИНЕ", 10, Theme90.SHADE, 198)
+			else "КУПИТЬ В МАГАЗИНЕ", 10, Theme90.ORANGE_DEEP, 198)
+		_draw_hover_glow(r, Theme90.ORANGE)
 		_draw_flashes(r)
 		return
 
 	# пустой слот
 	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 4, 1), r)
+	draw_rect(Rect2(3, 6, 2.0, maxf(0.0, size.y - 12)),
+		Theme90.alpha_of(Theme90.PURPLE, 0.22))
 	Theme90.draw_dashed_box(self, Rect2(3, 3, size.x - 6, size.y - 6),
 		Color(Theme90.SHADE.r, Theme90.SHADE.g, Theme90.SHADE.b, 0.45), 3.0, 1.0)
 	draw_style_box(Theme90.box(Color(1, 1, 1, 0.7), Theme90.BORDER_SOFT, 3, 1),
@@ -339,7 +377,8 @@ func _draw() -> void:
 	Theme90.text(self, f, Vector2(32, 6), sub_text if not sub_text.is_empty()
 		else "СВОБОДЕН", 12, Theme90.DARK, 190)
 	Theme90.text(self, f, Vector2(32, 24), "перетащите пакет", 10,
-		Theme90.ACCENT if drop_active else Theme90.SHADE, 190)
+		Theme90.PURPLE_DEEP if drop_active else Theme90.SHADE, 190)
+	_draw_hover_glow(r, Theme90.PURPLE)
 	if drop_active:
 		Theme90.draw_dashed_box(self, Rect2(2, 2, size.x - 4, size.y - 4),
 			Theme90.ACCENT, 3.0, 1.4)
@@ -366,18 +405,26 @@ func _draw_flashes(r: Rect2) -> void:
 			Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.06 * ea),
 			Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.85 * ea), 4, 2),
 			r.grow(-1.0))
+	if _click_clock >= 0.0:
+		var ca := clampf(1.0 - _click_clock / CLICK_FLASH_DUR, 0.0, 1.0)
+		var ac := _accent()
+		draw_style_box(Theme90.box(Theme90.alpha_of(ac, 0.05 * ca),
+			Theme90.alpha_of(ac, 0.80 * ca), 4, 2), r.grow(-1.0))
 
 
 ## Установленное TCP-соединение: клиент + IP + статус связи/передачи.
 ## Никаких имён файлов, required и attached здесь нет.
 func _draw_connection(r: Rect2, f: Font) -> void:
 	var hov := _draw_hover()
-	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
+	var accent := _accent()
+	var border := Theme90.BORDER.lerp(accent, hov)
 	draw_style_box(Theme90.box(Theme90.WHITE, border, 4, 1, Theme90.SHADOW), r)
+	draw_rect(Rect2(3, 6, 2.0, maxf(0.0, size.y - 12)),
+		Theme90.alpha_of(accent, 0.72))
 	# Маркер связи (две точки и линия) вместо иконки файла.
-	draw_style_box(Theme90.box(Color(Theme90.ACCENT.r, Theme90.ACCENT.g,
-		Theme90.ACCENT.b, 0.12), Color(0, 0, 0, 0), 3, 0), Rect2(8, 11, 20, 20))
-	_draw_link(Vector2(18, 21), Theme90.ACCENT)
+	draw_style_box(Theme90.box(Color(accent.r, accent.g, accent.b, 0.12),
+		Color(0, 0, 0, 0), 3, 0), Rect2(8, 11, 20, 20))
+	_draw_link(Vector2(18, 21), accent)
 
 	# Верх: имя клиента. Правее (146, 4) начинается кнопка ОТКЛЮЧИТЬ.
 	var name_w := 106.0 if can_disconnect else 166.0
@@ -399,12 +446,15 @@ func _draw_connection(r: Rect2, f: Font) -> void:
 	# Idle: IP слева, статус связи справа. Без IP показываем только статус.
 	Theme90.text(self, f, Vector2(34, 20), Theme90.fit(f, detail, 10, 108), 10,
 		Theme90.SHADE, 108)
-	Theme90.text(self, f, Vector2(144, 20), "ПОДКЛЮЧЕНО", 10, Theme90.SUCCESS,
+	Theme90.text(self, f, Vector2(144, 20), "ПОДКЛЮЧЕНО", 10, Theme90.SUCCESS_DEEP,
 		86, HORIZONTAL_ALIGNMENT_RIGHT)
+	_draw_hover_glow(r, accent)
 
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed and event.button_index == MOUSE_BUTTON_LEFT:
+		_click_clock = 0.0
+		set_process(true)
 		cell_pressed.emit(id)
 		accept_event()
 
