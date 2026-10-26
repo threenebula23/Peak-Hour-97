@@ -18,6 +18,7 @@ extends SceneTree
 ##   --wait=N          сколько кадров ждать перед снимком (по умолчанию 10)
 ##   --probe           отрисовать шрифтовой probe вместо Main
 ##   --run             нажать «НОВЫЙ ЗАБЕГ» (Main._start_new_run)
+##   --seed-demo       в подготовку положить sound-файл (2 клетки) для проверки drag
 ##   --hour            после --run начать час 1 (Main._on_start_hour)
 ##   --seconds=N       сколько реальных секунд крутить час (по умолчанию 6) — нужен --hour
 ##   --spawn=A,B       через HourDirector спавнить packet и/или request (нужен --hour)
@@ -71,6 +72,7 @@ var _filemenu := false
 var _main: Node = null
 
 var _run := false
+var _seed_demo := false
 var _hour := false
 var _seconds := 6.0
 var _spawn: Array[String] = []
@@ -110,6 +112,8 @@ func _initialize() -> void:
 			_toast = true
 		elif a == "--run":
 			_run = true
+		elif a == "--seed-demo":
+			_seed_demo = true
 		elif a == "--hour":
 			_hour = true
 		elif a.begins_with("--seconds="):
@@ -222,6 +226,13 @@ func _after_ready() -> void:
 		await _frames(2)
 	elif need_run:
 		if not _select_first_folder():
+			return
+		await _frames(2)
+
+	# Dev-подготовка: 2-клеточный sound-файл рядом с bootstrap text-файлом,
+	# чтобы проверять перенос/фантомы в сетке без запуска часа.
+	if _seed_demo and not _hour:
+		if not _seed_prep_demo():
 			return
 		await _frames(2)
 
@@ -373,6 +384,36 @@ func _folder_exists(folder_id: String) -> bool:
 			if str(fol.get("id", "")) == folder_id:
 				return true
 	return false
+
+
+## Dev: sound-файл на 2 клетки в первую папку подготовки (без запуска часа).
+func _seed_prep_demo() -> bool:
+	var game_node := root.get_node_or_null("Game")
+	if game_node == null:
+		_fail("--seed-demo: автолоад Game недоступен")
+		return false
+	var registry = game_node.get("registry")
+	var folder_id := _first_folder_id()
+	if registry == null or folder_id.is_empty():
+		_fail("--seed-demo: нет реестра или папки")
+		return false
+	if registry.has_method("find_by_name") \
+			and registry.call("find_by_name", "звонок_демо") != null:
+		return true
+	var file = registry.call("create_file", "звонок_демо", "sound", folder_id)
+	if file == null:
+		_fail("--seed-demo: не удалось создать sound-файл")
+		return false
+	# Детерминированно: 2 клетки горизонтально в (1,0).
+	file.shape_id = "I2H"
+	file.shape_cells = registry.call("shape_cells", "I2H", 0)
+	if not bool(registry.call("move_file", str(file.id), folder_id,
+			Vector2i(1, 0), 0)):
+		_fail("--seed-demo: не удалось разместить sound-файл в (1,0)")
+		return false
+	if _main.has_method("_refresh_prep"):
+		_main.call("_refresh_prep")
+	return true
 
 
 ## Демо-файлы для часа: без них запросы не спавнятся (реестр пуст).
