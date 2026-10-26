@@ -31,6 +31,7 @@ func run(t) -> void:
 	_test_corrupt(t)
 	_test_versions(t)
 	_test_registry_v2_roundtrip(t)
+	_test_udp_shop_save(t)
 	_test_delete(t)
 	_restore_save()
 
@@ -154,6 +155,51 @@ func _test_registry_v2_roundtrip(t) -> void:
 		if table_file != null:
 			t.eq(str(reg2.get_file(table_file.id).location), "table", "location table сохранён")
 		t.eq(reg2.validate().size(), 0, "registry после load валиден: %s" % str(reg2.validate()))
+
+
+# --- v3: UDP-лот в сейве ----------------------------------------------------
+
+## Старый сейв без lot_udp/udp_level читается как 40%; новый сейв сохраняет
+## уровень лота и шанс 40% + 10%×уровень.
+func _test_udp_shop_save(t) -> void:
+	t.set_case("udp_shop_save")
+	var loop = Engine.get_main_loop()
+	var game = null
+	if loop is SceneTree:
+		game = (loop as SceneTree).root.get_node_or_null("Game")
+	t.ok(game != null, "Game autoload доступен")
+	if game == null:
+		return
+
+	game.start_new_run(321)
+	# Старый формат: в upgrades нет ни lot_udp, ни агрегата udp_level.
+	var old_payload := {
+		"version": S.VERSION,
+		"money": 100,
+		"sla": 60.0,
+		"hour": 1,
+		"phase": "prep",
+		"upgrades": {"lot_speed": 1, "speed_level": 1},
+		"registry": game.registry.to_dict(),
+	}
+	t.ok(S.save(old_payload), "save старого сейва без lot_udp")
+	t.ok(game.load_game(), "load старого сейва")
+	t.eq(game.level("lot_udp"), 0, "старого lot_udp нет → уровень 0")
+	t.eq(game.level("udp_level"), 0, "старого udp_level нет → 0")
+	t.approx(game.udp_success_chance(), 0.40, 0.0001, "старый сейв → 40%")
+
+	# Новый сейв: уровень лота пишется в оба ключа и переживает load.
+	game.set_lot_level("lot_udp", 2)
+	t.eq(game.level("lot_udp"), 2, "lot_udp = 2")
+	t.eq(game.level("udp_level"), 2, "агрегат udp_level = 2")
+	t.approx(game.udp_success_chance(), 0.60, 0.0001, "перед save 60%")
+	t.ok(game.save_game(), "save_game с lot_udp")
+	game.upgrades.clear()
+	t.approx(game.udp_success_chance(), 0.40, 0.0001, "после очистки снова 40%")
+	t.ok(game.load_game(), "load_game с lot_udp")
+	t.eq(game.level("lot_udp"), 2, "уровень lot_udp восстановлен")
+	t.eq(game.level("udp_level"), 2, "агрегат udp_level восстановлен")
+	t.approx(game.udp_success_chance(), 0.60, 0.0001, "после load 60%")
 
 
 # --- delete -----------------------------------------------------------------

@@ -82,6 +82,27 @@ static func has_save() -> bool:
 	return FileAccess.file_exists(SAVE_PATH)
 
 
+## Можно ли продолжить забег: файл читается и забег ещё не завершён.
+## Не мутирует Game и не меняет сейв — только решает, показывать ли «Продолжить».
+static func can_continue() -> bool:
+	if not FileAccess.file_exists(SAVE_PATH):
+		return false
+	var data := _read_save()
+	if data.is_empty():
+		return false
+	var registry = data.get("registry", null)
+	if not (registry is Dictionary):
+		return false
+	if str(data.get("phase", "")) == "results":
+		return false
+	if float(data.get("sla", 0.0)) <= 0.0:
+		return false
+	# Должно совпадать с GameController.HOURS_PER_RUN (9): 9-й час — финал.
+	if int(data.get("hour", 0)) > 9:
+		return false
+	return true
+
+
 static func delete_save() -> bool:
 	return _remove_if_exists(SAVE_PATH)
 

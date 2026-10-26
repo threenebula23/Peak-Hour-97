@@ -6,8 +6,10 @@ extends SceneTree
 ##
 ## Все шаги детерминированы (фиксированный seed). Виртуальное время
 ## передаётся в lock/tick явно, поэтому тест не зависит от системных часов.
-## v2: cooldown после отправки удалён — файл расходуется при успехе и
-## сохраняется при отмене/таймауте.
+## v4: успешная отправка НЕ удаляет файл из registry — он возвращается в папку
+## (detach_file + cooldown=0), отмена/таймаут тоже сохраняют. consume_file
+## остаётся registry-операцией для уничтожения файлов, но не вызывается из
+## отправки.
 
 const FR := preload("res://scripts/core/file_registry.gd")
 const HD := preload("res://scripts/core/hour_director.gd")
@@ -408,7 +410,7 @@ func _check_invariants(tag: String) -> void:
 
 # --- точечные сценарии -----------------------------------------------------
 
-## v2: файл расходуется при успешной отправке и исчезает из папки.
+## Registry-level consume_file: используется уничтожением/атаками, НЕ отправкой.
 func _consumption_case() -> void:
 	_set_case("consumption")
 	_reg = FR.new()
@@ -485,9 +487,10 @@ func _failed_file_detaches() -> void:
 	hd.free()
 
 
-## v2: успешная отправка расходует файлы; отмена сохраняет; cooldown отсутствует.
+## v4: успешная отправка НЕ расходует файл: он остаётся в папке с cooldown 0
+## и снова доступен пулу запросов. Отмена/таймаут тоже сохраняют файл.
 func _send_consumes_case() -> void:
-	_set_case("send_consumes")
+	_set_case("send_keeps_file")
 	_game.start_new_run(5151)
 	var hd = HD.new()
 	hd.send_game_factory = func(_id, _tier, _seed, _ctx):
@@ -496,46 +499,83 @@ func _send_consumes_case() -> void:
 	hd.set_time_scale(1.0)
 	hd._next_spawn_at = 9999.0
 	var folder_id := _first_folder(_game.registry)
+	var folder = _game.registry.folders[folder_id]
 	var file = _game.registry.create_file("send_ok.txt", "text", folder_id)
-	_ok(file != null, "send_consumes: файл создан")
+	_ok(file != null, "send_keeps: файл создан")
 	if file == null:
 		hd.free()
 		return
 	var fid := str(file.id)
+	var free_before: int = folder.free_cell_count()
 	var req_id := str(hd._make_request([file], "tcp", false, "", ""))
-	_ok(hd.attach_file(req_id, fid), "send_consumes: файл прикреплён")
+	_ok(hd.connect_request(req_id), "send_keeps: соединение установлено")
+	_ok(hd.connection_finished(req_id, true), "send_keeps: connection_finished")
+	_ok(hd.attach_file(req_id, fid), "send_keeps: файл прикреплён")
 	var money_before := int(_game.money)
-	_ok(hd.start_send(req_id), "send_consumes: мини-игра открыта")
-	_ok(hd.is_minigame_active(), "send_consumes: мини-игра активна")
+	_ok(hd.start_send(req_id), "send_keeps: мини-игра открыта")
+	_ok(hd.is_minigame_active(), "send_keeps: мини-игра активна")
 	hd._on_send_minigame_finished(0.8)
 	var req = hd.active_requests.get(req_id)
 	_ok(req != null and (req.sending or hd.is_request_queued(req_id)),
-		"send_consumes: отправка/очередь после мини-игры")
+		"send_keeps: отправка/очередь после мини-игры")
 	for i in range(300):
 		hd.tick(0.1)
 		if not hd.active_requests.has(req_id):
 			break
-	_ok(not hd.active_requests.has(req_id), "send_consumes: запрос завершён")
-	_ok(not _game.registry.files.has(fid), "send_consumes: файл израсходован")
-	_ok(int(_game.money) > money_before, "send_consumes: деньги выросли")
-	_eq(float(file.cooldown_until), 0.0, "send_consumes: cooldown не выставляется")
+	_ok(not hd.active_requests.has(req_id), "send_keeps: запрос завершён")
+	_ok(int(_game.money) > money_before, "send_keeps: деньги выросли")
+	_ok(_game.registry.files.has(fid), "send_keeps: файл остался в registry")
+	var kept = _game.registry.files.get(fid)
+	if kept != null:
+		_eq(str(kept.location), "folder", "send_keeps: location folder")
+		_eq(str(kept.attached_request), "", "send_keeps: attached_request пуст")
+		_eq(str(kept.required_by), "", "send_keeps: required_by пуст")
+		_eq(float(kept.cooldown_until), 0.0, "send_keeps: cooldown 0")
+	_eq(folder.free_cell_count(), free_before, "send_keeps: клетки не освободились")
+	# Тот же файл можно сразу затребовать новым запросом и прикрепить.
+	var req_new := str(hd._create_request(1, "udp", [fid], false))
+	_ok(not req_new.is_empty(), "send_keeps: новый запрос на тот же файл")
+	_ok(hd.attach_file(req_new, fid), "send_keeps: повторное прикрепление успешно")
+	hd._cleanup_request(req_new, true)
 
 	# Отмена мини-игры: файл остаётся прикреплённым и не расходуется.
 	var file2 = _game.registry.create_file("send_cancel.txt", "text", folder_id)
-	_ok(file2 != null, "send_consumes: второй файл создан")
+	_ok(file2 != null, "send_keeps: второй файл создан")
 	if file2 == null:
 		hd.free()
 		return
 	var fid2 := str(file2.id)
 	var req2 := str(hd._make_request([file2], "udp", false, "", ""))
-	_ok(hd.attach_file(req2, fid2), "send_consumes: второй файл прикреплён")
-	_ok(hd.start_send(req2), "send_consumes: вторая мини-игра открыта")
+	_ok(hd.attach_file(req2, fid2), "send_keeps: второй файл прикреплён")
+	_ok(hd.start_send(req2), "send_keeps: вторая мини-игра открыта")
 	hd.force_close_send_minigame()
-	_ok(_game.registry.files.has(fid2), "send_consumes: отмена сохранила файл")
+	_ok(_game.registry.files.has(fid2), "send_keeps: отмена сохранила файл")
 	_eq(str(_game.registry.files[fid2].location), "attached",
-		"send_consumes: файл остался прикреплён")
-	_ok(hd.reject_request(req2), "send_consumes: запрос отклоняется после отмены")
-	_ok(_game.registry.files.has(fid2), "send_consumes: отказ не расходует файл")
+		"send_keeps: файл остался прикреплён")
+	_ok(hd.reject_request(req2), "send_keeps: запрос отклоняется после отмены")
+	_ok(_game.registry.files.has(fid2), "send_keeps: отказ не расходует файл")
+	_eq(str(_game.registry.files[fid2].location), "folder",
+		"send_keeps: после отказа файл в папке")
+	_eq(str(_game.registry.files[fid2].required_by), "",
+		"send_keeps: после отказа required_by пуст")
+
+	# Таймаут запроса тоже сохраняет файл.
+	var file3 = _game.registry.create_file("send_timeout.txt", "text", folder_id)
+	_ok(file3 != null, "send_keeps: третий файл создан")
+	if file3 == null:
+		hd.free()
+		return
+	var fid3 := str(file3.id)
+	var req3 := str(hd._make_request([file3], "udp", false, "", ""))
+	_ok(hd.attach_file(req3, fid3), "send_keeps: третий файл прикреплён")
+	var live3 = hd.active_requests.get(req3)
+	if live3 != null:
+		live3.time_left = 0.05
+	hd.tick(0.1)
+	_ok(not hd.active_requests.has(req3), "send_keeps: запрос истёк по таймауту")
+	_ok(_game.registry.files.has(fid3), "send_keeps: таймаут сохранил файл")
+	_eq(str(_game.registry.files[fid3].location), "folder",
+		"send_keeps: после таймаута файл в папке")
 	hd.free()
 
 

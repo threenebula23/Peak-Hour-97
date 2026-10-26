@@ -15,6 +15,12 @@ signal hover_open_requested(folder_id: String)
 const ROW_H := 24.0
 const SECTION_H := 22.0
 
+# --- Motion (Lane B) -------------------------------------------------------
+const HOVER_DUR := 0.10
+const SELECT_DUR := 0.12
+const WAVE_DUR := 0.8
+const ACCEPT_DUR := 0.20
+
 var folder_id := ""
 var folder_name := ""
 ## v2: count — занятые КЛЕТКИ, capacity — всего клеток.
@@ -41,17 +47,27 @@ var expanded := true:
 var selected := false:
 	set(v):
 		selected = v
+		set_process(true)
 		queue_redraw()
 var hovered := false:
 	set(v):
 		hovered = v
+		set_process(true)
 		queue_redraw()
 var drop_active := false:
 	set(v):
 		if drop_active != v:
 			drop_active = v
+			_wave = 0.0
+			set_process(true)
 			queue_redraw()
 var locked := false
+
+var _hover_amt := 0.0
+var _sel_amt := 0.0
+var _wave := 0.0
+var _accept_clock := -1.0
+var _motion_on := true
 
 
 func _ready() -> void:
@@ -63,6 +79,80 @@ func _ready() -> void:
 	mouse_entered.connect(func() -> void: hovered = true)
 	mouse_exited.connect(func() -> void: hovered = false)
 	set_process(false)
+
+
+# --- motion (Lane B) -------------------------------------------------------
+
+## Внешний переключатель движения (Lane A / настройки).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+	if _reduced():
+		_hover_amt = 1.0 if hovered else 0.0
+		_sel_amt = 1.0 if selected else 0.0
+		_accept_clock = -1.0
+	queue_redraw()
+
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
+
+
+func _process(delta: float) -> void:
+	var hov := 1.0 if hovered else 0.0
+	var sel := 1.0 if selected else 0.0
+	if _reduced():
+		_hover_amt = hov
+		_sel_amt = sel
+		_wave = 0.0
+	else:
+		if not is_equal_approx(_hover_amt, hov):
+			_hover_amt = move_toward(_hover_amt, hov, delta / HOVER_DUR)
+		if not is_equal_approx(_sel_amt, sel):
+			_sel_amt = move_toward(_sel_amt, sel, delta / SELECT_DUR)
+		if drop_active:
+			_wave = fmod(_wave + delta, WAVE_DUR)
+	if _accept_clock >= 0.0:
+		_accept_clock += delta
+		if _accept_clock >= ACCEPT_DUR:
+			_accept_clock = -1.0
+	queue_redraw()
+	if not drop_active and _accept_clock < 0.0 \
+			and is_equal_approx(_hover_amt, hov) and is_equal_approx(_sel_amt, sel):
+		set_process(false)
+
+
+func _draw_hover() -> float:
+	if _reduced():
+		return 1.0 if hovered else 0.0
+	return _hover_amt
+
+
+func _draw_sel() -> float:
+	if _reduced():
+		return 1.0 if selected else 0.0
+	return _sel_amt
+
+
+## Флэш «файл принят» после drop — 0.20 c.
+func _start_accept() -> void:
+	_accept_clock = 0.0
+	set_process(true)
+
+
+## Волна drop_active и вспышка приёма — только отрисовка, layout не меняется.
+func _draw_effects(r: Rect2) -> void:
+	if drop_active and not _reduced() and not is_section:
+		var p := clampf(_wave / WAVE_DUR, 0.0, 1.0)
+		var w := 22.0
+		var x := lerpf(-w, size.x, p)
+		var a := 0.06 + 0.20 * (1.0 - p)
+		draw_rect(Rect2(x, 2, w, maxf(0.0, size.y - 4)),
+			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, a))
+	if _accept_clock >= 0.0:
+		var ae := clampf(1.0 - _accept_clock / ACCEPT_DUR, 0.0, 1.0)
+		draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.9 * ae), 3, 1),
+			Rect2(2, 1, maxf(0.0, size.x - 4), maxf(0.0, size.y - 2)))
 
 
 func setup(p_id: String, p_name: String, p_depth: int, p_section: bool = false) -> void:
@@ -79,26 +169,31 @@ func setup(p_id: String, p_name: String, p_depth: int, p_section: bool = false) 
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
+	var hov := _draw_hover()
 	if is_section:
-		_draw_section(r, f)
+		_draw_section(r, f, hov)
+		_draw_effects(r)
 		return
 
-	if selected:
-		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Color(0, 0, 0, 0), 3, 0),
-			Rect2(2, 1, size.x - 4, size.y - 2))
-		draw_rect(Rect2(2, 5, 2, size.y - 10), Theme90.ACCENT)
-	elif drop_active:
+	var sel := _draw_sel()
+	if sel > 0.001:
+		draw_style_box(Theme90.box(
+			Color(Theme90.ACCENT_PALE.r, Theme90.ACCENT_PALE.g, Theme90.ACCENT_PALE.b, sel),
+			Color(0, 0, 0, 0), 3, 0), Rect2(2, 1, size.x - 4, size.y - 2))
+		draw_rect(Rect2(2, 5, 2, size.y - 10),
+			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, sel))
+	if drop_active:
 		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT, 3, 1),
 			Rect2(2, 1, size.x - 4, size.y - 2))
 	elif hover_open:
 		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT_LIGHT, 3, 1),
 			Rect2(2, 1, size.x - 4, size.y - 2))
 		draw_rect(Rect2(2, 5, 2, size.y - 10), Theme90.ACCENT_LIGHT)
-	elif hovered:
-		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2), Color(1, 1, 1, 0.45))
+	elif hov > 0.02:
+		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2), Color(1, 1, 1, 0.45 * hov))
 
-	var fg := Theme90.NAVY if selected else Theme90.INK
-	var sub := Theme90.ACCENT if selected else Theme90.SHADE
+	var fg := Theme90.INK.lerp(Theme90.NAVY, sel)
+	var sub := Theme90.SHADE.lerp(Theme90.ACCENT, sel)
 	var sx := 5.0 + depth * 12.0
 
 	# тонкий шеврон вместо объёмного квадрата
@@ -128,18 +223,19 @@ func _draw() -> void:
 
 	if locked:
 		Theme90.draw_lock_icon(self, Vector2(size.x - 58, 8), Theme90.SHADE)
+	_draw_effects(r)
 
 
-func _draw_section(r: Rect2, f: Font) -> void:
-	if hovered:
-		draw_rect(r, Color(1, 1, 1, 0.35))
+func _draw_section(r: Rect2, f: Font, hov: float) -> void:
+	if hov > 0.02:
+		draw_rect(r, Color(1, 1, 1, 0.35 * hov))
 	draw_rect(Rect2(2, size.y - 1, maxf(0.0, size.x - 4), 1), Theme90.HAIRLINE)
 	var sx := 4.0
 	if expandable:
 		Theme90.draw_chevron(self, Vector2(sx + 6, size.y * 0.5), 1 if expanded else 2,
 			Theme90.NAVY, 3.0, 1.3)
 	Theme90.draw_drive_icon(self, Vector2(sx + 16, 6), Theme90.NAVY)
-	var fg := Theme90.NAVY if selected else Theme90.INK
+	var fg := Theme90.INK.lerp(Theme90.NAVY, _draw_sel())
 	Theme90.text_vcenter(self, f, Rect2(sx + 32, 0, size.x - 80, size.y),
 		Theme90.fit(f, folder_name, 12, size.x - 110), 12, fg)
 	if not free_text.is_empty():
@@ -184,6 +280,7 @@ func _drop_data(_at_position: Vector2, data: Variant) -> void:
 	_reset_hover_timer()
 	if is_section or not (data is Dictionary):
 		return
+	_start_accept()
 	if str(data.get("kind", "")) == "packet":
 		packet_dropped.emit(folder_id, data)
 	else:

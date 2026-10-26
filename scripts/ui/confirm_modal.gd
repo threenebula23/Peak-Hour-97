@@ -129,10 +129,10 @@ func _draw_frame(r: Rect2) -> void:
 
 	# вопрос и пояснение
 	var f := Theme90.ui()
-	var lines := Theme90.wrap(f, _question, 14, 378, 2)
+	var lines := Theme90.wrap(f, _question, Theme90.FS_BODY, 378, 2)
 	var y := r.position.y + 30
 	for line in lines:
-		Theme90.text(self, f, Vector2(r.position.x + 62, y), line, 14, Theme90.INK)
+		Theme90.text(self, f, Vector2(r.position.x + 62, y), line, Theme90.FS_BODY, Theme90.INK)
 		y += 18.0
 	if not _detail.is_empty():
 		Theme90.text(self, f, Vector2(r.position.x + 62, r.position.y + 58),

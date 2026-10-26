@@ -280,14 +280,23 @@ static func shape_def(shape_id: String) -> Dictionary:
 
 
 ## Клетки формы после поворота по часовой стрелке (0..3), нормализованы в 0.
+## Формы фиксированы на весь забег: кэшируем результат (Array только читается).
+static var _shape_cells_cache: Dictionary = {}
+
+
 static func shape_cells(shape_id: String, rotation: int = 0) -> Array:
+	var rot := posmod(int(rotation), 4)
+	var key := str(shape_id).hash() * 4 + rot
+	var cached = _shape_cells_cache.get(key, null)
+	if cached is Array:
+		return cached
 	var def = shape_def(shape_id)
 	var cells: Array = []
 	for p in def.get("cells", []):
 		cells.append(_vec(p))
-	var rot = posmod(int(rotation), 4)
 	for _i in range(rot):
 		cells = _rotate_cw(cells)
+	_shape_cells_cache[key] = cells
 	return cells
 
 
@@ -602,6 +611,52 @@ func total_cells(folder_id: String = "") -> int:
 		return total
 	var folder = folders.get(folder_id)
 	return folder.total_cells() if folder != null else 0
+
+
+## Влезает ли фигура (любой поворот) хоть в одну незаблокированную папку.
+## excluded_folders — dictionary, где ключи — id заблокированных папок.
+func can_fit_anywhere(shape_id: String, preferred_rotation: int = 0,
+		excluded_folders: Dictionary = {}) -> bool:
+	var shape := str(shape_id)
+	if shape.is_empty():
+		shape = "O1"
+	return _shape_fits_in_any_folder(shape, preferred_rotation, excluded_folders)
+
+
+## Общий precheck: в папке должно быть хотя бы cells.size() свободных клеток.
+func _shape_fits_in_any_folder(shape: String, preferred_rotation: int,
+		excluded_folders: Dictionary) -> bool:
+	var need := shape_cells(shape, preferred_rotation).size()
+	for folder_id in folders.keys():
+		if excluded_folders.has(str(folder_id)):
+			continue
+		var folder = folders[folder_id]
+		if folder == null:
+			continue
+		if folder.free_cell_count() < need:
+			continue
+		if not _find_fit(folder, shape, preferred_rotation).is_empty():
+			return true
+	return false
+
+
+## Влезает ли хоть одна фигура указанного типа в незаблокированную папку.
+## Использует кэш shape_cells и тот же precheck по свободным клеткам.
+func can_fit_type_anywhere(file_type: String, excluded_folders: Dictionary = {}) -> bool:
+	for shape_id in shape_ids_for_type(str(file_type)):
+		if _shape_fits_in_any_folder(str(shape_id), 0, excluded_folders):
+			return true
+	return false
+
+
+## Первая фигура типа, которая реально влезает в незаблокированную папку.
+## "" — ни одна не влезает. rng зарезервирован для будущей вариативности.
+func shape_for_type_fitting(file_type: String, excluded_folders: Dictionary = {},
+		_rng = null) -> String:
+	for shape_id in shape_ids_for_type(str(file_type)):
+		if _shape_fits_in_any_folder(str(shape_id), 0, excluded_folders):
+			return str(shape_id)
+	return ""
 
 
 func folder_cell_stats(folder_id: String) -> Dictionary:

@@ -51,6 +51,8 @@ trap cleanup EXIT
 TESTS=(
   "res://tests/run_tests.gd"
   "res://tests/test_hour.gd"
+  "res://tests/test_economy.gd"
+  "res://tests/test_save.gd"
   "res://tests/test_slots.gd"
   "res://tests/test_shop.gd"
   "res://tests/test_minigame.gd"

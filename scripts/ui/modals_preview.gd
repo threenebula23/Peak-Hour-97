@@ -411,9 +411,9 @@ class FakeDesk:
 		# титлбар приложения — светлая полоса
 		draw_rect(Rect2(0, 0, size.x, 24), Theme90.PAPER_HI)
 		draw_rect(Rect2(0, 23, size.x, 1), Theme90.HAIRLINE)
-		Theme90.text(self, lf, Vector2(10, 7), "PEAK HOUR 97", 9, Theme90.NAVY)
-		Theme90.text(self, f, Vector2(size.x - 74, 7), "03:42", Theme90.FS_MICRO,
-			Theme90.SHADE)
+		Theme90.text(self, Theme90.display(), Vector2(10, 7), "PEAK HOUR 97", 14,
+			Theme90.NAVY)
+		Theme90.text(self, lf, Vector2(size.x - 74, 7), "03:42", 10, Theme90.SHADE)
 
 		# строка меню
 		draw_rect(Rect2(0, 24, size.x, 20), Theme90.PAPER)

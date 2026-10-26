@@ -107,8 +107,8 @@ func _draw_title() -> void:
 	var tx := tr.position.x + 26.0
 	var right_limit := tr.end.x - (24.0 if close_enabled else 8.0)
 	if not title.is_empty():
-		var tf: Font = Theme90.logo() if title_logo else f
-		var tsz := 10 if title_logo else title_size
+		var tf: Font = Theme90.display() if title_logo else f
+		var tsz := 14 if title_logo else title_size
 		var th := tf.get_height(tsz)
 		Theme90.text(self, tf, Vector2(tx, tr.position.y + roundf((TITLE_H - th) * 0.5)),
 			title, tsz, Theme90.NAVY_DEEP)

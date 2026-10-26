@@ -39,11 +39,14 @@
     "send_scroll_card_height_px": 56,
     "required_name_char_limit": 12,
     "file_cooldown_after_send_sec": 0,
-    "consume_files_on_send": true,
     "required_per_request": { "min": 1, "max": 4 },
     "spawn_window_ratio": 0.75,
     "spawn_jitter": 0.2,
-    "buffer_per_upgrade": 1
+    "buffer_per_upgrade": 1,
+    "udp_success_base": 0.40,
+    "udp_success_max": 0.80,
+    "udp_fail_sla": -3,
+    "udp_retry_cooldown_sec": 4
   },
   "economy": {
     "start_stats": {
@@ -135,109 +138,100 @@
   "hours": [
     {
       "hour": 1,
-      "files": 7,
-      "request_cap": 6,
+      "duration": 120,
+      "files": 6,
       "active_requests": 2,
       "attacks": 0,
-      "income_target": 150,
-      "recv_interval": 12,
-      "send_interval": 12,
+      "income_target": 100,
+      "send_interval": 20,
       "type_weights": { "text": 0.7, "sound": 0.3, "photo": 0.0, "video": 0.0 },
       "request_mix": { "1": 0.76, "2": 0.24, "3": 0.0, "4": 0.0 }
     },
     {
       "hour": 2,
-      "files": 8,
-      "request_cap": 6,
+      "duration": 150,
+      "files": 6,
       "active_requests": 2,
       "attacks": 1,
       "income_target": 220,
-      "recv_interval": 11,
-      "send_interval": 20,
+      "send_interval": 24,
       "type_weights": { "text": 0.55, "sound": 0.3, "photo": 0.15, "video": 0.0 },
       "request_mix": { "1": 0.63, "2": 0.32, "3": 0.05, "4": 0.0 }
     },
     {
       "hour": 3,
-      "files": 12,
-      "request_cap": 5,
+      "duration": 180,
+      "files": 7,
       "active_requests": 2,
       "attacks": 1,
       "income_target": 380,
-      "recv_interval": 10,
       "send_interval": 18,
       "type_weights": { "text": 0.4, "sound": 0.3, "photo": 0.22, "video": 0.08 },
       "request_mix": { "1": 0.53, "2": 0.37, "3": 0.10, "4": 0.0 }
     },
     {
       "hour": 4,
-      "files": 16,
-      "request_cap": 6,
+      "duration": 210,
+      "files": 8,
       "active_requests": 3,
       "attacks": 2,
       "income_target": 560,
-      "recv_interval": 9,
-      "send_interval": 17,
+      "send_interval": 24,
       "type_weights": { "text": 0.3, "sound": 0.25, "photo": 0.28, "video": 0.17 },
       "request_mix": { "1": 0.50, "2": 0.36, "3": 0.12, "4": 0.02 }
     },
     {
       "hour": 5,
-      "files": 20,
-      "request_cap": 6,
+      "duration": 240,
+      "files": 9,
       "active_requests": 3,
       "attacks": 2,
       "income_target": 760,
-      "recv_interval": 8,
-      "send_interval": 15,
+      "send_interval": 24,
       "type_weights": { "text": 0.22, "sound": 0.2, "photo": 0.32, "video": 0.26 },
       "request_mix": { "1": 0.42, "2": 0.38, "3": 0.16, "4": 0.04 }
     },
     {
       "hour": 6,
-      "files": 20,
-      "request_cap": 7,
+      "duration": 270,
+      "files": 9,
       "active_requests": 3,
       "attacks": 3,
       "income_target": 980,
-      "recv_interval": 7.5,
-      "send_interval": 14,
+      "send_interval": 24,
       "type_weights": { "text": 0.15, "sound": 0.15, "photo": 0.35, "video": 0.35 },
       "request_mix": { "1": 0.40, "2": 0.38, "3": 0.17, "4": 0.05 }
     },
     {
       "hour": 7,
-      "files": 20,
-      "request_cap": 7,
+      "duration": 300,
+      "files": 10,
       "active_requests": 4,
       "attacks": 3,
       "income_target": 1200,
-      "recv_interval": 7,
-      "send_interval": 13,
+      "send_interval": 24,
       "type_weights": { "text": 0.1, "sound": 0.12, "photo": 0.35, "video": 0.43 },
       "request_mix": { "1": 0.32, "2": 0.40, "3": 0.21, "4": 0.07 }
     },
     {
       "hour": 8,
-      "files": 20,
-      "request_cap": 7,
+      "duration": 330,
+      "files": 10,
       "active_requests": 4,
       "attacks": 4,
       "income_target": 1450,
-      "recv_interval": 6.5,
-      "send_interval": 12,
+      "send_interval": 24,
       "type_weights": { "text": 0.06, "sound": 0.08, "photo": 0.32, "video": 0.54 },
       "request_mix": { "1": 0.30, "2": 0.39, "3": 0.22, "4": 0.09 }
     },
     {
       "hour": 9,
-      "files": 20,
-      "request_cap": 7,
+      "duration": 360,
+      "files": 10,
       "active_requests": 4,
       "attacks": 4,
       "income_target": 1700,
-      "recv_interval": 6,
-      "send_interval": 12,
+      "send_interval": 24,
       "type_weights": { "text": 0.04, "sound": 0.04, "photo": 0.3, "video": 0.62 },
       "request_mix": { "1": 0.27, "2": 0.38, "3": 0.23, "4": 0.12 }
     }
@@ -422,6 +416,16 @@
       "prices": [45, 75, 115, 165, 230],
       "level_names": ["Регламент", "Продление сессии", "Гибкий график", "Приоритетная обработка", "Выделенный менеджер"],
       "weight_by_hour": [1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.7, 0.7, 0.7]
+    },
+    {
+      "id": "lot_udp",
+      "name_ru": "UDP-повторитель",
+      "desc_ru": "Надёжность UDP +10% за уровень: 40% → 80%.",
+      "effect": "udp_success",
+      "value": 0.10,
+      "max_level": 4,
+      "prices": [60, 120, 210, 350],
+      "weight_by_hour": [0.8, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
     }
   ],
   "minigames": {
@@ -534,7 +538,13 @@
   "attacks": {
     "schedule": [0, 1, 1, 2, 2, 3, 3, 4, 4],
     "tier_formula": "clamp(1 + floor((hour - 2) / 2.0), 1, 4)",
-    "spawn_window": { "start_sec": 60, "end_sec": 240 },
+    "spawn_window": {
+      "start_ratio": 0.25,
+      "end_ratio": 0.85,
+      "start_min_sec": 20,
+      "start_max_sec": 60,
+      "end_margin_sec": 20
+    },
     "shield_reward_scale": 0.7,
     "money_scale": 1.0,
     "kinds": {

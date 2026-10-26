@@ -81,6 +81,11 @@ func _init() -> void:
 		_finish()
 		return
 	var fid := str(missing[0])
+	# v3: TCP-контейнер собирается только через установленное соединение, а этот
+	# тест про настройки/галочки, а не про connect-мини-игру. Переводим запрос на
+	# UDP: файл прикрепляется без соединения, attached-данные те же.
+	_ok(director.set_request_protocol(rid, "udp"),
+		"запрос переведён на UDP (attach без соединения)")
 	_ok(director.attach_file(rid, fid), "required-файл прикреплён к запросу")
 	_main._refresh_hour()
 	await process_frame

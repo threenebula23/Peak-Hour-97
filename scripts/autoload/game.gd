@@ -36,6 +36,7 @@ const LOT_EFFECT_KEYS := {
 	"folder_cells": "folder_level",
 	"channel_capacity": "channel_level",
 	"request_timer": "timer_level",
+	"udp_success": "udp_level",
 }
 
 const FALLBACK_LOT_DIMS := [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
@@ -50,7 +51,11 @@ const FALLBACK_SHOP := {
 	"lot_folder": {"id": "lot_folder", "name_ru": "Складской стеллаж", "effect": "folder_cells", "value": 1, "max_level": 5, "prices": [50, 100, 180, 290, 440]},
 	"lot_channel": {"id": "lot_channel", "name_ru": "Пропускная способность", "effect": "channel_capacity", "value": 6, "buffer_value": 1, "max_level": 6, "prices": [45, 70, 95, 130, 175, 230]},
 	"lot_timer": {"id": "lot_timer", "name_ru": "Регламент обработки", "effect": "request_timer", "value": 7, "max_level": 5, "prices": [45, 75, 115, 165, 230]},
+	"lot_udp": {"id": "lot_udp", "name_ru": "UDP-повторитель", "effect": "udp_success", "value": 0.10, "max_level": 4, "prices": [60, 120, 210, 350]},
 }
+
+## Публичный алиас каталога-резерва (удобно тестам/UI).
+const LOT_DEFS := FALLBACK_SHOP
 
 var money: int = START_MONEY
 var sla: float = START_SLA
@@ -310,6 +315,15 @@ func packet_timer() -> float:
 
 func shield_max() -> int:
 	return maxi(0, level("shield_level"))
+
+
+## Шанс успешной UDP-отправки: 40% + 10% за уровень «UDP-повторителя»,
+## не выше 80%. Зеркалит Economy.udp_success_chance() для UI/контроллера.
+func udp_success_chance() -> float:
+	var base := _const("udp_success_base", 0.40)
+	var cap := _const("udp_success_max", 0.80)
+	var step := _lot_effect_value("lot_udp", "value", 0.10)
+	return clampf(base + step * float(level("udp_level")), base, cap)
 
 
 # --- прогрессия/открытия ---------------------------------------------------

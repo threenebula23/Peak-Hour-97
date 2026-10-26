@@ -127,7 +127,7 @@ func _draw() -> void:
 
 func _draw_frame(r: Rect2) -> void:
 	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
-	Theme90.modal_header(self, r, _tr("ui.pause_title", "Пауза").to_upper(), "ЧАС 3 · 03:42")
+	Theme90.modal_header(self, r, _tr("ui.pause_title", "Пауза").to_upper(), "СМЕНА · ПАУЗА")
 
 	# информационная плашка
 	var well := Rect2(r.position + Vector2(14, 28), Vector2(r.size.x - 28, 56))

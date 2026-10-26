@@ -43,6 +43,7 @@ func _init() -> void:
 	_hd.attack_resolved.connect(_on_attack_resolved)
 
 	_test_schedule_table()
+	_test_window_by_duration()
 	_test_tier_by_hour()
 	_test_schedule_window()
 	_test_pause_before_emit_race()
@@ -64,9 +65,12 @@ func _test_schedule_table() -> void:
 		_eq(AD.attacks_for_hour(h), expected[h - 1], "атак в часе %d" % h)
 		_eq(ad._schedule.size(), expected[h - 1], "часть расписания H%d" % h)
 		var prev := ""
+		var win_min := clampf(0.25 * _hour_seconds(h), 20.0, 60.0)
+		var win_max := minf(0.85 * _hour_seconds(h), _hour_seconds(h) - 20.0)
 		for i in range(ad._schedule.size()):
 			var t := float(ad._schedule[i])
-			_ok(t >= 59.999 and t <= 240.001, "H%d: время атаки в окне 60–240 (t=%.2f)" % [h, t])
+			_ok(t >= win_min - 0.001 and t <= win_max + 0.001,
+				"H%d: время атаки в окне %.1f–%.1f (t=%.2f)" % [h, win_min, win_max, t])
 			if i > 0:
 				_ok(t >= float(ad._schedule[i - 1]), "H%d: расписание отсортировано" % h)
 			var kind := str(ad._schedule_kinds[i])
@@ -74,6 +78,51 @@ func _test_schedule_table() -> void:
 			if i > 0 and expected[h - 1] >= 2:
 				_ok(kind != prev, "H%d: вид не повторяется дважды подряд" % h)
 			prev = kind
+
+
+## v4: окно атак масштабируется длительностью часа:
+## start=clamp(0.25*duration,20,60), end=min(0.85*duration,duration-20).
+func _test_window_by_duration() -> void:
+	_set_case("window_by_duration")
+	var expected := {
+		1: [30.0, 100.0],
+		2: [37.5, 127.5],
+		3: [45.0, 153.0],
+		4: [52.5, 178.5],
+		5: [60.0, 204.0],
+		6: [60.0, 229.5],
+		7: [60.0, 255.0],
+		8: [60.0, 280.5],
+		9: [60.0, 306.0],
+	}
+	for h in range(1, 10):
+		_fresh(h)
+		var ad = _hd.attack_director
+		var pair: Array = expected[h]
+		_approx(float(ad._window_min), float(pair[0]), 0.001,
+			"H%d: window_min = %.1f" % [h, float(pair[0])])
+		_approx(float(ad._window_max), float(pair[1]), 0.001,
+			"H%d: window_max = %.1f" % [h, float(pair[1])])
+		_eq(ad.total_count(), int(AD.attacks_for_hour(h)), "H%d: total_count" % h)
+		_eq(ad.pending_count(), ad.total_count(), "H%d: pending = total до спавна" % h)
+		_eq(ad.active_count(), 0, "H%d: active_count = 0 до спавна" % h)
+		_eq(ad.current_tier(), ECONOMY.attack_tier(h),
+			"H%d: current_tier по часу" % h)
+		if ad.total_count() == 0:
+			continue
+		var fake := FakeGame.new()
+		ad.create_game_override = func(_kind, _tier, _seed, _ctx) -> Node:
+			return fake
+		var id := str(ad.spawn_attack("junk"))
+		_ok(not id.is_empty(), "H%d: атака открыта вручную" % h)
+		_eq(ad.active_count(), 1, "H%d: active_count = 1" % h)
+		_eq(ad.current_tier(), ECONOMY.attack_tier(h),
+			"H%d: current_tier активной атаки" % h)
+		_eq(ad.pending_count(), ad.total_count(),
+			"H%d: ручной спавн не съедает расписание" % h)
+		fake.emit_signal("finished", 1.0)
+		_eq(ad.active_count(), 0, "H%d: после finished active_count = 0" % h)
+		fake.queue_free()
 
 
 func _test_tier_by_hour() -> void:
@@ -369,7 +418,8 @@ func _fresh(hour: int) -> void:
 	_hd.start_hour(int(hour))
 	_hd.set_time_scale(1.0)
 	_hd.files_spawned = _hd.files_budget
-	_hd.requests_spawned = _hd.request_cap
+	_hd._next_spawn_at = 999999.0
+	_hd.active_request_limit = 0
 	_hd.spawn_recv_accum = 0.0
 	_hd.spawn_send_accum = 0.0
 	_toasts.clear()
@@ -391,6 +441,15 @@ func _tier_row(kind: String, tier: int) -> Dictionary:
 			if arr[idx] is Dictionary:
 				return (arr[idx] as Dictionary).duplicate(true)
 	return {}
+
+
+## Длительность часа из data/balance.json → hours[].duration.
+func _hour_seconds(hour: int) -> float:
+	if _data != null and _data.has_method("hour_def"):
+		var row: Dictionary = _data.hour_def(int(hour))
+		if row.has("duration"):
+			return float(row.get("duration", 300.0))
+	return 300.0
 
 
 func _money_scale(hour: int) -> float:

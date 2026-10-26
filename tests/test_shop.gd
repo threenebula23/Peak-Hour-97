@@ -8,15 +8,17 @@ const SM := preload("res://scripts/core/slot_manager.gd")
 
 const IDS := [
 	"lot_slots", "lot_speed", "lot_sla", "lot_shield",
-	"lot_money", "lot_folder", "lot_channel", "lot_timer",
+	"lot_money", "lot_folder", "lot_channel", "lot_timer", "lot_udp",
 ]
 const FIRST_PRICES := {
 	"lot_slots": 90, "lot_speed": 55, "lot_sla": 80, "lot_shield": 100,
 	"lot_money": 70, "lot_folder": 50, "lot_channel": 45, "lot_timer": 45,
+	"lot_udp": 60,
 }
 const MAX_LEVELS := {
 	"lot_slots": 4, "lot_speed": 6, "lot_sla": 4, "lot_shield": 3,
 	"lot_money": 8, "lot_folder": 5, "lot_channel": 6, "lot_timer": 5,
+	"lot_udp": 4,
 }
 
 var _checks: int = 0
@@ -54,7 +56,7 @@ func _test_catalog() -> void:
 	_set_case("catalog")
 	_game.start_new_run(1)
 	var shop = SHOP.new()
-	_eq(shop.item_count(), 8, "ровно 8 лотов")
+	_eq(shop.item_count(), 9, "ровно 9 лотов")
 	var total := 0
 	for id in IDS:
 		var item: Dictionary = shop.get_item(id)
@@ -64,8 +66,12 @@ func _test_catalog() -> void:
 		_eq(shop.level(id), 0, "начальный уровень %s" % id)
 		for p in item.get("prices", []):
 			total += int(p)
-	_eq(total, 8085, "сумма цен всех лотов = 8 085")
+	_eq(total, 8825, "сумма цен всех лотов = 8 825")
 	_ok(shop.get_item("scanner").is_empty(), "сканера нет")
+	var udp_item: Dictionary = shop.get_item("lot_udp")
+	_eq(str(udp_item.get("effect", "")), "udp_success", "lot_udp effect")
+	_approx(float(udp_item.get("value", 0.0)), 0.10, 0.0001, "lot_udp value")
+	_eq(shop.max_level("lot_udp"), 4, "lot_udp max_level 4")
 	_eq(shop.max_level("нет_товара"), 0, "неизвестный лот → max_level 0")
 	_eq(shop.price("нет_товара"), 0, "неизвестный лот → price 0")
 	# Максимальный уровень: price() = -1, без индексации prices[max_level].
@@ -136,7 +142,11 @@ func _test_weights() -> void:
 	var weights: Array = []
 	for lot in shop.items():
 		weights.append(SHOP.lot_weight(lot, 3, [], seen))
-	_ok(weights.size() == 8, "веса считаются для всех 8 лотов")
+	_ok(weights.size() == 9, "веса считаются для всех 9 лотов")
+	_approx(SHOP.lot_weight(shop.get_item("lot_udp"), 2, [], {}), 0.8, 0.0001,
+		"lot_udp H2 = 0.8")
+	_approx(SHOP.lot_weight(shop.get_item("lot_udp"), 9, [], {}), 1.0, 0.0001,
+		"lot_udp H9 = 1.0")
 
 
 func _test_affordable() -> void:
@@ -265,6 +275,20 @@ func _test_buy_and_effects() -> void:
 	_ok(shop.buy("lot_shield"), "покупка lot_shield")
 	_eq(_game.shield_max(), 1, "1 заряд щита")
 	_eq(_game.shield_charges, 1, "щит заряжен сразу")
+
+	# UDP-повторитель: 40% → 50% за уровень, кап 80%.
+	_set_offers(["lot_udp", "lot_sla", "lot_money"])
+	_approx(_game.udp_success_chance(), 0.40, 0.0001, "UDP до покупки 40%")
+	_ok(shop.buy("lot_udp"), "покупка lot_udp")
+	_eq(shop.level("lot_udp"), 1, "lot_udp = 1")
+	_approx(_game.udp_success_chance(), 0.50, 0.0001, "UDP после покупки 50%")
+	_ok(shop.buy("lot_udp"), "lot_udp уровень 2")
+	_ok(shop.buy("lot_udp"), "lot_udp уровень 3")
+	_approx(_game.udp_success_chance(), 0.70, 0.0001, "lot_udp 3 → 70%")
+	_ok(shop.buy("lot_udp"), "lot_udp уровень 4")
+	_approx(_game.udp_success_chance(), 0.80, 0.0001, "lot_udp 4 → 80%")
+	_eq(shop.price("lot_udp"), -1, "maxed lot_udp → price -1")
+	_ok(not shop.buy("lot_udp"), "5-й уровень lot_udp не продаётся")
 
 	# Купить можно только то, что в текущих предложениях.
 	_set_offers(["lot_channel", "lot_speed", "lot_timer"])

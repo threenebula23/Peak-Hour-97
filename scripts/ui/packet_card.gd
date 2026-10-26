@@ -16,6 +16,18 @@ const DRAG_CONTROLLER = preload("res://scripts/ui/drag_controller.gd")
 const PREVIEW_CELL := 6.0
 const PREVIEW_GAP := 1.0
 
+# --- Motion (Lane B) -------------------------------------------------------
+const ENTER_DUR := 0.14
+const ENTER_SCALE_FROM := 0.98
+const HOVER_DUR := 0.10
+const METER_TAU := 0.15
+const ALERT_PULSE := 0.9
+const ERROR_SHAKE_DUR := 0.16
+## play_loss: десатурация → X-sweep → alpha/высота.
+const LOSS_DESAT_DUR := 0.10
+const LOSS_SWEEP_DUR := 0.20
+const LOSS_FADE_DUR := 0.28
+
 var id := ""
 var file_name := ""
 var ext := ""
@@ -32,10 +44,22 @@ var shape_rotation := 0
 var hovered := false:
 	set(v):
 		hovered = v
+		set_process(true)
 		queue_redraw()
 
 var _blink := 0.0
 var _blink_on := true
+
+var _hover_amt := 0.0
+var _enter_elapsed := ENTER_DUR
+var _err_shake := 0.0
+var _meter := 0.0
+var _meter_ready := false
+var _pulse := 0.0
+var _motion_on := true
+## play_loss: -1 — не запущен, иначе секунды с начала.
+var _loss_clock := -1.0
+var _loss_sweep := 0.0
 
 
 func _ready() -> void:
@@ -48,6 +72,7 @@ func _ready() -> void:
 	mouse_exited.connect(func() -> void: hovered = false)
 	set_process(true)
 	_update_tooltip()
+	enter(0)
 
 
 ## Совместимая сигнатура: первые 9 аргументов как в v1, затем состояние и
@@ -69,13 +94,103 @@ func setup(p_id: String, p_name: String, p_ext: String, p_type: String, p_proto:
 	shape_id = p_shape_id if not p_shape_id.is_empty() else "O1"
 	shape_rotation = posmod(int(p_rotation), 4)
 	_update_tooltip()
+	if not _meter_ready:
+		_meter = ratio()
+		_meter_ready = true
+	set_process(true)
 	queue_redraw()
 
 
 func set_time(left: float, total: float) -> void:
 	time_left = left
 	time_total = total
+	set_process(true)
 	queue_redraw()
+
+
+# --- motion (Lane B) -------------------------------------------------------
+
+## Появление: alpha 0.14 c + scale 0.98 → 1.
+func enter(_index: int = 0) -> void:
+	if _reduced():
+		_enter_elapsed = ENTER_DUR
+		modulate.a = 1.0
+		scale = Vector2.ONE
+		return
+	_enter_elapsed = 0.0
+	modulate.a = 0.0
+	_apply_enter()
+	set_process(true)
+
+
+## Потеря пакета: десатурация → X-sweep → alpha/высота, затем self-free.
+## Обычное удаление main'ом работает как раньше — play_loss опционален.
+func play_loss() -> void:
+	if _loss_clock >= 0.0:
+		return
+	_loss_clock = 0.0
+	_loss_sweep = 0.0
+	pivot_offset = size * 0.5
+	set_process(true)
+
+
+## Отказ/ошибка: draw-only тряска ±SHAKE, position не меняется.
+func flash_error() -> void:
+	_err_shake = 0.0 if _reduced() else ERROR_SHAKE_DUR
+	set_process(true)
+	queue_redraw()
+
+
+## Внешний переключатель движения (Lane A / настройки).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+	if _reduced():
+		_hover_amt = 1.0 if hovered else 0.0
+		_enter_elapsed = ENTER_DUR
+		modulate.a = 1.0
+		scale = Vector2.ONE
+		_err_shake = 0.0
+		_pulse = 0.0
+	queue_redraw()
+
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
+
+
+func _apply_enter() -> void:
+	var p := clampf(_enter_elapsed / ENTER_DUR, 0.0, 1.0)
+	pivot_offset = size * 0.5
+	var s := lerpf(ENTER_SCALE_FROM, 1.0, p)
+	scale = Vector2(s, s)
+	modulate.a = p
+
+
+func _shake_offset() -> Vector2:
+	if _err_shake <= 0.0:
+		return Vector2.ZERO
+	var p := 1.0 - _err_shake / ERROR_SHAKE_DUR
+	return Vector2(sin(p * PI * 3.0) * UiMotion.SHAKE * (1.0 - p), 0.0)
+
+
+func _alert_alpha() -> float:
+	if _reduced() or time_total <= 0.0 or ratio() >= 0.2:
+		return 1.0
+	return 0.72 + 0.28 * (0.5 + 0.5 * sin(_pulse / ALERT_PULSE * TAU))
+
+
+func _draw_hover() -> float:
+	if _reduced():
+		return 1.0 if hovered else 0.0
+	return _hover_amt
+
+
+## Конец play_loss: узел уходит сам, чужие ссылки на него больше не нужны.
+func _finish_loss() -> void:
+	_loss_clock = -1.0
+	modulate = Color(1, 1, 1, 0)
+	visible = false
+	queue_free()
 
 
 func ratio() -> float:
@@ -125,24 +240,100 @@ func _update_tooltip() -> void:
 
 
 func _process(delta: float) -> void:
-	# мигание только у «горящих» пакетов (<5 %)
-	if ratio() < 0.05:
+	var busy := _animate(delta)
+	# мигание только у «горящих» пакетов (<5 %) и только без reduced
+	var hot := ratio() < 0.05 and not _reduced()
+	if hot:
 		_blink += delta
 		var on := int(_blink * 4.0) % 2 == 0
 		if on != _blink_on:
 			_blink_on = on
 			queue_redraw()
-	else:
+			busy = true
+	elif not _blink_on:
 		_blink_on = true
+		queue_redraw()
+	if time_total > 0.0 and ratio() < 0.2 and not _reduced() and _loss_clock < 0.0:
+		_pulse = fmod(_pulse + delta, ALERT_PULSE)
+		queue_redraw()
+		busy = true
+	if not busy:
+		set_process(false)
+
+
+## Все плавные состояния. true — нужен ещё кадр.
+func _animate(delta: float) -> bool:
+	var changed := false
+	var hov := 1.0 if hovered else 0.0
+	if _reduced():
+		if not is_equal_approx(_hover_amt, hov):
+			_hover_amt = hov
+			changed = true
+	elif not is_equal_approx(_hover_amt, hov):
+		_hover_amt = move_toward(_hover_amt, hov, delta / HOVER_DUR)
+		changed = true
+
+	if _enter_elapsed < ENTER_DUR:
+		_enter_elapsed = minf(ENTER_DUR, _enter_elapsed + delta)
+		_apply_enter()
+		changed = true
+
+	if _err_shake > 0.0:
+		_err_shake = maxf(0.0, _err_shake - delta)
+		changed = true
+
+	if _loss_clock >= 0.0:
+		_animate_loss(delta)
+		changed = true
+	else:
+		var mt := ratio()
+		if not _meter_ready:
+			_meter = mt
+			_meter_ready = true
+		elif not is_equal_approx(_meter, mt):
+			if _reduced():
+				_meter = mt
+			else:
+				_meter = lerpf(_meter, mt, UiMotion.k(delta, METER_TAU))
+				if absf(_meter - mt) < 0.002:
+					_meter = mt
+			changed = true
+
+	if changed:
+		queue_redraw()
+	return changed
+
+
+func _animate_loss(delta: float) -> void:
+	_loss_clock += delta
+	var t := _loss_clock
+	var desat := clampf(t / LOSS_DESAT_DUR, 0.0, 1.0)
+	var fade := clampf((t - LOSS_DESAT_DUR - LOSS_SWEEP_DUR) / LOSS_FADE_DUR, 0.0, 1.0)
+	_loss_sweep = clampf((t - LOSS_DESAT_DUR) / LOSS_SWEEP_DUR, 0.0, 1.0)
+	if _reduced():
+		# Без движения: мгновенная десатурация, X сразу, только fade.
+		desat = 1.0
+		_loss_sweep = 1.0
+		fade = clampf(t / LOSS_FADE_DUR, 0.0, 1.0)
+	var g := lerpf(1.0, 0.62, desat)
+	modulate = Color(g, g, g, 1.0 - fade)
+	# «Высота» — только scale (pivot в центре): layout карточки не меняется.
+	scale = Vector2(1.0, 1.0 - 0.35 * fade)
+	if fade >= 1.0:
+		_finish_loss()
 
 
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
-	var face := Theme90.WHITE if hovered else Theme90.PAPER_HI
-	var border := Theme90.ACCENT_LIGHT if hovered else Theme90.BORDER
-	draw_style_box(Theme90.box(face, border, 4, 1,
-		Color(0, 0, 0, 0.11) if hovered else Theme90.SHADOW), r)
+	var hov := _draw_hover()
+	var off := _shake_offset()
+	if off.x != 0.0:
+		draw_set_transform(off, 0.0, Vector2.ONE)
+	var face := Theme90.PAPER_HI.lerp(Theme90.WHITE, hov)
+	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
+	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.11), hov)
+	draw_style_box(Theme90.box(face, border, 4, 1, shadow), r)
 
 	_draw_shape_preview(Rect2(4, 10, 30, 30))
 
@@ -165,9 +356,14 @@ func _draw() -> void:
 	var col := timer_color()
 	if not _blink_on:
 		col = Theme90.ERROR.lerp(Theme90.FACE, 0.45)
-	Theme90.draw_meter(self, tr, ratio(), col, Theme90.PAPER_LO)
+	var pulse := _alert_alpha()
+	var mcol := col
+	mcol.a *= pulse
+	Theme90.draw_meter(self, tr, _meter if _meter_ready else ratio(), mcol, Theme90.PAPER_LO)
+	var tcol := timer_color()
+	tcol.a *= pulse
 	var w := Theme90.num_line(self, Vector2(186, 17), str(int(ceilf(time_left))), 8,
-		timer_color(), " с", 10)
+		tcol, " с", 10)
 	Theme90.text(self, f, Vector2(186 + w + 3, 19), "·", 10, Theme90.SHADE)
 	Theme90.num_line(self, Vector2(186 + w + 8, 17), str(size_kb), 8,
 		Theme90.SHADE, " КБ", 10)
@@ -181,6 +377,17 @@ func _draw() -> void:
 	Theme90.draw_meter(self, pr, progress, Theme90.ACCENT, Theme90.PAPER_LO)
 	Theme90.num_line(self, Vector2(348, 31), str(int(progress * 100.0)), 8,
 		Theme90.DARK, "%", 8)
+
+	# Потеря: X-sweep поверх карточки (draw-only, position не меняется).
+	if _loss_sweep > 0.0:
+		var lc := Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.85)
+		var inner := r.grow(-6.0)
+		var c := inner.get_center()
+		var half := inner.size * 0.5 * _loss_sweep
+		draw_line(c - half, c + half, lc, 2.0)
+		draw_line(c + Vector2(half.x, -half.y), c + Vector2(-half.x, half.y), lc, 2.0)
+	if off.x != 0.0:
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 func _state_caption() -> String:

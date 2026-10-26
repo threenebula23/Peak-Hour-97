@@ -22,6 +22,7 @@ func _init() -> void:
 	_test_reserve_release()
 	_test_directions_and_entity()
 	_test_weights()
+	_test_connection_slot_metadata()
 	_finish()
 
 
@@ -125,6 +126,48 @@ func _test_weights() -> void:
 		_eq(weights2.size(), 1, "вес запроса по прикреплённым файлам")
 		if weights2.size() == 1:
 			_approx(float(weights2[0]), 2.0, 0.0001, "вес sound = 2 (v2)")
+
+
+# --- v3: метаданные TCP-соединения -----------------------------------------
+
+func _test_connection_slot_metadata() -> void:
+	_set_case("tcp_connection_metadata")
+	var game = root.get_node("Game")
+	game.upgrades.clear()
+	var sm = SM.new()
+	var index := sm.reserve("out", "conn_7", "Клиент", "tcp_connection",
+		"203.0.113.9", true, "req_7")
+	_eq(index, 0, "reserve с расширенными аргументами → 0")
+	var slot = sm.get_slot(index)
+	_ok(slot != null, "слот получен")
+	if slot == null:
+		return
+	_eq(str(slot.kind), "tcp_connection", "kind = tcp_connection")
+	_eq(str(slot.entity_name), "Клиент", "entity_name = имя клиента")
+	_eq(str(slot.detail), "203.0.113.9", "detail = IP")
+	_ok(bool(slot.can_disconnect), "can_disconnect = true")
+	_eq(str(slot.linked_request_id), "req_7", "linked_request_id = запрос")
+	_approx(float(slot.progress), 0.0, 0.0001, "progress = 0 при reserve")
+	_ok(sm.set_progress(index, 0.42), "set_progress для tcp_connection")
+	# release() полностью очищает метаданные слотa.
+	_ok(sm.release(index), "release соединения")
+	_eq(str(slot.kind), "", "kind очищен")
+	_eq(str(slot.detail), "", "detail очищен")
+	_ok(not bool(slot.can_disconnect), "can_disconnect очищен")
+	_eq(str(slot.linked_request_id), "", "linked_request_id очищен")
+	# Roundtrip сейва сохраняет новые поля.
+	var sm2 = SM.new()
+	var idx2 := sm2.reserve("out", "conn_8", "Другой", "tcp_connection",
+		"198.51.100.4", true, "req_8")
+	var dict: Dictionary = sm2.to_dict()
+	var sm3 = SM.new()
+	_ok(sm3.from_dict(dict), "from_dict слотов")
+	var restored = sm3.get_slot(idx2)
+	_ok(restored != null, "слот восстановлен")
+	if restored != null:
+		_eq(str(restored.kind), "tcp_connection", "kind после roundtrip")
+		_eq(str(restored.detail), "198.51.100.4", "detail после roundtrip")
+		_eq(str(restored.linked_request_id), "req_8", "linked после roundtrip")
 
 
 # --- assert-хелперы --------------------------------------------------------

@@ -150,7 +150,7 @@ func _draw() -> void:
 
 func _draw_frame(r: Rect2, hour: int, total: int) -> void:
 	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
-	Theme90.modal_header(self, r, "ИТОГИ ЧАСА %d" % hour, "УЗЕЛ 7 · 03:42")
+	Theme90.modal_header(self, r, "ИТОГИ ЧАСА %d" % hour, "УЗЕЛ 7 · СМЕНА %d" % hour)
 
 
 func _draw_pair_row(r: Rect2, y: float, label: String, good: int, bad: int) -> void:

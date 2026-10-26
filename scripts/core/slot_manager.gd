@@ -64,7 +64,12 @@ func free_count(direction: String = "") -> int:
 
 
 ## Занять свободный слот. Возвращает индекс или -1, если мест нет.
-func reserve(direction: String, entity_id: String, entity_name: String = "") -> int:
+## kind: "packet" / "request" / "tcp_connection" (пустой выводится из
+## направления); detail — IP для tcp_connection; linked_request_id — запрос,
+## который пользуется TCP-соединением (нужен для весов канала).
+func reserve(direction: String, entity_id: String, entity_name: String = "",
+		kind: String = "", detail: String = "", can_disconnect: bool = false,
+		linked_request_id: String = "") -> int:
 	refresh_max_slots()
 	if entity_id.is_empty():
 		return -1
@@ -74,7 +79,8 @@ func reserve(direction: String, entity_id: String, entity_name: String = "") -> 
 	for slot in slots:
 		if slot.occupied:
 			continue
-		slot.occupy(_clean_direction(direction), entity_id, entity_name)
+		slot.occupy(_clean_direction(direction), entity_id, entity_name, kind,
+			detail, can_disconnect, linked_request_id)
 		changed.emit()
 		return slot.index
 	return -1
@@ -129,6 +135,7 @@ func set_progress(index: int, progress: float) -> bool:
 
 ## Веса активных передач для формулы канала (D12 §9).
 ## entity_id может быть id файла (приём) или id запроса (отправка).
+## Для kind=="tcp_connection" вес берётся по файлам связанного запроса.
 func active_weights(registry) -> Array:
 	var weights: Array = []
 	if registry == null:
@@ -136,7 +143,8 @@ func active_weights(registry) -> Array:
 	for slot in slots:
 		if not slot.occupied:
 			continue
-		var weight := _entity_weight(registry, slot.entity_id)
+		var weight := _entity_weight(registry, slot.entity_id, str(slot.kind),
+			str(slot.linked_request_id))
 		if weight > 0.0:
 			weights.append(weight)
 	return weights
@@ -162,12 +170,23 @@ func from_dict(d: Dictionary) -> bool:
 
 # --- служебное -------------------------------------------------------------
 
-func _entity_weight(registry, entity_id: String) -> float:
+func _entity_weight(registry, entity_id: String, kind: String = "",
+		linked_request_id: String = "") -> float:
 	if registry == null:
 		return 0.0
 	var files = registry.files if registry.get("files") != null else null
 	if files == null:
 		return 0.0
+	# TCP-соединение само по себе веса не имеет: считаем файлы запроса,
+	# который через него отправляется.
+	if str(kind) == "tcp_connection":
+		if str(linked_request_id).is_empty():
+			return 0.0
+		var conn_total := 0.0
+		for file in files.values():
+			if str(file.attached_request) == str(linked_request_id):
+				conn_total += _type_weight(file.type)
+		return conn_total
 	if files.has(entity_id):
 		return _type_weight(files[entity_id].type)
 	# Запрос: сумма весов прикреплённых к нему файлов.

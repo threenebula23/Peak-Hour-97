@@ -36,6 +36,7 @@ func _init() -> void:
 	_hd.show_attack_minigame.connect(_on_show_attack_minigame)
 	_hd.show_minigame.connect(_on_show_minigame)
 	_test_full_hour()
+	_test_attack_windows()
 	_test_nine_hours()
 	_test_slots_and_queue()
 	_test_explicit_send()
@@ -77,6 +78,31 @@ func _test_full_hour() -> void:
 	_ok(report.get("requests_left") == _hd.active_requests.size(), "requests_left в отчёте")
 
 
+# --- окна атак по длительности часа ----------------------------------------
+
+## v4: start=clamp(0.25*duration,20,60), end=min(0.85*duration,duration-20).
+## H2 (150 c): 37.5–127.5; H9 (360 c): 60–306.
+func _test_attack_windows() -> void:
+	_set_case("attack_windows")
+	_game.start_new_run(31337)
+	for pair in [[2, 37.5, 127.5], [9, 60.0, 306.0]]:
+		var h := int(pair[0])
+		_game.hour = h
+		_game.phase = &"hour"
+		_hd.start_hour(h)
+		var ad = _hd.attack_director
+		_ok(ad != null, "час %d: AttackDirector создан" % h)
+		if ad == null:
+			continue
+		_approx(float(ad._window_min), float(pair[1]), 0.001,
+			"H%d: начало окна атак" % h)
+		_approx(float(ad._window_max), float(pair[2]), 0.001,
+			"H%d: конец окна атак" % h)
+		for t in ad._schedule:
+			_ok(float(t) >= float(pair[1]) - 0.001 and float(t) <= float(pair[2]) + 0.001,
+				"H%d: атака внутри окна (t=%.1f)" % [h, float(t)])
+
+
 # --- девять часов ----------------------------------------------------------
 
 func _test_nine_hours() -> void:
@@ -92,7 +118,9 @@ func _test_nine_hours() -> void:
 		_reports.clear()
 		_attack_marks.clear()
 		_hd.start_hour(h)
-		_hd.set_time_scale(8.0)
+		# v4: мелкий шаг ускорения, чтобы атаки у границы окна (window_max)
+		# не терялись из-за грубого шага fast-forward.
+		_hd.set_time_scale(2.0)
 		_eq(_game.hour, h, "Game.hour = %d" % h)
 		_eq(_hd.slots.used_count(), 0, "час %d: слоты свободны на старте" % h)
 		var ticks := 0
@@ -113,9 +141,15 @@ func _test_nine_hours() -> void:
 			"час %d: SLA ≤ кап (%.0f)" % [h, float(_game.sla_cap())])
 		_ok(int(_game.money) >= 0, "час %d: money >= 0" % h)
 		_eq(_attack_marks.size(), expected[h - 1], "час %d: атак по расписанию" % h)
+		var duration := _hour_seconds(h)
+		var win_min := clampf(0.25 * duration, 20.0, 60.0)
+		var win_max := minf(0.85 * duration, duration - 20.0)
+		_approx(float(report.get("hour_duration", 0.0)), duration, 0.0001,
+			"час %d: hour_duration = %.0f" % [h, duration])
 		for mark in _attack_marks:
 			var t: float = float(mark.get("t", -1.0))
-			_ok(t >= 58.0 and t <= 242.0, "час %d: окно спавна 60–240 (t=%.1f)" % [h, t])
+			_ok(t >= win_min - 0.001 and t <= win_max + 0.001,
+				"час %d: окно атак %.1f–%.1f (t=%.1f)" % [h, win_min, win_max, t])
 		# Нет дедлока слотов: занятый слот всегда указывает на живую сущность.
 		for slot in _hd.slots.slots:
 			if slot.occupied:
@@ -159,7 +193,10 @@ func _test_slots_and_queue() -> void:
 	_ok(file != null, "файл для запроса создан")
 	if file == null:
 		return
-	var req_id := str(_hd._make_request([file], "tcp", false, "", ""))
+	# v3: TCP отправляет через слот собственного соединения и в очередь не
+	# встаёт; очередь out-слота проверяем на UDP с детерминированным успехом.
+	_hd.udp_roll_override = 0.0
+	var req_id := str(_hd._make_request([file], "udp", false, "", ""))
 	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
 	_ok(_hd.start_send(req_id), "мини-игра отправки открыта")
 	_ok(_hd.is_minigame_active(), "мини-игра активна")
@@ -172,7 +209,12 @@ func _test_slots_and_queue() -> void:
 	_ok(req != null and req.sending, "очередь выдала слот после загрузки пакета")
 	_tick_until_request_gone(req_id, 300)
 	_ok(not _hd.active_requests.has(req_id), "запрос завершён отправкой")
-	_ok(not _game.registry.files.has(str(file.id)), "файл израсходован успешной отправкой")
+	_ok(_game.registry.files.has(str(file.id)), "файл остался после успешной отправки")
+	var queue_kept = _game.registry.files.get(str(file.id))
+	if queue_kept != null:
+		_eq(str(queue_kept.location), "folder", "файл вернулся в папку")
+	_eq(int(_hd.slots.used_count()), 0, "UDP: out-слот освобождён после отправки")
+	_hd.udp_roll_override = -1.0
 
 
 # --- явная отправка --------------------------------------------------------
@@ -184,12 +226,14 @@ func _test_explicit_send() -> void:
 	_hd.start_hour(1)
 	_hd.set_time_scale(1.0)
 	_hd._next_spawn_at = 9999.0
+	_hd.active_request_limit = 0
 	var folder_id := _first_folder()
 	var file = _game.registry.create_file("explicit.txt", "text", folder_id)
 	_ok(file != null, "файл для явной отправки создан")
 	if file == null:
 		return
 	var req_id := str(_hd._make_request([file], "tcp", false, "", ""))
+	_ok(_connect_tcp(req_id), "TCP-соединение установлено")
 	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
 	var req = _hd.active_requests.get(req_id)
 	_ok(req != null, "запрос создан")
@@ -210,8 +254,24 @@ func _test_explicit_send() -> void:
 			"после мини-игры отправка или очередь")
 	_tick_until_request_gone(req_id, 300)
 	_ok(not _hd.active_requests.has(req_id), "запрос завершён отправкой")
-	_ok(not _game.registry.files.has(str(file.id)), "файл израсходован при успехе")
+	_ok(_game.registry.files.has(str(file.id)), "файл остался при успехе")
+	var explicit_kept = _game.registry.files.get(str(file.id))
+	if explicit_kept != null:
+		_eq(str(explicit_kept.location), "folder", "файл вернулся в папку")
+		_eq(str(explicit_kept.attached_request), "", "файл откреплён")
 	_ok(int(_game.money) > money_before, "деньги выросли при отправке")
+	# v4: тот же файл доступен новому запросу.
+	_hd.active_request_limit = 0
+	var req_reuse := str(_hd._create_request(1, "udp", [str(file.id)], false))
+	_ok(not req_reuse.is_empty(), "после отправки файл можно затребовать снова")
+	_ok(_hd.attach_file(req_reuse, str(file.id)), "и снова прикрепить")
+	_hd._cleanup_request(req_reuse, true)
+	# v3: TCP-соединение после успеха остаётся и занимает слот, пока его не
+	# закроют. Для следующего кейса освобождаем канал.
+	_ok(_hd.slots.used_count() >= 1, "TCP-слот остаётся занятым после отправки")
+	for conn_id in _hd.active_connections.keys().duplicate():
+		_hd.disconnect_connection(str(conn_id))
+	_eq(_hd.slots.used_count(), 0, "idle-соединения закрыты")
 
 	# Отмена мини-игры (force close) не расходует файл.
 	var file2 = _game.registry.create_file("cancel.txt", "text", folder_id)
@@ -318,6 +378,28 @@ func _first_folder() -> String:
 	if section == null or section.folder_ids.is_empty():
 		return ""
 	return str(section.folder_ids[0])
+
+
+## Длительность часа из data/balance.json → hours[].duration.
+func _hour_seconds(hour: int) -> float:
+	var data = root.get_node_or_null("Data")
+	if data != null and data.has_method("hour_def"):
+		var row: Dictionary = data.hour_def(int(hour))
+		if row.has("duration"):
+			return float(row.get("duration", 300.0))
+	return 300.0
+
+
+## v3: TCP сначала соединение, потом контейнер.
+func _connect_tcp(req_id: String) -> bool:
+	var req = _hd.active_requests.get(req_id)
+	if req == null:
+		return false
+	if req.has_connection():
+		return true
+	if not _hd.connect_request(req_id):
+		return false
+	return bool(_hd.connection_finished(req_id, true))
 
 
 func _on_hour_finished(report: Dictionary) -> void:

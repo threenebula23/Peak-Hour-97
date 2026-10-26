@@ -22,8 +22,16 @@ const FACTORY := preload("res://scripts/minigames/minigame_factory.gd")
 const ECONOMY := preload("res://scripts/core/economy.gd")
 
 const KINDS: Array[String] = ["junk", "ddos", "phishing", "ransomware"]
+## Legacy-окно (fallback, если в data нет ratio-ключей).
 const WINDOW_MIN := 60.0
 const WINDOW_MAX := 240.0
+## Окно атак v3: start=clamp(start_ratio*duration, start_min, start_max),
+## end=min(end_ratio*duration, duration-end_margin).
+const DEFAULT_START_RATIO := 0.25
+const DEFAULT_END_RATIO := 0.85
+const DEFAULT_START_MIN_SEC := 20.0
+const DEFAULT_START_MAX_SEC := 60.0
+const DEFAULT_END_MARGIN_SEC := 20.0
 const DEFAULT_SCHEDULE: Array[int] = [0, 1, 1, 2, 2, 3, 3, 4, 4]
 
 ## Fallback-таблицы §8 (если Data/balance.json недоступны).
@@ -78,6 +86,8 @@ var _schedule: Array[float] = []
 var _schedule_kinds: Array[String] = []
 var _next_index: int = 0
 var _counter: int = 0
+var _window_min: float = WINDOW_MIN
+var _window_max: float = WINDOW_MAX
 var _allow_spawn: bool = true
 var _active_game = null
 var _active_id: String = ""
@@ -112,14 +122,15 @@ func reset(p_hour: int) -> void:
 	_schedule_kinds.clear()
 
 	var count := attacks_for_hour(hour)
+	_update_spawn_window()
 	var entries: Array = []
 	for i in range(count):
-		entries.append({"t": _randf_range(WINDOW_MIN, WINDOW_MAX)})
+		entries.append({"t": _randf_range(_window_min, _window_max)})
 	entries.sort_custom(func(a, b) -> bool: return float(a.get("t", 0.0)) < float(b.get("t", 0.0)))
 	var previous := ""
 	for entry in entries:
 		var kind := _pick_kind_for_hour(hour, previous)
-		_schedule.append(float(entry.get("t", WINDOW_MIN)))
+		_schedule.append(float(entry.get("t", _window_min)))
 		_schedule_kinds.append(kind)
 		if not kind.is_empty():
 			previous = kind
@@ -141,6 +152,75 @@ func reset(p_hour: int) -> void:
 
 func set_allow_spawn(value: bool) -> void:
 	_allow_spawn = bool(value)
+
+
+# --- окно/счётчики ---------------------------------------------------------
+
+## Окно атак под длительность часа. H2 (150 c): 37.5–127.5; H9 (360 c): 60–306.
+func _update_spawn_window() -> void:
+	var duration := _hour_duration_for_reset()
+	var cfg := _spawn_window_cfg()
+	if cfg.has("start_ratio") and cfg.has("end_ratio"):
+		var start_min := float(cfg.get("start_min_sec", DEFAULT_START_MIN_SEC))
+		var start_max := float(cfg.get("start_max_sec", DEFAULT_START_MAX_SEC))
+		var margin := maxf(0.0, float(cfg.get("end_margin_sec", DEFAULT_END_MARGIN_SEC)))
+		if start_max < start_min:
+			var tmp := start_min
+			start_min = start_max
+			start_max = tmp
+		_window_min = clampf(
+			duration * clampf(float(cfg.get("start_ratio", DEFAULT_START_RATIO)), 0.0, 1.0),
+			start_min, start_max
+		)
+		_window_max = minf(
+			duration * clampf(float(cfg.get("end_ratio", DEFAULT_END_RATIO)), 0.0, 1.0),
+			duration - margin
+		)
+	else:
+		_window_min = WINDOW_MIN
+		_window_max = WINDOW_MAX
+	if _window_max < _window_min:
+		_window_max = _window_min
+
+
+func _hour_duration_for_reset() -> float:
+	if director != null:
+		if director.has_method("hour_seconds"):
+			return maxf(1.0, float(director.call("hour_seconds")))
+		if director.has_method("_hour_seconds"):
+			return maxf(1.0, float(director.call("_hour_seconds")))
+	return 120.0 + 30.0 * float(maxi(0, hour - 1))
+
+
+func _spawn_window_cfg() -> Dictionary:
+	var data = _data()
+	if data != null and data.get("attacks") is Dictionary:
+		var raw = (data.attacks as Dictionary).get("spawn_window", null)
+		if raw is Dictionary:
+			return raw
+	return {}
+
+
+## Сколько запланированных атак ещё не сработало.
+func pending_count() -> int:
+	return maxi(0, _schedule.size() - _next_index)
+
+
+func total_count() -> int:
+	return _schedule.size()
+
+
+func active_count() -> int:
+	if not active_attacks.is_empty():
+		return active_attacks.size()
+	return 1 if _active_game != null else 0
+
+
+## Ступень активной атаки или ступень текущего часа.
+func current_tier() -> int:
+	if _active_game != null:
+		return clampi(_active_tier, 1, 4)
+	return ECONOMY.attack_tier(hour)
 
 
 static func attacks_for_hour(p_hour: int) -> int:
@@ -182,11 +262,15 @@ func tick(delta: float) -> void:
 	elapsed += dt
 	if _next_index >= _schedule.size():
 		return
-	if elapsed > WINDOW_MAX:
-		_next_index = _schedule.size()
+	var due := float(_schedule[_next_index])
+	if elapsed < due:
+		# Атака ещё не наступила. Если окно уже закрыто — расписание исчерпано.
+		if elapsed > _window_max:
+			_next_index = _schedule.size()
 		return
-	if elapsed < float(_schedule[_next_index]):
-		return
+	# elapsed >= due: атака была запланирована внутри окна, поэтому она должна
+	# сработать, даже если большой шаг тика (time_scale/dev) уже перепрыгнул
+	# _window_max. Ровно один спавн за тик.
 	var kind := str(_schedule_kinds[_next_index]) if _next_index < _schedule_kinds.size() else ""
 	_next_index += 1
 	if kind.is_empty():

@@ -123,12 +123,14 @@ func _test_packet_drop() -> void:
 	_eq(int(_director.slots.used_count()), 0, "in-слот освобождён")
 
 
-## Attach не запускает отправку. ОТПРАВИТЬ открывает мини-игру, таймер стоит.
+## TCP: attach только после соединения. ОТПРАВИТЬ открывает мини-игру,
+## таймер стоит; после успеха запрос исчезает, слот соединения остаётся.
 func _test_attach_and_explicit_send() -> void:
 	var rid: String = _director.spawn_request_now(1)
 	_ok(not rid.is_empty(), "запрос заспавнен")
 	if rid.is_empty():
 		return
+	_ok(_director.set_request_protocol(rid, "tcp"), "запрос переведён на TCP")
 	var req = _director.active_requests[rid]
 	_eq(int(_director.request_required_count(rid)), 1, "запросу нужен 1 файл")
 	var missing: Array = _director.request_missing(rid)
@@ -137,13 +139,9 @@ func _test_attach_and_explicit_send() -> void:
 		return
 	var fid := str(missing[0])
 
-	_main._on_file_to_request(rid, 0, {"kind": "file", "id": fid, "from": "folder"})
-	_eq(req.attached.size(), 1, "файл прикреплён через UI")
-	_ok(req.attached.has(fid), "req.attached содержит required-файл")
-	_ok(not req.sending, "attach НЕ запускает отправку")
-	_ok(not req.minigame_active, "attach НЕ открывает мини-игру")
-	_ok(_main._modal_game == null, "после attach модалки нет")
-
+	# TCP без соединения: attach и drop отклонены, но ОТПРАВИТЬ кликабельна.
+	_ok(not _director.attach_file(rid, fid), "TCP без соединения: attach отклонён")
+	_eq(req.attached.size(), 0, "файл не прикрепился до соединения")
 	_main._refresh_hour()
 	await process_frame
 	var card = _request_card(rid)
@@ -152,12 +150,81 @@ func _test_attach_and_explicit_send() -> void:
 		return
 	_ok(card.get_node_or_null("ConnectButton") == null,
 		"у запроса нет legacy-кнопки ConnectButton")
+	_ok(not _card_has_caption(card, "ОТКРЕПИТЬ"), "в карточке нет кнопки ОТКРЕПИТЬ")
+	_eq(card._send_btn.caption, "ОТПРАВИТЬ", "caption кнопки отправки — ОТПРАВИТЬ")
+	_ok(card.can_send(), "ОТПРАВИТЬ кликабельна без файлов")
+	_ok(not card.send_disabled(), "кнопка ОТПРАВИТЬ не заблокирована")
+	_ok(card._connect_btn.visible, "TCP: кнопка ПОДКЛЮЧИТЬСЯ видна")
+	_eq(card._connect_btn.caption, "ПОДКЛЮЧИТЬСЯ", "caption ПОДКЛЮЧИТЬСЯ")
+	_ok(not card._connect_disabled(), "ПОДКЛЮЧИТЬСЯ доступна без соединения")
+	_ok(not card._can_drop_data(Vector2(10, 30), {"kind": "file", "id": fid}),
+		"TCP без соединения: drop файла отклонён")
+
+	var sent: Array = []
+	card.send_pressed.connect(func(sid: String) -> void: sent.append(sid))
+	card._send_btn.pressed.emit()
+	await process_frame
+	_eq(sent, [rid], "ОТПРАВИТЬ эмитит send_pressed(id)")
+	# Debugger убрал дубль Main: остаётся один точный тост backend.
+	_eq(_last_toast(), "СНАЧАЛА УСТАНОВИТЕ СОЕДИНЕНИЕ",
+		"send без соединения: один точный тост backend")
+	_ok(_main._modal_game == null, "мини-игра не открылась без соединения")
+
+	# --- ПОДКЛЮЧИТЬСЯ → модалка соединения → connected ------------------------
+	card._connect_btn.pressed.emit()
+	await process_frame
+	_ok(req.connecting, "ПОДКЛЮЧИТЬСЯ запускает TCP-соединение")
+	_ok(_main._modal_game != null and str(_main._modal_kind) == "connection",
+		"показана модалка соединения")
+	_eq(card._connect_btn.caption, "СОЕДИНЕНИЕ…", "connecting: caption СОЕДИНЕНИЕ…")
+	_ok(card._connect_btn.disabled, "connecting: ПОДКЛЮЧИТЬСЯ заблокирована")
+	var conn_game = _main._modal_game
+	_main._on_connection_finished(true, rid, conn_game)
+	await process_frame
+	await process_frame
+	var conn_id := str(req.connection_id)
+	_ok(req.connected, "соединение установлено")
+	_ok(not conn_id.is_empty(), "connection_id заполнен")
+	_ok(not req.minigame_active, "после соединения мини-игра отправки НЕ открывается")
+	_ok(_main._modal_game == null, "модалка соединения закрыта")
+	_ok(_last_toast().begins_with("СОЕДИНЕНИЕ УСТАНОВЛЕНО"),
+		"тост СОЕДИНЕНИЕ УСТАНОВЛЕНО: %s" % _last_toast())
+	_eq(card._connect_btn.caption, "ПОДКЛЮЧЕНО", "после успеха caption ПОДКЛЮЧЕНО")
+	_ok(card._connect_btn.disabled, "после успеха кнопка заблокирована")
+	_ok(card._can_drop_data(Vector2(10, 30), {"kind": "file", "id": fid}),
+		"TCP с соединением: drop разрешён")
+
+	# --- Слот TCP-соединения: клиент, IP, ОТКЛЮЧИТЬ --------------------------
+	var conn_cell = _slot_by_kind("tcp_connection")
+	_ok(conn_cell != null, "слот TCP-соединения показан")
+	if conn_cell != null:
+		_eq(conn_cell.kind, "tcp_connection", "kind слота — tcp_connection")
+		_eq(conn_cell.id, conn_id, "слот хранит id соединения, а не запроса")
+		_eq(conn_cell.file_name, str(req.client_name), "слот: имя клиента")
+		_eq(conn_cell.detail.split(".").size(), 4,
+			"слот: IP клиента (%s)" % conn_cell.detail)
+		_ok(conn_cell.can_disconnect, "слот: can_disconnect = true")
+		var disc = conn_cell.get_node_or_null("DisconnectButton")
+		_ok(disc != null and (disc as Control).visible, "в слоте видна кнопка ОТКЛЮЧИТЬ")
+		if disc != null:
+			_eq((disc as Control).position, Vector2(146, 4), "ОТКЛЮЧИТЬ: позиция 146,4")
+			_eq((disc as Control).size, Vector2(84, 16), "ОТКЛЮЧИТЬ: размер 84×16")
+			_eq((disc as Button90).caption_size, 10, "ОТКЛЮЧИТЬ: кегль 10")
+
+	# --- attach после соединения --------------------------------------------
+	_main._on_file_to_request(rid, 0, {"kind": "file", "id": fid, "from": "folder"})
+	_eq(req.attached.size(), 1, "файл прикреплён через UI после соединения")
+	_ok(req.attached.has(fid), "req.attached содержит required-файл")
+	_ok(not req.sending, "attach НЕ запускает отправку")
+	_ok(not req.minigame_active, "attach НЕ открывает мини-игру")
+	_ok(_main._modal_game == null, "после attach модалки нет")
+	_main._refresh_hour()
+	await process_frame
 	_ok(card.can_send(), "кнопка доступна после attach")
 	_ok(not card.send_disabled(), "кнопка включена после attach")
-	_eq(card._send_btn.caption, "СОЕДИНИТЬСЯ",
-		"TCP без соединения: кнопка СОЕДИНИТЬСЯ")
+	_eq(card.attached_count(), 1, "карточка: прикреплено 1/1")
 
-	# Подменная мини-игра: реальный путь connection → show_minigame → modal_root.
+	# --- ОТПРАВИТЬ: мини-игра, таймер запроса стоит --------------------------
 	var holder := {"game": null}
 	_director.send_game_factory = func(_id, _tier, _seed, _ctx):
 		var g := FakeGame.new()
@@ -165,23 +232,14 @@ func _test_attach_and_explicit_send() -> void:
 		return g
 	card._send_btn.pressed.emit()
 	await process_frame
-	_ok(req.connecting, "нажатие запускает TCP-соединение")
-	_ok(_main._modal_game != null and str(_main._modal_kind) == "connection",
-		"показана модалка соединения")
-	var conn_game = _main._modal_game
-	_main._on_connection_finished(true, rid, conn_game)
-	await process_frame
-	await process_frame
 	_fake_game = holder.get("game")
-	_ok(req.connected, "соединение установлено")
 	_ok(_fake_game != null, "мини-игра отправки создана")
-	_ok(req.minigame_active, "после соединения включается мини-игра")
+	_ok(req.minigame_active, "ОТПРАВИТЬ включает мини-игру")
 	_ok(_main._modal_game == _fake_game, "Main запомнил модалку мини-игры")
 	if _fake_game != null:
 		_ok(_fake_game.get_parent() == _main.modal_root, "мини-игра лежит в modal_root")
 	_ok(bool(_controller.modal_open), "controller.modal_open = true на мини-игре")
 
-	# Пока мини-игра открыта, таймер запроса не идёт.
 	var left_before := float(req.time_left)
 	_tick(10)
 	_approx(float(req.time_left), left_before, 0.001,
@@ -194,16 +252,35 @@ func _test_attach_and_explicit_send() -> void:
 	_eq(_main._modal_game, null, "после finished модалка снята")
 	_ok(not bool(_controller.modal_open), "controller.modal_open сброшен")
 	_ok(not req.minigame_active, "мини-игра снята с запроса")
-	_ok(req.sending or _director.is_request_queued(rid),
-		"после мини-игры запрос отправляется или ждёт слот")
+	_ok(req.sending, "после мини-игры TCP-запрос сразу отправляется")
 
-	# Успешная отправка: файл расходуется, деньги растут.
+	# Успешная отправка: файл возвращается в папку, деньги растут, слот остаётся.
 	var money_before := int(_game.money)
-	_tick(120)
+	for i in 400:
+		if not _director.active_requests.has(rid):
+			break
+		_controller.tick(0.1)
 	_ok(not _director.active_requests.has(rid), "запрос закрыт после отправки")
-	_ok(not _game.registry.files.has(fid), "файл израсходован при успешной отправке")
+	_ok(_game.registry.files.has(fid), "файл остался после успешной отправки")
+	var sent_live = _game.registry.files.get(fid)
+	if sent_live != null:
+		_eq(str(sent_live.location), "folder", "файл вернулся в папку")
+		_eq(str(sent_live.attached_request), "", "файл откреплён")
 	_ok(int(_game.money) > money_before,
 		"деньги выросли (%d → %d)" % [money_before, int(_game.money)])
+	var live_cell = _slot_by_kind("tcp_connection")
+	_ok(live_cell != null, "слот соединения остаётся после отправки")
+	_ok(_director.active_connections.has(conn_id), "соединение живо после отправки")
+	# ОТКЛЮЧИТЬ — клик по кнопке слота, а не прямой вызов обработчика.
+	if live_cell != null:
+		var disc_live = live_cell.get_node_or_null("DisconnectButton") as Button90
+		_ok(disc_live != null, "у слота соединения есть кнопка ОТКЛЮЧИТЬ")
+		if disc_live != null:
+			disc_live.pressed.emit()
+			await process_frame
+	_ok(not _director.active_connections.has(conn_id),
+		"клик ОТКЛЮЧИТЬ вызвал disconnect_connection")
+	_ok(_slot_by_kind("tcp_connection") == null, "слот освобождён после ОТКЛЮЧИТЬ")
 	_director.send_game_factory = Callable()
 	_fake_game = null
 	holder.clear()
@@ -223,20 +300,22 @@ func _test_queue_pause_and_timeout() -> void:
 	_ok(req != null, "запрос для очереди создан")
 	if req == null:
 		return
+	_ok(_director.set_request_protocol(rid, "udp"),
+		"запрос очереди переведён на UDP")
 	var missing_q: Array = _director.request_missing(rid)
 	_ok(missing_q.size() >= 1, "есть required-файл для запроса в очередь")
 	if missing_q.is_empty():
 		return
 	var fid := str(missing_q[0])
 	_ok(_director.attach_file(rid, fid), "файл прикреплён к запросу очереди")
-	_ok(_director.set_request_protocol(rid, "udp"),
-		"запрос очереди переведён на UDP")
 
 	var holder := {"game": null}
 	_director.send_game_factory = func(_id, _tier, _seed, _ctx):
 		var g := FakeGame.new()
 		holder["game"] = g
 		return g
+	# UDP-ролл в конце передачи случаен: фиксируем успех, иначе выплаты не будет.
+	_director.udp_roll_override = 0.0
 	_main._on_request_send(rid)
 	await process_frame
 	var fake = holder.get("game")
@@ -276,7 +355,11 @@ func _test_queue_pause_and_timeout() -> void:
 		_tick(1)
 	_ok(not _director.active_requests.has(rid), "запрос завершился успешно")
 	_ok(_game.money > money_send, "выплата за отправку начислена")
-	_ok(not _game.registry.files.has(fid), "файл израсходован успешной отправкой")
+	_ok(_game.registry.files.has(fid), "файл остался после успешной отправки")
+	var udp_live = _game.registry.files.get(fid)
+	if udp_live != null:
+		_eq(str(udp_live.location), "folder", "файл вернулся в папку после UDP")
+	_director.udp_roll_override = -1.0
 	_director.send_game_factory = Callable()
 	_fake_game = null
 	holder.clear()
@@ -292,6 +375,8 @@ func _test_reject() -> void:
 	var missing_r: Array = _director.request_missing(rid)
 	var fid := str(missing_r[0]) if not missing_r.is_empty() else ""
 	if not fid.is_empty():
+		_ok(_director.set_request_protocol(rid, "udp"),
+			"запрос отказа переведён на UDP")
 		_ok(_director.attach_file(rid, fid), "required-файл прикреплён перед отказом")
 	var money_before := int(_game.money)
 	var sla_before := float(_game.sla)
@@ -350,6 +435,14 @@ func _test_prediction() -> void:
 		_eq(int(p.get("tier", 0)), int(tc["tier"]), "S=%d: ожидаемая ступень" % int(tc["sum"]))
 		_ok(str(p.get("id", "")) != "wires", "S=%d: wires не выбирается" % int(tc["sum"]))
 		card.free()
+
+	# required_count <= 0: отправлять нечего — кнопка ОТПРАВИТЬ заблокирована.
+	var empty_card := RequestCard.new()
+	root.add_child(empty_card)
+	empty_card.setup("req_empty", "Клиент", "cli_0", "TCP", [], 30.0, 30.0, 0.0, 0)
+	_ok(not empty_card.can_send(), "required_count=0: can_send = false")
+	_ok(empty_card.send_disabled(), "required_count=0: ОТПРАВИТЬ заблокирована")
+	empty_card.free()
 
 
 ## v3: карточка держит контейнер до 4 обязательных файлов и сумму 4 text.
@@ -422,6 +515,34 @@ func _request_card(id: String):
 		if c != null and is_instance_valid(c) and str(c.id) == id:
 			return c
 	return null
+
+
+## Есть ли в карточке кнопка с такой подписью (кнопки не имеют имён).
+func _card_has_caption(card, caption: String) -> bool:
+	for child in card.get_children():
+		if child is Button90 and str((child as Button90).caption) == caption:
+			return true
+	return false
+
+
+## Ячейка слота нужного вида ("" — любая занятая).
+func _slot_by_kind(kind: String):
+	for c in _main.slot_cells:
+		if c != null and is_instance_valid(c) and str(c.kind) == kind \
+				and str(c.state) == "active":
+			return c
+	return null
+
+
+## Текст последнего тоста (ToastLayer.ToastItem.txt).
+func _last_toast() -> String:
+	var layer = _main.toast_layer
+	if layer == null or layer._items.is_empty():
+		return ""
+	var item = layer._items[layer._items.size() - 1]
+	if item == null or not is_instance_valid(item):
+		return ""
+	return str(item.get("txt"))
 
 
 func _on_timeout() -> void:

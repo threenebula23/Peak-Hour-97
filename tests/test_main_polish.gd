@@ -115,6 +115,7 @@ func _test_receive_scroll() -> void:
 	for pid in director.active_packets.keys().duplicate():
 		director._remove_packet(str(pid))
 	director.files_spawned = director.files_budget
+	director._next_spawn_at = 999999.0
 
 	# 4 пакета (базовый буфер 6) — всё влезает, скроллбар скрыт.
 	for i in 4:

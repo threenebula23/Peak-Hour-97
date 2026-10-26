@@ -20,6 +20,7 @@ const EFFECT_TARGETS := {
 	"folder_cells": "folder_level",
 	"channel_capacity": "channel_level",
 	"request_timer": "timer_level",
+	"udp_success": "udp_level",
 }
 
 const DEFAULT_RULES := {
@@ -57,6 +58,9 @@ const FALLBACK_ITEMS := [
 	{"id": "lot_timer", "name_ru": "Регламент обработки", "effect": "request_timer", "value": 7,
 		"max_level": 5, "prices": [45, 75, 115, 165, 230],
 		"weight_by_hour": [1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.7, 0.7, 0.7]},
+	{"id": "lot_udp", "name_ru": "UDP-повторитель", "effect": "udp_success", "value": 0.10,
+		"max_level": 4, "prices": [60, 120, 210, 350],
+		"weight_by_hour": [0.8, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]},
 ]
 
 var _items: Array = []

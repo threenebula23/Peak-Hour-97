@@ -60,13 +60,15 @@ const DEFAULT_ACHIEVABLE_SUMS := [
 	21, 22, 24, 25, 26, 28, 32,
 ]
 
-const DEFAULT_HOUR_FILES := [4, 8, 12, 16, 20, 20, 20, 20, 20]
-const DEFAULT_REQUEST_CAP := [2, 5, 7, 9, 10, 11, 11, 12, 12]
+const DEFAULT_HOUR_FILES := [6, 6, 7, 8, 9, 9, 10, 10, 10]
 const DEFAULT_ACTIVE_REQUESTS := [1, 2, 2, 3, 3, 3, 4, 4, 4]
 const DEFAULT_ATTACKS := [0, 1, 1, 2, 2, 3, 3, 4, 4]
 const DEFAULT_INCOME_TARGET := [90, 220, 380, 560, 760, 980, 1200, 1450, 1700]
 const DEFAULT_RECV_INTERVAL := [12, 11, 10, 9, 8, 7.5, 7, 6.5, 6]
-const DEFAULT_SEND_INTERVAL := [22, 20, 18, 17, 15, 14, 13, 12, 12]
+const DEFAULT_SEND_INTERVAL := [20, 24, 18, 24, 24, 24, 24, 24, 24]
+## Длительность часа: 120 + 30 * (hour - 1) → 120..360.
+const DEFAULT_HOUR_DURATION_BASE := 120
+const DEFAULT_HOUR_DURATION_STEP := 30
 ## Порядок: text, sound, photo, video (§2.5).
 const DEFAULT_TYPE_WEIGHTS := [
 	[0.70, 0.30, 0.00, 0.00],
@@ -84,19 +86,20 @@ const DEFAULT_REQUEST_MIX := {"1": 0.76, "2": 0.24, "3": 0.0, "4": 0.0}
 
 const DEFAULT_LOT_IDS := [
 	"lot_slots", "lot_speed", "lot_sla", "lot_shield",
-	"lot_money", "lot_folder", "lot_channel", "lot_timer",
+	"lot_money", "lot_folder", "lot_channel", "lot_timer", "lot_udp",
 ]
 const DEFAULT_LOT_NAMES := [
 	"Порты коммутатора", "Оптоволокно", "Резервный ИБП", "Заземление",
 	"Корпоративный контракт", "Складской стеллаж", "Пропускная способность",
-	"Регламент обработки",
+	"Регламент обработки", "UDP-повторитель",
 ]
 const DEFAULT_LOT_EFFECTS := [
 	"connection_slots", "transfer_speed", "sla_cap", "shield_charge",
 	"money_mult", "folder_cells", "channel_capacity", "request_timer",
+	"udp_success",
 ]
-const DEFAULT_LOT_VALUES := [1, 0.10, 40, 1, 0.05, 1, 6, 7]
-const DEFAULT_LOT_MAX := [4, 6, 4, 3, 8, 5, 6, 5]
+const DEFAULT_LOT_VALUES := [1, 0.10, 40, 1, 0.05, 1, 6, 7, 0.10]
+const DEFAULT_LOT_MAX := [4, 6, 4, 3, 8, 5, 6, 5, 4]
 const DEFAULT_LOT_PRICES := [
 	[90, 200, 400, 700],
 	[55, 75, 100, 135, 180, 245],
@@ -106,6 +109,7 @@ const DEFAULT_LOT_PRICES := [
 	[50, 100, 180, 290, 440],
 	[45, 70, 95, 130, 175, 230],
 	[45, 75, 115, 165, 230],
+	[60, 120, 210, 350],
 ]
 const DEFAULT_LOT_WEIGHTS := [
 	[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.8, 0.8, 0.8],
@@ -116,6 +120,7 @@ const DEFAULT_LOT_WEIGHTS := [
 	[1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.8, 0.8, 0.8],
 	[1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 0.9, 0.9, 0.9],
 	[1.0, 1.0, 1.0, 0.9, 0.9, 0.9, 0.7, 0.7, 0.7],
+	[0.8, 0.8, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0],
 ]
 
 const DEFAULT_SHOP_RULES := {
@@ -284,7 +289,7 @@ func difficulty_for(hour: int) -> Dictionary:
 
 # --- v2: часы --------------------------------------------------------------
 
-## Строка бюджета часа (files/request_cap/active_requests/attacks/
+## Строка бюджета часа (duration/files/active_requests/attacks/
 ## income_target/type_weights/request_mix). hour > 9 → последняя строка.
 func hour_def(hour: int) -> Dictionary:
 	var h := maxi(1, int(hour))
@@ -587,12 +592,11 @@ func _default_hour_row(hour: int) -> Dictionary:
 		weights[type_keys[i]] = DEFAULT_TYPE_WEIGHTS[idx][i]
 	return {
 		"hour": maxi(1, hour),
+		"duration": DEFAULT_HOUR_DURATION_BASE + DEFAULT_HOUR_DURATION_STEP * idx,
 		"files": DEFAULT_HOUR_FILES[idx],
-		"request_cap": DEFAULT_REQUEST_CAP[idx],
 		"active_requests": DEFAULT_ACTIVE_REQUESTS[idx],
 		"attacks": DEFAULT_ATTACKS[idx],
 		"income_target": DEFAULT_INCOME_TARGET[idx],
-		"recv_interval": DEFAULT_RECV_INTERVAL[idx],
 		"send_interval": DEFAULT_SEND_INTERVAL[idx],
 		"type_weights": weights,
 		"request_mix": DEFAULT_REQUEST_MIX.duplicate(),
@@ -607,7 +611,7 @@ func _load_shop_lots(raw) -> Array:
 				out.append(item.duplicate(true))
 		if not out.is_empty():
 			return out
-	push_warning("Data: balance.json → shop отсутствует, используются 8 дефолтных лотов")
+	push_warning("Data: balance.json → shop отсутствует, используются %d дефолтных лотов" % DEFAULT_LOT_IDS.size())
 	var fallback: Array = []
 	for i in range(DEFAULT_LOT_IDS.size()):
 		fallback.append({

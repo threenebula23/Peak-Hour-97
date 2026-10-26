@@ -67,6 +67,11 @@ const PAYOUT_STREAK_STEP := 0.02
 const PAYOUT_STREAK_CAP := 10
 const PAYOUT_MONEY_STEP := 0.05
 
+## UDP: база 40%, +10% за уровень «UDP-повторителя», кап 80%.
+const UDP_SUCCESS_BASE := 0.40
+const UDP_SUCCESS_STEP := 0.10
+const UDP_SUCCESS_MAX := 0.80
+
 
 # --- канал -----------------------------------------------------------------
 
@@ -270,6 +275,18 @@ static func payout(
 static func money_mult(upgrades: Dictionary = {}) -> float:
 	var level := _level(upgrades, ["money", "money_level", "money_mult", "lot_money"])
 	return 1.0 + PAYOUT_MONEY_STEP * float(level)
+
+
+## Шанс успешной UDP-отправки: base + step × уровень, не выше cap.
+## Чистая функция для тестов и HourDirector/Game.
+static func udp_success_chance(upgrades: Dictionary = {},
+		base: float = UDP_SUCCESS_BASE, step: float = UDP_SUCCESS_STEP,
+		cap: float = UDP_SUCCESS_MAX) -> float:
+	var level := _level(upgrades, ["udp", "udp_level", "lot_udp", "udp_success"])
+	var safe_base := clampf(float(base), 0.0, 1.0)
+	var safe_cap := clampf(float(cap), safe_base, 1.0)
+	var value := safe_base + maxf(0.0, float(step)) * float(level)
+	return clampf(value, safe_base, safe_cap)
 
 
 ## Итоговый счёт: часы × 1000 + заработанные деньги + SLA × 10.

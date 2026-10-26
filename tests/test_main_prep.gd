@@ -10,6 +10,8 @@ extends SceneTree
 var _checks := 0
 var _fails := 0
 
+const SHOP := preload("res://scripts/systems/shop.gd")
+
 
 func _init() -> void:
 	await process_frame
@@ -450,6 +452,53 @@ func _test_shop_after_hour(main, game) -> void:
 	main._on_shop()
 	_ok(main.shop_modal.visible, "магазин открывается в подготовке")
 	_eq(main.shop_modal.card_ids().size(), 3, "в магазине 3 карточки")
+
+	# --- v3: каталог 9 лотов, среди них UDP-повторитель ---------------------
+	var catalog = SHOP.new()
+	_eq(catalog.items().size(), 9, "каталог магазина — 9 лотов")
+	var lot_ids: Array = []
+	for item in catalog.items():
+		lot_ids.append(str(item.get("id", "")))
+	_ok(lot_ids.has("lot_udp"), "в каталоге есть lot_udp")
+	var udp_lot: Dictionary = catalog.get_item("lot_udp")
+	_eq(str(udp_lot.get("name_ru", "")), "UDP-повторитель",
+		"lot_udp называется UDP-повторитель")
+	_eq(int(udp_lot.get("max_level", 0)), 4, "lot_udp: 4 уровня")
+
+	# Карточка lot_udp: 40% → 50%, на максимуме 80% → 80%.
+	var saved_offers: Array[String] = game.shop_offers.duplicate()
+	var saved_udp := int(game.upgrades.get("udp_level", 0))
+	game.shop_offers.clear()
+	game.shop_offers.append("lot_udp")
+	main.shop_modal.refresh()
+	var udp_cards: Array = main.shop_modal.card_infos()
+	_eq(udp_cards.size(), 1, "карточка lot_udp показана")
+	if not udp_cards.is_empty():
+		var udp_info: Dictionary = udp_cards[0]
+		_eq(str(udp_info.get("now_text", "")), "40%",
+			"UDP-повторитель: сейчас 40%")
+		_eq(str(udp_info.get("after_text", "")), "50%",
+			"UDP-повторитель: после покупки 50%")
+		_ok(not bool(udp_info.get("maxed", false)),
+			"UDP-повторитель не на максимуме")
+	game.upgrades["udp_level"] = 4
+	main.shop_modal.refresh()
+	var maxed_cards: Array = main.shop_modal.card_infos()
+	_eq(maxed_cards.size(), 1, "карточка maxed lot_udp показана")
+	if not maxed_cards.is_empty():
+		var maxed_info: Dictionary = maxed_cards[0]
+		_eq(str(maxed_info.get("now_text", "")), "80%",
+			"UDP-повторитель на максимуме: 80%")
+		_eq(str(maxed_info.get("after_text", "")), "80%",
+			"UDP-повторитель на максимуме: 80% → 80%")
+		_ok(bool(maxed_info.get("maxed", false)),
+			"UDP-повторитель на максимуме помечен maxed")
+	game.upgrades["udp_level"] = saved_udp
+	game.shop_offers.clear()
+	for id in saved_offers:
+		game.shop_offers.append(id)
+	main.shop_modal.refresh()
+
 	main.shop_modal.close()
 	_ok(not main.shop_modal.visible, "магазин закрывается")
 	main._shop_btn.visible = true

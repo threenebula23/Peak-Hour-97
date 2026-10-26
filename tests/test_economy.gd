@@ -22,6 +22,7 @@ func _init() -> void:
 	_test_channel_and_timers()
 	_test_transfer_time()
 	_test_payout()
+	_test_udp_chance()
 	_test_send_minigame()
 	_test_attack_tier()
 	_test_score()
@@ -52,12 +53,14 @@ func _test_data() -> void:
 	_eq(int(data.type_def("nope").get("cells", 0)), 1, "неизвестный тип → text (merge defaults)")
 
 	var h1: Dictionary = data.hour_def(1)
-	_eq(int(h1.get("files", 0)), 7, "H1: 7 файлов")
-	_eq(int(h1.get("request_cap", 0)), 6, "H1: кап 6 запросов")
+	_eq(int(h1.get("files", 0)), 6, "H1: 6 файлов")
+	_ok(not h1.has("request_cap"), "H1: request_cap удалён")
+	_ok(not h1.has("recv_interval"), "H1: recv_interval удалён")
+	_approx(float(h1.get("duration", 0.0)), 120.0, EPS, "H1: duration 120")
 	_eq(int(h1.get("active_requests", 0)), 2, "H1: 2 активных запроса")
 	_eq(int(h1.get("attacks", 0)), 0, "H1: 0 атак")
-	_approx(float(h1.get("income_target", 0.0)), 150.0, EPS, "H1: цель дохода 150")
-	_approx(float(h1.get("send_interval", 0.0)), 12.0, EPS, "H1: send_interval 12")
+	_approx(float(h1.get("income_target", 0.0)), 100.0, EPS, "H1: цель дохода 100")
+	_approx(float(h1.get("send_interval", 0.0)), 20.0, EPS, "H1: send_interval 20")
 	var w1: Dictionary = h1.get("type_weights", {})
 	_approx(float(w1.get("text", 0.0)), 0.70, EPS, "H1: text 70%")
 	_approx(float(w1.get("sound", 0.0)), 0.30, EPS, "H1: sound 30%")
@@ -68,11 +71,23 @@ func _test_data() -> void:
 	_approx(float(m1.get("2", 0.0)), 0.24, EPS, "H1: 2 файла 24%")
 	_approx(float(m1.get("3", 0.0)), 0.0, EPS, "H1: 3 файла 0%")
 	_approx(float(m1.get("4", 0.0)), 0.0, EPS, "H1: 4 файла 0%")
-	_eq(int(data.hour_def(2).get("files", 0)), 8, "H2: 8 файлов")
-	_eq(int(data.hour_def(9).get("files", 0)), 20, "H9: 20 файлов")
-	_eq(int(data.hour_def(9).get("request_cap", 0)), 7, "H9: кап 7 запросов")
+	_eq(int(data.hour_def(2).get("files", 0)), 6, "H2: 6 файлов")
+	_eq(int(data.hour_def(9).get("files", 0)), 10, "H9: 10 файлов")
+	_ok(not data.hour_def(9).has("request_cap"), "H9: request_cap удалён")
 	_eq(int(data.hour_def(100).get("hour", 0)), 9, "hour > 9 → последняя строка")
 	_eq(data.hours.size(), 9, "9 строк бюджета часов")
+	var expected_files := [6, 6, 7, 8, 9, 9, 10, 10, 10]
+	var expected_duration := [120.0, 150.0, 180.0, 210.0, 240.0, 270.0, 300.0, 330.0, 360.0]
+	var expected_send := [20.0, 24.0, 18.0, 24.0, 24.0, 24.0, 24.0, 24.0, 24.0]
+	for i in range(9):
+		var row: Dictionary = data.hour_def(i + 1)
+		_eq(int(row.get("files", 0)), expected_files[i], "H%d: files" % (i + 1))
+		_approx(float(row.get("duration", 0.0)), expected_duration[i], EPS,
+			"H%d: duration" % (i + 1))
+		_approx(float(row.get("send_interval", 0.0)), expected_send[i], EPS,
+			"H%d: send_interval" % (i + 1))
+		_ok(not row.has("request_cap"), "H%d: request_cap удалён" % (i + 1))
+		_ok(not row.has("recv_interval"), "H%d: recv_interval удалён" % (i + 1))
 
 	for row in data.hours:
 		var weights: Dictionary = row.get("type_weights", {})
@@ -82,24 +97,40 @@ func _test_data() -> void:
 		_approx(total, 1.0, EPS, "веса типов часа %d суммируются в 1.0" % int(row.get("hour", 0)))
 
 	var lots: Array = data.lot_defs()
-	_eq(lots.size(), 8, "ровно 8 лотов")
+	_eq(lots.size(), 9, "ровно 9 лотов")
 	var expected_ids := ["lot_slots", "lot_speed", "lot_sla", "lot_shield",
-		"lot_money", "lot_folder", "lot_channel", "lot_timer"]
+		"lot_money", "lot_folder", "lot_channel", "lot_timer", "lot_udp"]
+	var expected_max := [4, 6, 4, 3, 8, 5, 6, 5, 4]
 	var prices_sum := 0
 	for i in range(expected_ids.size()):
 		var lot: Dictionary = data.lot_def(str(expected_ids[i]))
 		_ok(not lot.is_empty(), "лот %s есть" % str(expected_ids[i]))
 		_eq(str(lot.get("id", "")), str(expected_ids[i]), "id лота %d" % i)
-		_eq(int(lot.get("max_level", 0)), [4, 6, 4, 3, 8, 5, 6, 5][i], "max_level %s" % str(expected_ids[i]))
+		_eq(int(lot.get("max_level", 0)), int(expected_max[i]), "max_level %s" % str(expected_ids[i]))
 		_eq((lot.get("weight_by_hour", []) as Array).size(), 9, "weight_by_hour %s: 9 значений" % str(expected_ids[i]))
 		var lot_prices: Array = lot.get("prices", [])
 		_eq(lot_prices.size(), int(lot.get("max_level", 0)), "prices %s по числу уровней" % str(expected_ids[i]))
 		for price in lot_prices:
 			prices_sum += int(price)
-	_eq(prices_sum, 8085, "сумма цен всех лотов = 8 085")
+	_eq(prices_sum, 8825, "сумма цен всех лотов = 8 825")
 	_eq(str(data.lot_def("lot_speed").get("effect", "")), "transfer_speed", "lot_speed effect")
 	_eq(str(data.lot_def("lot_channel").get("effect", "")), "channel_capacity", "lot_channel effect")
+	var udp_lot: Dictionary = data.lot_def("lot_udp")
+	_eq(str(udp_lot.get("effect", "")), "udp_success", "lot_udp effect")
+	_approx(float(udp_lot.get("value", 0.0)), 0.10, EPS, "lot_udp value = 0.10")
+	_eq(udp_lot.get("prices", []).size(), 4, "4 цены lot_udp")
+	var udp_prices: Array = udp_lot.get("prices", [])
+	_eq([int(udp_prices[0]), int(udp_prices[1]), int(udp_prices[2]), int(udp_prices[3])],
+		[60, 120, 210, 350], "цены lot_udp")
 	_ok(data.lot_def("lot_nope").is_empty(), "неизвестный лот → {}")
+	_approx(float(data.constants.get("udp_success_base", 0.0)), 0.40, EPS,
+		"constants.udp_success_base = 0.40")
+	_approx(float(data.constants.get("udp_success_max", 0.0)), 0.80, EPS,
+		"constants.udp_success_max = 0.80")
+	_approx(float(data.constants.get("udp_fail_sla", 0.0)), -3.0, EPS,
+		"constants.udp_fail_sla = -3")
+	_approx(float(data.constants.get("udp_retry_cooldown_sec", 0.0)), 4.0, EPS,
+		"constants.udp_retry_cooldown_sec = 4")
 
 	var rules: Dictionary = data.shop_rules()
 	_eq(int(rules.get("offers", 0)), 3, "shop_rules.offers = 3")
@@ -319,6 +350,43 @@ func _test_payout() -> void:
 	_eq(E.payout(100.0, 1, 1.0, 3.0, 0.0, "udp", 0, {}), 31, "time ratio 1/3 — float")
 	# 100 × (0.6 + 0.8/3) × 0.5 × 0.85 = 36.833 → 37.
 	_eq(E.payout(100.0, 1, 2.0, 3.0, 0.0, "udp", 0, {}), 37, "time ratio 2/3 — float")
+
+
+func _test_udp_chance() -> void:
+	_set_case("udp_chance")
+	# База 40%, +10% за уровень «UDP-повторителя», кап 80%.
+	_approx(E.udp_success_chance({}), 0.40, EPS, "Economy: база 40%")
+	for lvl in range(5):
+		_approx(E.udp_success_chance({"lot_udp": lvl}), 0.40 + 0.10 * float(lvl),
+			EPS, "Economy: lot_udp=%d" % lvl)
+	_approx(E.udp_success_chance({"udp_level": 3}), 0.70, EPS,
+		"Economy: агрегат udp_level")
+	_approx(E.udp_success_chance({"lot_udp": 9}), 0.80, EPS,
+		"Economy: кап 80% при 9 уровнях")
+	_approx(E.udp_success_chance({"udp": 7}), 0.80, EPS,
+		"Economy: ключ udp тоже читается")
+	_approx(E.udp_success_chance({}, 0.5, 0.2, 0.9), 0.5, EPS,
+		"Economy: кастомная база без уровней")
+	_approx(E.udp_success_chance({"lot_udp": 1}, 0.5, 0.2, 0.9), 0.7, EPS,
+		"Economy: кастомный шаг")
+	_approx(E.udp_success_chance({"lot_udp": 1}, 0.9, 0.2, 0.8), 0.9, EPS,
+		"Economy: кап не ниже базы")
+	_eq(E.UDP_SUCCESS_BASE, 0.40, "константа UDP_SUCCESS_BASE")
+	_eq(E.UDP_SUCCESS_STEP, 0.10, "константа UDP_SUCCESS_STEP")
+	_eq(E.UDP_SUCCESS_MAX, 0.80, "константа UDP_SUCCESS_MAX")
+
+	# Game зеркалит Economy и обновляется покупкой лота.
+	var game = G.new()
+	game.start_new_run(9)
+	_approx(game.udp_success_chance(), 0.40, EPS, "Game: старт 40%")
+	game.set_lot_level("lot_udp", 2)
+	_approx(game.udp_success_chance(), 0.60, EPS, "Game: lot_udp=2 → 60%")
+	_approx(float(game.udp_success_chance()),
+		E.udp_success_chance(game.upgrades), EPS, "Game и Economy совпадают")
+	game.set_lot_level("lot_udp", 9)
+	_approx(game.udp_success_chance(), 0.80, EPS, "Game: уровень клампится и кап 80%")
+	_eq(int(game.upgrades.get("udp_level", -1)), 4, "агрегат udp_level = 4")
+	game.free()
 
 
 func _test_send_minigame() -> void:

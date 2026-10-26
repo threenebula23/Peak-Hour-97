@@ -78,6 +78,7 @@ func _init() -> void:
 	_test_send_modal_freeze()
 	await _test_destroy_reserved_folder()
 	await _test_connection_failure_toast()
+	_test_continue_gate()
 	_finish()
 
 
@@ -204,7 +205,17 @@ func _test_hour_start_and_modal() -> void:
 	_eq(int(status.get("tcp_max", 0)), 1, "1 слот на старте")
 	_eq(int(status.get("buffer_max", 0)), 6, "буфер 6 на старте")
 	_eq(int(status.get("hour", 0)), 1, "статус: час 1")
-	_ok(float(status.get("time_left", 0.0)) > 299.0, "статус: таймер идёт")
+	_approx(float(status.get("hour_total", 0.0)), 120.0, 0.0001,
+		"статус: hour_total = 120")
+	var status_time := float(status.get("time_left", 0.0))
+	_ok(status_time > 119.0 and status_time <= 120.0,
+		"статус: time_left ≈120 после старта H1 (%.2f)" % status_time)
+	_eq(int(status.get("request_limit", 0)), 2, "статус: request_limit = 2")
+	_ok(int(status.get("requests_active", -1)) >= 1, "статус: есть активный запрос")
+	_eq(int(status.get("attacks_active", -1)), 0, "статус: в H1 атак нет")
+	_eq(int(status.get("attacks_tier", 0)), 1, "статус: attacks_tier H1 = 1")
+	_eq(int(status.get("sending_count", -1)), 0, "статус: отправок нет")
+	_eq(int(status.get("queued_count", -1)), 0, "статус: очередь пуста")
 
 	_set_case("hour_data_modal")
 	var folder_id := _first_folder_id()
@@ -247,8 +258,13 @@ func _test_fast_hour_and_report() -> void:
 	_ok(not _last_report.is_empty(), "отчёт часа не пустой")
 	_eq(int(_last_report.get("hour", 0)), 1, "в отчёте час 1")
 	for key in ["earned", "completed", "failed", "attacks", "attacks_failed",
-			"sla_delta", "files_carry", "packets_left", "requests_left"]:
+			"sla_delta", "files_carry", "packets_left", "requests_left",
+			"hour_duration", "files_total", "files_sent", "requests_spawned",
+			"requests_timed_out", "requests_rejected", "send_interval", "cells_free"]:
 		_ok(_last_report.has(key), "отчёт содержит %s" % key)
+	_ok(not _last_report.has("request_cap"), "отчёт без request_cap")
+	_approx(float(_last_report.get("hour_duration", 0.0)), 120.0, 0.0001,
+		"отчёт: hour_duration H1 = 120")
 	_eq(String(_game.phase), "hour", "Game.phase ещё hour до next_after_hour")
 	_eq(int(_game.hour), 1, "Game.hour ещё 1 до next_after_hour")
 
@@ -346,19 +362,84 @@ func _test_full_run() -> void:
 
 func _test_save_load() -> void:
 	_set_case("save_load")
+	# Сейв должен быть «живым» (prep, SLA>0): сейв после завершённого забега
+	# больше не предлагает «Продолжить» (см. _test_continue_gate).
+	_c.new_run(5150)
 	_game.money = 321
+	var folder_id := _first_folder_id()
+	var persist = _game.registry.create_file("Сейв-файл", "text", folder_id)
+	_ok(persist != null, "файл для сейва создан")
+	var persist_id := str(persist.id) if persist != null else ""
 	_ok(_c.save(), "save()")
 	_ok(_c.has_save(), "has_save()")
 	_game.money = 7
 	_ok(_c.load(), "load()")
 	_eq(int(_game.money), 321, "деньги восстановлены")
+	_ok(_game.registry.files.has(persist_id), "load сохранил файл в реестре")
+	if _game.registry.files.has(persist_id):
+		var loaded = _game.registry.files[persist_id]
+		_eq(str(loaded.location), "folder", "load: файл лежит в папке")
+		_eq(str(loaded.required_by), "", "load: required_by пуст")
+		_eq(str(loaded.attached_request), "", "load: файл не прикреплён")
 
 	_set_case("continue_run")
+	_ok(_c.can_continue(), "can_continue для живого сейва")
 	_ok(_c.continue_run(), "continue_run с сейвом")
 	_eq(String(_c.phase), "prep", "continue_run → prep")
 	_eq(String(_game.phase), "prep", "Game.phase = prep после continue_run")
 	_eq(int(_game.money), 321, "continue_run восстановил деньги")
 	_ok(int(_game.hour) >= 1, "continue_run восстановил час")
+
+
+## BUG 2: «Продолжить» только для незавершённого забега. Сейв с phase="results"
+## (победа/итоги) или SLA=0 не должен возобновляться ни SaveManager, ни UI.
+func _test_continue_gate() -> void:
+	_set_case("continue_gate")
+	# Живой час: продолжение разрешено.
+	_c.new_run(6060)
+	_ok(_c.start_hour(), "continue_gate: час запущен")
+	_eq(String(_game.phase), "hour", "continue_gate: Game.phase = hour")
+	_ok(float(_game.sla) > 0.0, "continue_gate: SLA > 0")
+	_ok(_c.save(), "continue_gate: сейв живого часа")
+	_ok(SM.can_continue(), "живой час: SaveManager.can_continue = true")
+	_ok(_c.can_continue(), "живой час: controller.can_continue = true")
+
+	# SLA 0: продолжать нечего.
+	_game.sla = 0.0
+	_ok(_c.save(), "continue_gate: сейв со SLA 0")
+	_ok(not SM.can_continue(), "SLA 0: SaveManager.can_continue = false")
+	_ok(not _c.can_continue(), "SLA 0: controller.can_continue = false")
+	_ok(not _c.continue_run(), "SLA 0: continue_run = false")
+
+	# phase="results" при живом SLA: забег завершён.
+	_game.sla = 60.0
+	_game.phase = "results"
+	_ok(_c.save(), "continue_gate: сейв с phase=results")
+	_ok(not SM.can_continue(), "results: SaveManager.can_continue = false")
+	_ok(not _c.can_continue(), "results: controller.can_continue = false")
+	_ok(not _c.continue_run(), "results: continue_run = false")
+
+	# После _finish_run("sla") «Продолжить» недоступно.
+	_c.new_run(7070)
+	_ok(_c.start_hour(), "continue_gate: час для поражения")
+	_game.sla = 0.0
+	_c._finish_run("sla")
+	_eq(String(_c.phase), "run_result", "_finish_run sla → run_result")
+	_ok(not SM.can_continue(), "_finish_run sla: SaveManager false")
+	_ok(not _c.can_continue(), "_finish_run sla: controller false")
+	_ok(not _c.continue_run(), "_finish_run sla: continue_run false")
+
+	# Победный сейв (SLA>0, phase=results) тоже не продолжается.
+	_c.new_run(8080)
+	_ok(_c.start_hour(), "continue_gate: час для победы")
+	_game.sla = 60.0
+	_c._finish_run("victory")
+	_eq(String(_c.phase), "run_result", "_finish_run victory → run_result")
+	_ok(bool(_c.run_result().get("won", false)), "победа помечена won")
+	_ok(not SM.can_continue(), "победный сейв: SaveManager false")
+	_ok(not _c.can_continue(), "победный сейв: controller false")
+	_ok(not _c.continue_run(), "победный сейв: continue_run false")
+
 
 
 ## BUG 1: открытие мини-игры отправки через контроллер обязано поднять
@@ -530,7 +611,8 @@ func _finish_current_hour() -> void:
 	var hd = _c.hour_director
 	hd.set_time_scale(60.0)
 	hd.files_spawned = hd.files_budget
-	hd.requests_spawned = hd.request_cap
+	hd._next_spawn_at = 999999.0
+	hd.active_request_limit = 0
 	hd.spawn_recv_accum = 0.0
 	hd.spawn_send_accum = 0.0
 	if hd.attack_director != null:

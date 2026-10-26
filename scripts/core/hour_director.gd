@@ -2,7 +2,7 @@ class_name HourDirector
 extends Node
 ## Единственный тикер часа (v2).
 ##
-## Час — это бюджет файлов, бюджет запросов, окно спавна 75% часа и атаки.
+## Час — это бюджет файлов, окно спавна 75% часа, запросы по интервалу и атаки.
 ## «Мусорные»/шифровальщицкие пакеты и фишинговые запросы заменены
 ## мини-играми атак (§5.7); TCP-соединение — отдельная мини-игра-полоска.
 ##
@@ -12,8 +12,8 @@ extends Node
 ##   очередь «ОЖИДАНИЕ СЛОТА» (M15);
 ## - таймер запроса замирает, пока открыта ЕГО мини-игра и пока запрос в
 ##   очереди слота; время часа при этом идёт;
-## - файлы расходуются ТОЛЬКО при успешной отправке (§2.8), при отмене/
-##   таймауте/конце часа остаются в папке;
+## - файлы после успешной отправки НЕ исчезают: возвращаются в папку и снова
+##   доступны пулу запросов (cooldown — только из constants);
 ## - мини-игра отправки не ставит час на паузу (это делает только атака);
 ## - если час кончается с открытой мини-игрой отправки — она принудительно
 ##   закрывается (B5, вариант b): q=0, файлы открепляются, отправки нет.
@@ -21,9 +21,13 @@ extends Node
 signal packet_added(id: String)
 signal packet_changed(id: String)
 signal packet_removed(id: String)
+## Пакет потерян по таймауту (перед удалением). UI может показать потерю.
+signal packet_lost(id: String)
 signal request_added(id: String)
 signal request_changed(id: String)
 signal request_removed(id: String)
+## Запрос просрочен (перед cleanup). UI может показать потерю.
+signal request_expired(id: String)
 signal slot_changed
 signal attack_added(id: String)
 signal attack_changed(id: String)
@@ -42,6 +46,7 @@ signal show_connection(request_id: String, hour: int, successes: int)
 
 const PACKET_SCRIPT := preload("res://scripts/entities/packet.gd")
 const REQUEST_SCRIPT := preload("res://scripts/entities/request.gd")
+const CONNECTION_SCRIPT := preload("res://scripts/entities/tcp_connection.gd")
 const SLOT_MANAGER_SCRIPT := preload("res://scripts/core/slot_manager.gd")
 const REGISTRY_SCRIPT := preload("res://scripts/core/file_registry.gd")
 const ATTACK_SCRIPT := preload("res://scripts/systems/attack_director.gd")
@@ -50,15 +55,23 @@ const ECONOMY := preload("res://scripts/core/economy.gd")
 
 const DEFAULT_HOUR_SECONDS := 300.0
 const DEFAULT_RECV_INTERVAL := 12.0
-const DEFAULT_SEND_INTERVAL := 22.0
-const DEFAULT_MAX_REQUESTS := 2
+const DEFAULT_SEND_INTERVAL := 20.0
 const MAX_FILES_PER_HOUR := 20
 const SPAWN_WINDOW_RATIO := 0.75
 const SPAWN_JITTER := 0.2
 const MAX_SPAWN_STEPS := 32
+## Запросы не спавнятся в последние N секунд часа: игрок не успеет их закрыть.
+const REQUEST_SPAWN_CUTOFF_SEC := 10.0
+## Как часто пересчитываем «влезает ли фигура хоть в одну папку» (сек).
+const FIT_CHECK_INTERVAL := 0.5
 const REJECT_FINE_MONEY := -5
 const REJECT_FINE_SLA := -5.0
 const DEFAULT_PACKET_SLA_LOSS := 2.0
+## UDP: штраф за потерянный пакет и пауза перед повтором (fallbacks для data).
+const DEFAULT_UDP_FAIL_SLA := -3.0
+const DEFAULT_UDP_RETRY_SEC := 4.0
+const DEFAULT_UDP_SUCCESS_BASE := 0.40
+const DEFAULT_UDP_SUCCESS_MAX := 0.80
 ## Минимальный зазор между попытками спавна запроса (анти-голодание H1).
 const REQUEST_ATTEMPT_MIN_GAP := 3.0
 const MAX_REQUIRED_FILES := 4
@@ -69,6 +82,8 @@ const DEFAULT_TYPE_WEIGHTS := {"text": 1.0, "sound": 0.0, "photo": 0.0, "video":
 ## Активные сущности часа.
 var active_packets: Dictionary = {}
 var active_requests: Dictionary = {}
+## Активные TCP-соединения: id → TcpConnection. Каждое держит out-слот.
+var active_connections: Dictionary = {}
 var slots = null
 var attack_director = null
 
@@ -86,8 +101,10 @@ var files_spawned: int = 0
 var requests_spawned: int = 0
 var spawned_this_hour: int = 0
 var carry_files: int = 0
-var request_cap: int = DEFAULT_MAX_REQUESTS
 var active_request_limit: int = 1
+## Длительность текущего часа (кэш из start_hour; см. hour_duration()).
+## 0 — ещё не вычислена, тогда используется _resolve_hour_seconds().
+var _hour_duration: float = 0.0
 var spawn_window: float = DEFAULT_HOUR_SECONDS * SPAWN_WINDOW_RATIO
 var request_mix: Dictionary = DEFAULT_REQUEST_MIX.duplicate()
 var type_weights: Dictionary = DEFAULT_TYPE_WEIGHTS.duplicate()
@@ -121,11 +138,21 @@ var send_game_factory: Callable = Callable()
 var _modal_count: int = 0
 var _next_packet_num: int = 1
 var _next_request_num: int = 1
+var _next_connection_num: int = 1
 var _order_counter: int = 0
 var _registry_accum: float = 0.0
 var _lost_check_accum: float = 0.0
+## Троттлинг проверок «влезает ли фигура в папку» (D03/no_space).
+var _fit_check_accum: float = 0.0
+var _packet_fit_cache: Dictionary = {}
+var _space_check_accum: float = 0.0
+var _space_ok_cache: bool = true
+var _no_space_notified: bool = false
 var _finish_guard: bool = false
 var _attack_paused: bool = false
+## Текст последнего тоста директора. Main читает сразу после вызова, чтобы
+## не дублировать отказ, который backend уже озвучил.
+var last_toast_text: String = ""
 
 var _start_money: int = 0
 var _start_sla: float = 0.0
@@ -134,6 +161,14 @@ var _completed: int = 0
 var _failed: int = 0
 var _attacks_blocked: int = 0
 var _attacks_failed: int = 0
+var _udp_lost: int = 0
+## Счётчики отчёта часа.
+var requests_timed_out: int = 0
+var requests_rejected: int = 0
+var files_sent_this_hour: int = 0
+
+## Тестовый крючок UDP-ролла: -1 — обычный рандом, 0.0 — успех, 1.0 — провал.
+var udp_roll_override: float = -1.0
 
 var _minigame = null
 var _minigame_request_id: String = ""
@@ -157,13 +192,15 @@ func start_hour(p_hour: int) -> void:
 	var seed_h1: bool = hour == 1 and requests_spawned == 0 \
 		and registry != null and registry.files.is_empty()
 	var def := _hour_def()
+	_hour_duration = _resolve_hour_seconds()
 	var base_files := maxi(0, int(def.get("files", 4)))
-	files_budget = mini(MAX_FILES_PER_HOUR, base_files + maxi(0, carry_files))
+	# Ожидаемый темп файлов; жёсткого лимита количества нет — спавн идёт по
+	# интервалу всё окно. Перенос между часами отключён.
+	files_budget = base_files
 	carry_files = 0
 	files_spawned = 0
 	requests_spawned = 0
 	spawned_this_hour = 0
-	request_cap = maxi(0, int(def.get("request_cap", 2)))
 	active_request_limit = maxi(0, int(def.get("active_requests", 1)))
 	request_mix = _dict_of(def.get("request_mix", DEFAULT_REQUEST_MIX))
 	if request_mix.is_empty():
@@ -171,13 +208,18 @@ func start_hour(p_hour: int) -> void:
 	type_weights = _dict_of(def.get("type_weights", DEFAULT_TYPE_WEIGHTS))
 	if type_weights.is_empty():
 		type_weights = _default_type_weights(hour)
-	spawn_window = _hour_seconds() * SPAWN_WINDOW_RATIO
+	spawn_window = _hour_duration * _spawn_window_ratio()
 
-	time_left = _hour_seconds()
+	time_left = _hour_duration
 	hour_elapsed = 0.0
 	spawn_recv_accum = 0.0
 	spawn_send_accum = 0.0
 	_lost_check_accum = 0.0
+	_fit_check_accum = 0.0
+	_packet_fit_cache.clear()
+	_space_check_accum = 0.0
+	_space_ok_cache = true
+	_no_space_notified = false
 	# Анти-голодание: первый запрос может появиться сразу, как только в папке
 	# есть подходящий файл (а не через send_interval).
 	_last_request_attempt_t = -REQUEST_ATTEMPT_MIN_GAP
@@ -296,12 +338,24 @@ func tick(delta: float) -> void:
 	time_left = maxf(0.0, time_left - dt)
 
 	_tick_requests(dt)
+	if not running or _finish_guard:
+		return
 	if not modal_open:
 		_tick_packets(dt)
+		if not running or _finish_guard:
+			return
 		_tick_spawns(dt)
+		if not running or _finish_guard:
+			return
 		_tick_request_spawns(dt)
+		if not running or _finish_guard:
+			return
 		_tick_attacks(dt)
+		if not running or _finish_guard:
+			return
 	_tick_registry(dt)
+	if not running or _finish_guard:
+		return
 	_tick_folder_blocks()
 	if time_left <= 0.0:
 		_finish_hour()
@@ -309,6 +363,27 @@ func tick(delta: float) -> void:
 
 func set_paused(value: bool) -> void:
 	paused = bool(value)
+
+
+## Принудительная остановка часа при завершении забега (SLA=0).
+## Не эмитит hour_finished: отчёт часа уже не нужен, итог показывает
+## GameController. Закрывает мини-игру/очередь и снимает атаку, чтобы над
+## экраном итогов не осталось живой модалки.
+func stop_for_run_end() -> void:
+	if _finish_guard:
+		return
+	_finish_guard = true
+	running = false
+	paused = true
+	force_close_send_minigame()
+	_send_queue.clear()
+	set_modal_open(false)
+	if attack_director != null:
+		if attack_director.has_method("cancel_active"):
+			attack_director.cancel_active()
+		if attack_director.has_method("set_allow_spawn"):
+			attack_director.set_allow_spawn(false)
+	set_attack_paused(true)
 
 
 func set_modal_open(value: bool) -> void:
@@ -357,6 +432,22 @@ func get_request(id: String):
 	return active_requests.get(id)
 
 
+func get_connection(conn_id: String):
+	return active_connections.get(str(conn_id))
+
+
+## id соединения, которое сейчас обслуживает запрос ("" — нет).
+func connection_id_for_request(req_id: String) -> String:
+	var clean := str(req_id)
+	if clean.is_empty():
+		return ""
+	for conn_id in active_connections.keys():
+		var conn = active_connections[conn_id]
+		if conn != null and str(conn.request_id) == clean:
+			return str(conn_id)
+	return ""
+
+
 func get_attack(id: String):
 	if attack_director == null:
 		return null
@@ -364,6 +455,21 @@ func get_attack(id: String):
 
 
 # --- публичные расчёты для UI ----------------------------------------------
+
+## Длительность текущего часа в секундах (кэш start_hour, иначе resolve).
+func hour_duration() -> float:
+	return _hour_seconds()
+
+
+## Совместимый псевдоним: UI/Ambient могут звать публичный метод.
+func hour_seconds() -> float:
+	return _hour_seconds()
+
+
+## Публичный геттер очереди отправки (для статуса UI).
+func send_queue_count() -> int:
+	return _send_queue.size()
+
 
 func buffer_limit() -> int:
 	return _buffer_limit()
@@ -381,6 +487,16 @@ func channel_load() -> float:
 	if slots == null:
 		return 0.0
 	return ECONOMY.channel_load(hour, 0, _active_weights(), _upgrades())
+
+
+## Шанс успешной UDP-отправки с учётом лота «UDP-повторитель».
+func udp_success_chance() -> float:
+	return ECONOMY.udp_success_chance(
+		_upgrades(),
+		_const_float("udp_success_base", DEFAULT_UDP_SUCCESS_BASE),
+		_udp_step(),
+		_const_float("udp_success_max", DEFAULT_UDP_SUCCESS_MAX)
+	)
 
 
 func max_slots() -> int:
@@ -459,10 +575,19 @@ func spawn_packet_now(type_override: String = "", protocol_override: String = ""
 
 func _spawn_random_packet(type_override: String = "", protocol_override: String = "") -> String:
 	var file_type := str(type_override)
+	var forced_shape := ""
 	if file_type.is_empty():
-		file_type = _pick_type()
+		# Нормальный спавн: берём только реально влезающую форму, иначе пакет
+		# застрянет в буфере с замороженным таймером.
+		var fitting := _pick_fitting_spawn()
+		if fitting.is_empty():
+			return ""
+		file_type = str(fitting.get("type", ""))
+		forced_shape = str(fitting.get("shape", ""))
 	if _type_def(file_type).is_empty() and not TYPE_ORDER.has(file_type):
+		# Явный невалидный override (dev/тесты) — как раньше, дефолт text.
 		file_type = "text"
+		forced_shape = ""
 	var protocol := str(protocol_override)
 	if protocol.is_empty():
 		protocol = "tcp"
@@ -479,13 +604,46 @@ func _spawn_random_packet(type_override: String = "", protocol_override: String 
 	p.state = PACKET_SCRIPT.STATE_WAITING
 	p.order = _order_counter
 	_order_counter += 1
-	p.shape_id = REGISTRY_SCRIPT.shape_for_type(file_type, rng)
-	p.rotation = _randi_range(0, 3)
+	p.shape_id = forced_shape if not forced_shape.is_empty() \
+		else REGISTRY_SCRIPT.shape_for_type(file_type, rng)
+	p.rotation = 0 if not forced_shape.is_empty() else _randi_range(0, 3)
 	p.shape_cells = REGISTRY_SCRIPT.shape_cells(p.shape_id, p.rotation)
 	if not _add_packet(p):
 		return ""
 	_play_sfx(&"tick")
 	return p.id
+
+
+## Выбрать тип по type_weights среди типов, у которых есть влезающая форма.
+## {} — ни один доступный тип/форма не влезает (пакет не создаём).
+func _pick_fitting_spawn() -> Dictionary:
+	if registry == null:
+		var fallback_type := _pick_type()
+		return {"type": fallback_type, "shape": REGISTRY_SCRIPT.shape_for_type(fallback_type, rng)}
+	if not registry.has_method("shape_for_type_fitting"):
+		return {}
+	var candidates: Array = []
+	var weights: Array = []
+	var total := 0.0
+	for type_id in _type_pool():
+		var shape := str(registry.shape_for_type_fitting(str(type_id), blocked_folders, rng))
+		if shape.is_empty():
+			continue
+		var weight := maxf(0.0, float(type_weights.get(str(type_id), 0.0)))
+		candidates.append({"type": str(type_id), "shape": shape})
+		weights.append(weight)
+		total += weight
+	if candidates.is_empty():
+		return {}
+	if total <= 0.0:
+		return candidates[0]
+	var roll := _randf() * total
+	var acc := 0.0
+	for i in range(candidates.size()):
+		acc += float(weights[i])
+		if roll < acc:
+			return candidates[i]
+	return candidates[candidates.size() - 1]
 
 
 ## Приём пакета в папку. origin=(-1,-1) — auto-fit по фигуре.
@@ -595,7 +753,7 @@ func _spawn_random_request(force: bool = false, count_override: int = 0) -> Stri
 	if registry == null:
 		return ""
 	if not force:
-		if requests_spawned >= request_cap:
+		if hour_elapsed >= _hour_duration - REQUEST_SPAWN_CUTOFF_SEC:
 			return ""
 		if _normal_request_count() >= active_request_limit:
 			return ""
@@ -669,9 +827,14 @@ func _create_request(count: int, protocol: String, file_ids: Array = [],
 			file.required_by = req.id
 	req.attached.clear()
 	req.required_types = _types_for_ids(ids)
-	req.connected = bool(p_connected)
+	# TCP всегда стартует как TCP_NEW: соединения ещё нет. Legacy-флаг
+	# p_connected осмыслен только для UDP (там соединение не нужно).
+	req.connected = bool(p_connected) and req.protocol != "tcp"
+	req.connection_id = ""
 	req.connecting = false
 	req.connect_attempts = 0
+	req.udp_failures = 0
+	req.udp_retry_until = 0.0
 	req.set_meta("required_count", ids.size())
 	req.set_meta("queued", false)
 	active_requests[req.id] = req
@@ -692,8 +855,13 @@ func _types_for_ids(file_ids: Array[String]) -> Array[String]:
 
 
 func attach_file(req_id: String, file_id: String) -> bool:
+	last_toast_text = ""
 	var req = active_requests.get(req_id)
 	if req == null or registry == null:
+		return false
+	# TCP: контейнер можно собирать только через установленное соединение.
+	if str(req.protocol) == "tcp" and not req.has_connection():
+		_emit_toast("СНАЧАЛА УСТАНОВИТЕ СОЕДИНЕНИЕ")
 		return false
 	if req.sending or req.minigame_active or req.connecting or _send_queue.has(req_id):
 		return false
@@ -747,6 +915,7 @@ func detach_file(req_id: String, file_id: String) -> bool:
 
 
 func reject_request(req_id: String) -> bool:
+	last_toast_text = ""
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
@@ -756,6 +925,7 @@ func reject_request(req_id: String) -> bool:
 	_add_money(REJECT_FINE_MONEY)
 	_add_sla(REJECT_FINE_SLA)
 	_failed += 1
+	requests_rejected += 1
 	_add_stat("failed", 1)
 	_emit_toast("Запрос отклонён: −5 $, −5 SLA")
 	_cleanup_request(req_id, true)
@@ -768,6 +938,8 @@ func connect_packet(_packet_id: String) -> bool:
 
 
 ## Начать установку TCP-соединения (мини-игра «полоска»).
+## Контейнер собирать не обязательно: соединение первично. Зато нужен
+## свободный слот — его займёт соединение.
 func connect_request(req_id: String) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null:
@@ -775,6 +947,8 @@ func connect_request(req_id: String) -> bool:
 	if not running or _finish_guard:
 		return false
 	if req.protocol != "tcp" or req.connected or req.connecting:
+		return false
+	if req.has_connection():
 		return false
 	if req.sending or req.minigame_active or _send_queue.has(req_id):
 		return false
@@ -791,9 +965,8 @@ func connect_request(req_id: String) -> bool:
 	if hour_elapsed < req.connect_cooldown_until:
 		_emit_toast("СОЕДИНЕНИЕ: ПОВТОР ЧЕРЕЗ %d с" % int(ceil(req.connect_cooldown_until - hour_elapsed)))
 		return false
-	var problem := _send_ready_error(req)
-	if not problem.is_empty():
-		_emit_toast(problem)
+	if slots == null or int(slots.free_count()) <= 0:
+		_emit_toast("ВСЕ КАНАЛЫ ЗАНЯТЫ · ОТКЛЮЧИТЕ СЛОТ")
 		return false
 	return _begin_connection(req)
 
@@ -812,6 +985,9 @@ func _begin_connection(req) -> bool:
 ## UI закрыл мини-игру соединения. missed=true — промах (штраф SLA и 8 с),
 ## missed=false (Esc/отмена) — только 4 с паузы, без штрафа.
 ## Совместимость: старый вызов с двумя аргументами трактуется как отмена.
+##
+## Успех только создаёт TcpConnection и занимает out-слот: мини-игра отправки
+## сама не запускается (её открывает start_send).
 func connection_finished(req_id: String, success: bool, missed: bool = false) -> bool:
 	var req = active_requests.get(req_id)
 	if req == null:
@@ -828,19 +1004,203 @@ func connection_finished(req_id: String, success: bool, missed: bool = false) ->
 		request_changed.emit(req_id)
 		_emit_toast("СОЕДИНЕНИЕ НЕ УСТАНОВЛЕНО")
 		return true
+
+	# Слот могли занять, пока шла мини-игра: тогда соединения не будет.
+	var conn = _create_connection(req)
+	if conn == null:
+		_emit_toast("НЕТ СВОБОДНОГО СЛОТА")
+		request_changed.emit(req_id)
+		return true
+
+	req.connection_id = str(conn.id)
 	req.connected = true
+	req.slot_reserved = true
+	req.connecting = false
 	req.connect_cooldown_until = 0.0
 	connect_successes += 1
 	request_changed.emit(req_id)
-	if not running or _finish_guard:
+	slot_changed.emit()
+	return true
+
+
+## Создать TcpConnection и занять под него out-слот.
+## null — свободного слота нет (гонка между проверкой и успехом).
+func _create_connection(req):
+	if req == null or slots == null:
+		return null
+	if int(slots.free_count()) <= 0:
+		return null
+	var conn = CONNECTION_SCRIPT.new()
+	conn.id = "conn_%d" % _next_connection_num
+	conn.client_name = str(req.client_name)
+	conn.client_id = str(req.client_id)
+	conn.ip = _random_ip()
+	conn.request_id = str(req.id)
+	conn.hour = hour
+	conn.connected_at = hour_elapsed
+	var slot_index: int = int(slots.reserve(
+		"out", conn.id, conn.client_name, "tcp_connection", conn.ip, true, str(req.id)
+	))
+	if slot_index < 0:
+		return null
+	conn.slot_index = slot_index
+	_next_connection_num += 1
+	active_connections[conn.id] = conn
+	return conn
+
+
+## Соединение живо и всё ещё держит свой out-слот.
+func _connection_open(conn_id: String) -> bool:
+	var key := str(conn_id)
+	var conn = active_connections.get(key)
+	if conn == null or slots == null:
+		return false
+	var slot = slots.get_slot(int(conn.slot_index))
+	if slot == null or not bool(slot.occupied):
+		return false
+	if str(slot.entity_id) != str(conn.id):
+		return false
+	return str(slot.kind) == "tcp_connection"
+
+
+## Закрыть соединение и освободить его слот (без тоста и без открепления
+## файлов — это делает вызывающая сторона).
+func _release_connection(conn_id: String) -> bool:
+	var key := str(conn_id)
+	var conn = active_connections.get(key)
+	if conn == null:
+		return false
+	active_connections.erase(key)
+	var req_id := str(conn.request_id)
+	var req = active_requests.get(req_id) if not req_id.is_empty() else null
+	if slots != null:
+		var released := false
+		var slot = slots.get_slot(int(conn.slot_index))
+		if slot != null and bool(slot.occupied) and str(slot.entity_id) == str(conn.id):
+			released = bool(slots.release(int(conn.slot_index)))
+		if not released:
+			slots.release_by_entity(str(conn.id))
+	if req != null:
+		if str(req.connection_id) == key:
+			req.connection_id = ""
+		req.connected = false
+		req.slot_reserved = false
+		req.sending = false
+		req.send_progress = 0.0
+		_send_queue.erase(req_id)
+		_send_start_time_left.erase(req_id)
+		_send_start_timer_total.erase(req_id)
+		req.set_meta("queued", false)
+		request_changed.emit(req_id)
+	slot_changed.emit()
+	return true
+
+
+## Игрок закрыл соединение: мгновенно, без проверок и мини-игр.
+## Запрос остаётся активным (таймер идёт), файлы возвращаются в папки.
+func disconnect_connection(conn_id: String) -> bool:
+	var key := str(conn_id)
+	var conn = active_connections.get(key)
+	if conn == null:
+		return false
+	var req_id := str(conn.request_id)
+	var req = active_requests.get(req_id) if not req_id.is_empty() else null
+	if req != null:
+		# Прерываем передачу без выплаты и без расхода файлов.
+		if req.sending:
+			req.sending = false
+			req.send_progress = 0.0
+			_send_queue.erase(req_id)
+			_send_start_time_left.erase(req_id)
+			_send_start_timer_total.erase(req_id)
+			req.set_meta("queued", false)
+		if req.minigame_active:
+			if _minigame_request_id == req_id:
+				force_close_send_minigame()
+			else:
+				req.minigame_active = false
+				req.quality = 0.0
+				request_changed.emit(req_id)
+		if registry != null:
+			for file_id in req.attached.duplicate():
+				if registry.files.has(str(file_id)):
+					registry.detach_file(str(file_id))
+		req.attached.clear()
+		req.connected = false
+		req.connection_id = ""
+		req.slot_reserved = false
+		req.set_meta("queued", false)
+	_release_connection(key)
+	_emit_toast("СОЕДИНЕНИЕ ЗАКРЫТО · СЛОТ СВОБОДЕН")
+	return true
+
+
+## Закрыть соединение, привязанное к запросу (если оно есть).
+func disconnect_request(req_id: String) -> bool:
+	var req = active_requests.get(req_id)
+	if req == null:
+		return false
+	var conn_id := str(req.connection_id)
+	if conn_id.is_empty():
+		conn_id = connection_id_for_request(req_id)
+	if conn_id.is_empty():
+		return false
+	return disconnect_connection(conn_id)
+
+
+## UDP-провал в конце передачи: без выплаты и без расхода файлов.
+## Запрос остаётся активным и получает 4-секундный кулдаун повтора.
+func _handle_udp_failure(req) -> void:
+	if req == null:
+		return
+	var req_id := str(req.id)
+	var sla_fine := _const_float("udp_fail_sla", DEFAULT_UDP_FAIL_SLA)
+	var retry_sec := _const_float("udp_retry_cooldown_sec", DEFAULT_UDP_RETRY_SEC)
+	req.udp_failures += 1
+	req.udp_retry_until = hour_elapsed + retry_sec
+	req.sending = false
+	req.send_progress = 0.0
+	req.slot_reserved = false
+	req.set_meta("queued", false)
+	_send_queue.erase(req_id)
+	_send_start_time_left.erase(req_id)
+	_send_start_timer_total.erase(req_id)
+	_add_sla(sla_fine)
+	if game != null:
+		game.streak = 0
+	_udp_lost += 1
+	_add_stat("udp_lost", 1)
+	if slots != null:
+		slots.release_by_entity(req_id)
+	request_changed.emit(req_id)
+	var loss := int(roundf(absf(sla_fine)))
+	_emit_toast("UDP: ПАКЕТ ПОТЕРЯН · −%d SLA · ПОВТОР ЧЕРЕЗ %d с" % [loss, int(roundf(retry_sec))])
+
+
+## Ролл UDP: true — пакет дошёл. udp_roll_override подменяет randf() для тестов.
+func _roll_udp_success(req) -> bool:
+	if req == null:
 		return true
-	var problem := _send_ready_error(req)
-	if not problem.is_empty():
-		_emit_toast(problem)
-		return true
-	if _minigame != null:
-		return true
-	return _launch_send_minigame(req_id)
+	var chance := udp_success_chance()
+	var roll := _randf()
+	if udp_roll_override >= 0.0:
+		roll = clampf(udp_roll_override, 0.0, 0.999999)
+	return roll < chance
+
+
+## Валидный IPv4 из rng: последний октет 1..254, без 127/8 и 169.254/16.
+func _random_ip() -> String:
+	for _i in range(16):
+		var a := _randi_range(1, 223)
+		if a == 127:
+			continue
+		var b := _randi_range(0, 255)
+		if a == 169 and b == 254:
+			continue
+		var c := _randi_range(0, 255)
+		var d := _randi_range(1, 254)
+		return "%d.%d.%d.%d" % [a, b, c, d]
+	return "203.0.113.%d" % _randi_range(1, 254)
 
 
 func _send_ready_error(req) -> String:
@@ -860,21 +1220,37 @@ func is_request_connected(req_id: String) -> bool:
 
 
 func set_request_protocol(req_id: String, protocol: String) -> bool:
+	last_toast_text = ""
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
-	if req.sending or req.minigame_active or req.connecting or req.connected or _send_queue.has(req_id):
+	if req.sending or req.minigame_active or req.connecting or _send_queue.has(req_id):
 		return false
 	var clean := _clean_protocol(protocol)
 	if clean.is_empty():
 		return false
+	if clean == req.protocol:
+		return true
+	# Любой протокол с уже прикреплёнными файлами меняем только после
+	# открепления: TCP без connection_id с attached нарушает инвариант.
+	if not req.attached.is_empty():
+		_emit_toast("СНАЧАЛА ОТКРЕПИТЕ ФАЙЛЫ")
+		return false
+	# Активное TCP-соединение не даёт сменить протокол.
+	if req.connected or req.has_connection():
+		return false
+	if clean == "tcp":
+		# UDP → TCP: соединение ещё нужно установить, retry UDP сбрасываем.
+		req.udp_retry_until = 0.0
 	req.protocol = clean
 	request_changed.emit(req_id)
 	return true
 
 
 ## Явная отправка запроса. Автостарта при attach_file больше нет.
+## TCP: соединение должно быть уже установлено (start_send его не создаёт).
 func start_send(req_id: String) -> bool:
+	last_toast_text = ""
 	var req = active_requests.get(req_id)
 	if req == null:
 		return false
@@ -892,16 +1268,23 @@ func start_send(req_id: String) -> bool:
 	if hour_elapsed < send_disabled_until:
 		_emit_toast("Отправка временно недоступна")
 		return false
-	if req.protocol == "tcp" and hour_elapsed < req.connect_cooldown_until:
-		_emit_toast("СОЕДИНЕНИЕ: ПОВТОР ЧЕРЕЗ %d с" % int(ceil(req.connect_cooldown_until - hour_elapsed)))
+	if req.protocol == "tcp":
+		if not req.has_connection():
+			_emit_toast("СНАЧАЛА УСТАНОВИТЕ СОЕДИНЕНИЕ")
+			return false
+		if hour_elapsed < req.connect_cooldown_until:
+			_emit_toast("СОЕДИНЕНИЕ: ПОВТОР ЧЕРЕЗ %d с" % int(ceil(req.connect_cooldown_until - hour_elapsed)))
+			return false
+	if req.protocol == "udp" and hour_elapsed < req.udp_retry_until:
+		_emit_toast("UDP: ПОВТОР ЧЕРЕЗ %d с" % maxi(1, int(ceil(req.udp_retry_until - hour_elapsed))))
 		return false
-	var problem := _send_ready_error(req)
-	if not problem.is_empty():
-		_emit_toast(problem)
+	var need := _required_count(req)
+	if need <= 0 or req.attached.size() < need:
+		_emit_toast("НЕ ВСЕ ФАЙЛЫ ПРИКРЕПЛЕНЫ · %d/%d" % [req.attached.size(), need])
 		return false
-	# TCP сначала требует мини-игру соединения; UDP шлёт сразу.
-	if req.protocol == "tcp" and not req.connected:
-		return _begin_connection(req)
+	if not _attached_files_valid(req):
+		_emit_toast("ФАЙЛ КОНТЕЙНЕРА НЕДОСТУПЕН")
+		return false
 	return _launch_send_minigame(req_id)
 
 
@@ -969,15 +1352,25 @@ func _on_send_minigame_finished(quality: float) -> void:
 	_start_send_after_minigame(req_id)
 
 
-## После мини-игры: занять out-слот или встать в очередь (M15).
+## После мини-игры: TCP использует слот уже открытого соединения; UDP
+## занимает out-слот или встаёт в очередь (M15).
 func _start_send_after_minigame(req_id: String) -> void:
 	var req = active_requests.get(req_id)
 	if req == null or req.sending:
 		return
+	if str(req.protocol) == "tcp":
+		var conn_id := str(req.connection_id)
+		if conn_id.is_empty() or not _connection_open(conn_id):
+			_emit_toast("СНАЧАЛА УСТАНОВИТЕ СОЕДИНЕНИЕ")
+			return
+		req.slot_reserved = true
+		req.set_meta("queued", false)
+		_begin_send(req_id)
+		return
 	if slots == null:
 		_queue_request(req_id)
 		return
-	var slot_index: int = int(slots.reserve("out", req_id, req.client_name))
+	var slot_index: int = int(slots.reserve("out", req_id, req.client_name, "request"))
 	if slot_index < 0:
 		_queue_request(req_id)
 		return
@@ -1042,7 +1435,7 @@ func _process_send_queue() -> void:
 			_send_queue.erase(req_id)
 			continue
 		var req = active_requests[req_id]
-		var slot_index: int = int(slots.reserve("out", req_id, req.client_name))
+		var slot_index: int = int(slots.reserve("out", req_id, req.client_name, "request"))
 		if slot_index < 0:
 			break
 		_send_queue.erase(req_id)
@@ -1185,21 +1578,28 @@ func report(packets_left_override: int = -1, requests_left_override: int = -1) -
 		requests_left = requests_left_override
 	return {
 		"hour": hour,
+		"hour_duration": _hour_seconds(),
 		"earned": earned,
 		"money_delta": money_delta,
 		"completed": _completed,
 		"failed": _failed,
 		"attacks": _attacks_blocked,
 		"attacks_failed": _attacks_failed,
+		"udp_lost": _udp_lost,
 		"sla_delta": sla_delta,
 		"time_left": time_left,
 		"packets_left": packets_left,
 		"requests_left": requests_left,
-		"files_carry": maxi(0, files_budget - files_spawned),
+		"files_carry": 0,
 		"files_budget": files_budget,
+		"files_total": files_budget,
 		"files_spawned": files_spawned,
+		"files_sent": files_sent_this_hour,
+		"cells_free": _cells_free(),
 		"requests_spawned": requests_spawned,
-		"request_cap": request_cap,
+		"requests_timed_out": requests_timed_out,
+		"requests_rejected": requests_rejected,
+		"send_interval": _send_interval(),
 	}
 
 
@@ -1231,6 +1631,10 @@ func _tick_requests(dt: float) -> void:
 
 
 func _tick_packets(dt: float) -> void:
+	_fit_check_accum += dt
+	var refresh := _fit_check_accum >= FIT_CHECK_INTERVAL
+	if refresh:
+		_fit_check_accum = 0.0
 	for id in active_packets.keys():
 		if not active_packets.has(id):
 			continue
@@ -1240,21 +1644,48 @@ func _tick_packets(dt: float) -> void:
 			if packet.loading_progress >= packet.loading_duration:
 				_finish_loading(str(id))
 			continue
+		if refresh:
+			_packet_fit_cache[id] = _packet_can_fit(packet)
+		# Переполнение склада: если фигуру некуда положить, таймер пакета
+		# замирает — он не сгорает, пока игрок не освободит место.
+		if not bool(_packet_fit_cache.get(id, true)):
+			continue
 		packet.time_left = maxf(0.0, packet.time_left - dt)
 		if packet.time_left <= 0.0:
 			_timeout_packet(str(id))
 
 
+## Может ли фигура waiting-пакета влезть хоть в одну незаблокированную папку.
+func _packet_can_fit(packet) -> bool:
+	if packet == null or registry == null:
+		return true
+	if not registry.has_method("can_fit_anywhere"):
+		return true
+	return bool(registry.can_fit_anywhere(
+		str(packet.shape_id), int(packet.rotation), blocked_folders
+	))
+
+
 func _tick_spawns(dt: float) -> void:
-	if files_spawned >= files_budget:
-		return
 	if hour_elapsed < recv_disabled_until:
 		return
+	# Полный склад: ни одна незаблокированная папка не вмещает ни одной фигуры
+	# доступного типа. Спавн стоит, следующий слот не сдвигаем.
+	_space_check_accum += dt
+	if _space_check_accum >= FIT_CHECK_INTERVAL:
+		_space_check_accum = 0.0
+		_space_ok_cache = _can_spawn_into_any_folder()
+	if not _space_ok_cache:
+		if not _no_space_notified:
+			spawn_frozen.emit("no_space")
+			_no_space_notified = true
+		return
+	_no_space_notified = false
 	if _next_spawn_at < 0.0:
 		_next_spawn_at = hour_elapsed + _next_receive_interval()
 	spawn_recv_accum = maxf(0.0, hour_elapsed - _next_spawn_at)
 	var steps := 0
-	while files_spawned < files_budget and steps < MAX_SPAWN_STEPS:
+	while steps < MAX_SPAWN_STEPS:
 		if _next_spawn_at > spawn_window + 0.0001:
 			return
 		if _spawn_frozen_notified and hour_elapsed > spawn_window:
@@ -1280,8 +1711,18 @@ func _tick_spawns(dt: float) -> void:
 		spawn_recv_accum = 0.0
 
 
+## Есть ли место под фигуру хотя бы одного типа из доступных в этом часе.
+func _can_spawn_into_any_folder() -> bool:
+	if registry == null or not registry.has_method("can_fit_type_anywhere"):
+		return true
+	for type_id in _type_pool():
+		if bool(registry.can_fit_type_anywhere(str(type_id), blocked_folders)):
+			return true
+	return false
+
+
 func _tick_request_spawns(dt: float) -> void:
-	if requests_spawned >= request_cap:
+	if _request_spawn_cutoff_reached():
 		spawn_send_accum = 0.0
 		return
 	if _normal_request_count() >= active_request_limit:
@@ -1300,18 +1741,27 @@ func _tick_request_spawns(dt: float) -> void:
 			if not req_id.is_empty():
 				spawn_send_accum = 0.0
 				break
-			if requests_spawned >= request_cap \
+			if _request_spawn_cutoff_reached() \
 					or _normal_request_count() >= active_request_limit:
 				spawn_send_accum = 0.0
 				break
-	# Анти-голодание: пока запросов нет, не ждём полный интервал (22 с в H1).
+	# Анти-голодание: пока запросов нет, не ждём полный интервал.
 	_maybe_starvation_spawn()
 
 
+## Последние секунды часа: новые запросы не создаются (игрок не успеет).
+func _request_spawn_cutoff_reached() -> bool:
+	return hour_elapsed >= _hour_seconds() - REQUEST_SPAWN_CUTOFF_SEC
+
+
 func _request_starvation_ready() -> bool:
+	# Guard нужен только для первого запроса часа: дальше темп задаёт
+	# send_interval (H1 bootstrap уже создаёт requests_spawned=1).
+	if requests_spawned > 0:
+		return false
 	if not active_requests.is_empty():
 		return false
-	if requests_spawned >= request_cap:
+	if _request_spawn_cutoff_reached():
 		return false
 	if _normal_request_count() >= active_request_limit:
 		return false
@@ -1332,8 +1782,8 @@ func _maybe_starvation_spawn() -> void:
 func next_request_hint() -> String:
 	if not running or _finish_guard:
 		return ""
-	if requests_spawned >= request_cap:
-		return "Все запросы часа выданы"
+	if _request_spawn_cutoff_reached():
+		return "До конца часа запросов не будет"
 	if _normal_request_count() >= active_request_limit:
 		return ""
 	if _request_file_pool().is_empty():
@@ -1406,6 +1856,7 @@ func _timeout_packet(packet_id: String) -> void:
 	_failed += 1
 	_add_stat("failed", 1)
 	_emit_toast("Пакет потерян по таймауту: −%s SLA" % _format_loss(loss))
+	packet_lost.emit(packet_id)
 	_remove_packet(packet_id)
 
 
@@ -1420,6 +1871,7 @@ func _remove_packet(packet_id: String) -> void:
 			slots.release_by_entity(packet_id)
 		packet.loading_folder_id = ""
 	active_packets.erase(packet_id)
+	_packet_fit_cache.erase(packet_id)
 	if slots != null:
 		slots.release_by_entity(packet_id)
 	packet_removed.emit(packet_id)
@@ -1434,8 +1886,10 @@ func _timeout_request(req_id: String) -> void:
 	var fine := -(10.0 + 2.0 * float(hour))
 	_add_sla(fine)
 	_failed += 1
+	requests_timed_out += 1
 	_add_stat("failed", 1)
 	_emit_toast("Запрос просрочен: %.0f SLA" % fine)
+	request_expired.emit(req_id)
 	_cleanup_request(req_id, true)
 
 
@@ -1451,6 +1905,12 @@ func _complete_send(req_id: String) -> void:
 	if n <= 0:
 		_cleanup_request(req_id, true)
 		return
+	# UDP: ролл в конце передачи, до выплаты. Провал — без денег и без
+	# расхода файлов; запрос остаётся активным с кулдауном повтора.
+	if str(req.protocol) == "udp" and not _roll_udp_success(req):
+		_handle_udp_failure(req)
+		return
+	var tcp_conn_id := str(req.connection_id)
 	var streak := int(game.streak) if game != null else 0
 	var time_at_start := float(_send_start_time_left.get(req_id, req.time_left))
 	var total := float(_send_start_timer_total.get(req_id, req.timer_total))
@@ -1478,14 +1938,36 @@ func _complete_send(req_id: String) -> void:
 		files_word = "файла"
 	_emit_toast("ОТПРАВЛЕНО: %d %s · +%d $" % [n, files_word, payout])
 	_play_sfx(&"money_up")
+	files_sent_this_hour += n
 
-	# §2.8: при успешной отправке файлы расходуются.
-	for file_id in req.attached.duplicate():
-		if registry != null and registry.files.has(str(file_id)):
-			registry.consume_file(str(file_id))
+	# Файлы после отправки НЕ исчезают: возвращаются в папку и снова доступны
+	# пулу запросов. Кулдаун — только если задан в constants.
+	if registry != null:
+		for file_id in req.attached.duplicate():
+			if registry.files.has(str(file_id)):
+				registry.detach_file(str(file_id))
+		var cooldown := _const_float("file_cooldown_after_send_sec", 0.0)
+		if cooldown > 0.0:
+			for file_id in req.attached.duplicate():
+				if registry.files.has(str(file_id)):
+					registry.set_cooldown(str(file_id), cooldown)
 	req.attached.clear()
 	req.required_types.clear()
+
+	# TCP: соединение остаётся занятым, но больше не привязано к запросу.
+	# Ссылки чистим ДО cleanup, иначе он освободит слот соединения.
+	if str(req.protocol) == "tcp":
+		var conn = active_connections.get(tcp_conn_id) if not tcp_conn_id.is_empty() else null
+		if conn != null:
+			conn.request_id = ""
+			if slots != null:
+				var slot = slots.get_slot(int(conn.slot_index))
+				if slot != null:
+					slot.progress = 0.0
+					slot.linked_request_id = ""
+		req.connection_id = ""
 	_cleanup_request(req_id, false)
+	slot_changed.emit()
 
 
 func _cleanup_request(req_id: String, detach: bool) -> void:
@@ -1508,6 +1990,14 @@ func _cleanup_request(req_id: String, detach: bool) -> void:
 	_send_start_timer_total.erase(req_id)
 	if _minigame_request_id == req_id:
 		force_close_send_minigame()
+	# TCP: соединение переживает запрос, но при отмене/таймауте его надо
+	# закрыть и освободить слот. Успешная отправка уже отвязала connection_id.
+	var conn_id := str(req.connection_id)
+	if conn_id.is_empty():
+		conn_id = connection_id_for_request(req_id)
+	if not conn_id.is_empty():
+		_release_connection(conn_id)
+		req.connection_id = ""
 	if slots != null:
 		slots.release_by_entity(req_id)
 	req.sending = false
@@ -1654,6 +2144,11 @@ func _finish_hour() -> void:
 	for packet_id in active_packets.keys().duplicate():
 		_remove_packet(str(packet_id))
 
+	# TCP-соединения не переживают час: освобождаем их слоты принудительно.
+	for conn_id in active_connections.keys().duplicate():
+		_release_connection(str(conn_id))
+	active_connections.clear()
+
 	if slots != null:
 		for slot in slots.slots:
 			if slot.occupied:
@@ -1664,7 +2159,7 @@ func _finish_hour() -> void:
 	paused = false
 	modal_open = false
 	_modal_count = 0
-	carry_files = clampi(files_budget - files_spawned, 0, MAX_FILES_PER_HOUR)
+	carry_files = 0
 
 	var summary := report(packets_left, requests_left)
 	hour_finished.emit(summary)
@@ -1697,6 +2192,13 @@ func _buffer_used() -> int:
 	return active_packets.size()
 
 
+## Свободно клеток во всех папках (для отчёта часа).
+func _cells_free() -> int:
+	if registry == null or not registry.has_method("free_cells"):
+		return 0
+	return maxi(0, int(registry.free_cells()))
+
+
 func _buffer_limit() -> int:
 	if game != null and game.has_method("buffer_limit"):
 		return maxi(1, int(game.buffer_limit()))
@@ -1722,12 +2224,73 @@ func _format_loss(value: float) -> String:
 # --- тайминги/данные -------------------------------------------------------
 
 func _hour_seconds() -> float:
+	if _hour_duration <= 0.0:
+		return _resolve_hour_seconds()
+	# Кэш из start_hour. Дешёвая сверка с сырой строкой Data (без полного
+	# _hour_def()) — чтобы dev/тесты, правящие hours[] на лету, видели новое
+	# значение; в обычном кадре Ambient просто получает кэш.
+	var raw := _raw_hour_duration()
+	if raw > 0.0:
+		if is_equal_approx(raw, _hour_duration):
+			return _hour_duration
+		return _resolve_hour_seconds()
+	if raw == 0.0:
+		var legacy := maxf(1.0, _const_float("hour_seconds", DEFAULT_HOUR_SECONDS))
+		if is_equal_approx(legacy, _hour_duration):
+			return _hour_duration
+		return _resolve_hour_seconds()
+	return _hour_duration
+
+
+## duration текущей строки hours[] без duplicate: >0 — есть, 0 — нет ключа,
+## -1 — Data/hours недоступны (тогда доверяем кэшу).
+func _raw_hour_duration() -> float:
+	var data = _data()
+	if data == null or not (data.get("hours") is Array):
+		return -1.0
+	var rows: Array = data.hours
+	if rows.is_empty():
+		return -1.0
+	var row = rows[clampi(hour - 1, 0, rows.size() - 1)]
+	if row is Dictionary:
+		return float((row as Dictionary).get("duration", 0.0))
+	return -1.0
+
+
+## Разрешить длительность часа из данных: hours[].duration → legacy
+## constants.hour_seconds → DEFAULT_HOUR_SECONDS. Вызывается в start_hour;
+## в тике используется кэш _hour_duration (Ambient зовёт каждый кадр).
+func _resolve_hour_seconds() -> float:
+	var duration := float(_hour_def().get("duration", 0.0))
+	if duration > 0.0:
+		return duration
+	# Legacy: старый constants.hour_seconds (300), если в строке часа нет duration.
+	return maxf(1.0, _const_float("hour_seconds", DEFAULT_HOUR_SECONDS))
+
+
+## Доля часа, в течение которой спавнятся файлы (constants.spawn_window_ratio).
+func _spawn_window_ratio() -> float:
+	return clampf(_const_float("spawn_window_ratio", SPAWN_WINDOW_RATIO), 0.01, 1.0)
+
+
+## Числовая константа из balance.json → constants с безопасным fallback.
+func _const_float(key: String, fallback_value: float) -> float:
 	var data = _data()
 	if data != null and data.get("constants") is Dictionary:
 		var consts: Dictionary = data.constants
-		if consts.has("hour_seconds"):
-			return maxf(1.0, float(consts.get("hour_seconds", DEFAULT_HOUR_SECONDS)))
-	return DEFAULT_HOUR_SECONDS
+		if consts.has(key):
+			return float(consts[key])
+	return float(fallback_value)
+
+
+## Шаг UDP-надёжности за уровень лота (data → shop[lot_udp].value).
+func _udp_step() -> float:
+	var data = _data()
+	if data != null and data.has_method("lot_def"):
+		var def = data.lot_def("lot_udp")
+		if def is Dictionary and def.has("value"):
+			return maxf(0.0, float(def.get("value", 0.10)))
+	return 0.10
 
 
 func _hour_def() -> Dictionary:
@@ -1737,10 +2300,10 @@ func _hour_def() -> Dictionary:
 		if def is Dictionary:
 			return def
 	return {
-		"files": 4,
-		"request_cap": 2,
+		"hour": hour,
+		"duration": 120 + 30 * maxi(0, hour - 1),
+		"files": 6,
 		"active_requests": 1,
-		"recv_interval": DEFAULT_RECV_INTERVAL,
 		"send_interval": DEFAULT_SEND_INTERVAL,
 		"type_weights": _default_type_weights(hour),
 		"request_mix": DEFAULT_REQUEST_MIX.duplicate(),
@@ -1752,23 +2315,16 @@ func _recv_interval() -> float:
 	return maxf(0.2, float(_hour_def().get("recv_interval", DEFAULT_RECV_INTERVAL)))
 
 
-## Фактический интервал спавна: 75% часа / бюджет файлов.
+## Фактический интервал спавна: окно / ожидаемый темп файлов.
 func _receive_interval() -> float:
 	var budget := maxi(1, files_budget)
 	return maxf(0.2, spawn_window / float(budget))
 
 
-## Следующий интервал с джиттером ±20%. Остаток бюджета распределяется по
-## остатку окна, поэтому последний файл успевает до конца окна (без потери
-## бюджета из-за накопления положительного джиттера).
+## Следующий интервал с джиттером ±20%. Темп постоянный: без остатка бюджета
+## и без жёсткого лимита количества файлов.
 func _next_receive_interval() -> float:
-	var remaining_files := maxi(1, files_budget - files_spawned)
-	var remaining_time := maxf(0.2, spawn_window - hour_elapsed)
-	var base := remaining_time / float(remaining_files)
-	var jittered := base * _jitter()
-	if remaining_files <= 1:
-		jittered = minf(jittered, remaining_time - 0.01)
-	return maxf(0.2, jittered)
+	return maxf(0.2, _receive_interval() * _jitter())
 
 
 func _send_interval() -> float:
@@ -1878,6 +2434,8 @@ func _request_ready(req) -> bool:
 	if req.sending or req.minigame_active:
 		return false
 	if _send_queue.has(str(req.id)):
+		return false
+	if str(req.protocol) == "tcp" and not req.has_connection():
 		return false
 	var need := _required_count(req)
 	if need <= 0:
@@ -2119,6 +2677,11 @@ func _clear_entities() -> void:
 		_remove_packet(str(packet_id))
 	active_requests.clear()
 	active_packets.clear()
+	_packet_fit_cache.clear()
+	_no_space_notified = false
+	for conn_id in active_connections.keys().duplicate():
+		_release_connection(str(conn_id))
+	active_connections.clear()
 	if slots != null:
 		for slot in slots.slots:
 			if slot.occupied:
@@ -2137,6 +2700,11 @@ func _running_reset_counters() -> void:
 	_failed = 0
 	_attacks_blocked = 0
 	_attacks_failed = 0
+	_udp_lost = 0
+	requests_timed_out = 0
+	requests_rejected = 0
+	files_sent_this_hour = 0
+	_next_connection_num = 1
 
 
 func _on_slots_changed() -> void:
@@ -2205,6 +2773,7 @@ func _add_stat(key: String, delta: int) -> void:
 
 
 func _emit_toast(text: String) -> void:
+	last_toast_text = text
 	toast.emit(text)
 
 

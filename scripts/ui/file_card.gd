@@ -12,6 +12,14 @@ signal drag_started(id: String)
 
 const CARD := Vector2(132, 84)
 
+# --- Motion (Lane B) -------------------------------------------------------
+const ENTER_DUR := 0.14
+## Draw-only сдвиг содержимого при входе, px.
+const ENTER_OFFSET := 2.0
+const HOVER_DUR := 0.10
+const SELECT_DUR := 0.12
+const BADGE_POP_DUR := 0.14
+
 var id := ""
 var file_name := ""
 var ext := ""
@@ -21,14 +29,22 @@ var state := "stored"
 var selected := false:
 	set(v):
 		selected = v
+		set_process(true)
 		queue_redraw()
 var hovered := false:
 	set(v):
 		hovered = v
+		set_process(true)
 		queue_redraw()
 
 var _press_pos := Vector2.ZERO
 var _drag_ready := false
+
+var _hover_amt := 0.0
+var _sel_amt := 0.0
+var _enter_elapsed := ENTER_DUR
+var _badge_clock := -1.0
+var _motion_on := true
 
 
 func _ready() -> void:
@@ -40,6 +56,88 @@ func _ready() -> void:
 	mouse_entered.connect(func() -> void: hovered = true)
 	mouse_exited.connect(func() -> void: hovered = false)
 	_update_tooltip()
+	set_process(false)
+
+
+# --- motion (Lane B) -------------------------------------------------------
+
+## Появление: alpha 0.14 c + draw-only подъём на 2 px.
+func enter(_index: int = 0) -> void:
+	if _reduced():
+		_enter_elapsed = ENTER_DUR
+		modulate.a = 1.0
+		return
+	_enter_elapsed = 0.0
+	modulate.a = 0.0
+	set_process(true)
+
+
+## Внешний переключатель движения (Lane A / настройки).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+	if _reduced():
+		_hover_amt = 1.0 if hovered else 0.0
+		_sel_amt = 1.0 if selected else 0.0
+		_enter_elapsed = ENTER_DUR
+		modulate.a = 1.0
+		_badge_clock = -1.0
+	queue_redraw()
+
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
+
+
+func _process(delta: float) -> void:
+	var hov := 1.0 if hovered else 0.0
+	var sel := 1.0 if selected else 0.0
+	if _reduced():
+		_hover_amt = hov
+		_sel_amt = sel
+	elif not is_equal_approx(_hover_amt, hov):
+		_hover_amt = move_toward(_hover_amt, hov, delta / HOVER_DUR)
+	if not is_equal_approx(_sel_amt, sel):
+		if _reduced():
+			_sel_amt = sel
+		else:
+			_sel_amt = move_toward(_sel_amt, sel, delta / SELECT_DUR)
+	if _enter_elapsed < ENTER_DUR:
+		_enter_elapsed = minf(ENTER_DUR, _enter_elapsed + delta)
+		modulate.a = clampf(_enter_elapsed / ENTER_DUR, 0.0, 1.0)
+	if _badge_clock >= 0.0:
+		_badge_clock += delta
+		if _badge_clock >= BADGE_POP_DUR:
+			_badge_clock = -1.0
+	queue_redraw()
+	if _enter_elapsed >= ENTER_DUR and _badge_clock < 0.0 \
+			and is_equal_approx(_hover_amt, hov) and is_equal_approx(_sel_amt, sel):
+		set_process(false)
+
+
+## 0..1 → 0 подскок бейджа attached.
+func _badge_pop() -> float:
+	if _badge_clock < 0.0:
+		return 0.0
+	return sin(PI * clampf(_badge_clock / BADGE_POP_DUR, 0.0, 1.0))
+
+
+func _draw_hover() -> float:
+	if _reduced():
+		return 1.0 if hovered else 0.0
+	return _hover_amt
+
+
+func _draw_sel() -> float:
+	if _reduced():
+		return 1.0 if selected else 0.0
+	return _sel_amt
+
+
+## Draw-only подъём при входе: position карточки не меняется.
+func _enter_offset() -> float:
+	if _enter_elapsed >= ENTER_DUR:
+		return 0.0
+	return ENTER_OFFSET * (1.0 - clampf(_enter_elapsed / ENTER_DUR, 0.0, 1.0))
 
 
 func setup(p_id: String, p_name: String, p_ext: String, p_size: int, p_type: String,
@@ -49,8 +147,12 @@ func setup(p_id: String, p_name: String, p_ext: String, p_size: int, p_type: Str
 	ext = p_ext
 	size_kb = p_size
 	type = p_type
+	var was := state
 	state = p_state
+	if state == "attached" and was != "attached":
+		_badge_clock = 0.0
 	_update_tooltip()
+	set_process(true)
 	queue_redraw()
 
 
@@ -109,23 +211,26 @@ func _draw() -> void:
 	var f := Theme90.ui()
 	var tc := icon_color(type, ext)
 	var locked := state == "locked"
-	var bad := state == "malicious" or state == "failed"
+	var hov := _draw_hover()
+	var sel := _draw_sel()
 
-	var bg := Theme90.PAPER_HI
-	var border := Theme90.BORDER
-	var shadow := Theme90.SHADOW
-	if selected:
-		bg = Theme90.ACCENT_PALE
-		border = Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.8)
-		shadow = Color(0, 0, 0, 0.12)
-	elif hovered:
-		bg = Theme90.WHITE
-		border = Theme90.ACCENT_LIGHT
-		shadow = Color(0, 0, 0, 0.11)
+	var bg := Theme90.PAPER_HI.lerp(Theme90.WHITE, hov)
+	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
+	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.11), hov)
+	if sel > 0.001:
+		bg = bg.lerp(Theme90.ACCENT_PALE, sel)
+		border = border.lerp(
+			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.8), sel)
+		shadow = shadow.lerp(Color(0, 0, 0, 0.12), sel)
+
+	var off := _enter_offset()
+	if off > 0.0:
+		draw_set_transform(Vector2(0, off), 0.0, Vector2.ONE)
 
 	draw_style_box(Theme90.box(bg, border, 4, 1, shadow), r)
-	if selected:
-		draw_rect(Rect2(1.5, 12, 2.5, size.y - 24), Theme90.ACCENT)
+	if sel > 0.01:
+		draw_rect(Rect2(1.5, 12, 2.5, size.y - 24),
+			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, sel))
 
 	if locked:
 		tc = Theme90.SHADE
@@ -133,7 +238,8 @@ func _draw() -> void:
 
 	# состояние — только маленькими значками, без подписей
 	if state == "attached":
-		Theme90.draw_check_badge(self, Vector2(size.x - 14, 14), 7.0)
+		Theme90.draw_check_badge(self, Vector2(size.x - 14, 14),
+			7.0 + 1.2 * _badge_pop())
 	elif locked:
 		draw_circle(Vector2(size.x - 14, 14), 7.0, Color(Theme90.SHADE.r, Theme90.SHADE.g,
 			Theme90.SHADE.b, 0.16))
@@ -165,8 +271,12 @@ func _draw() -> void:
 	Theme90.text(self, f, Vector2(10 + ew + 5, 68), _spaced(size_kb) + " КБ", 10,
 		meta_col)
 
-	if hovered and not selected:
-		draw_rect(Rect2(10, 34, size.x - 20, 1), Theme90.HAIRLINE)
+	if hov > 0.02 and sel < 0.5:
+		draw_rect(Rect2(10, 34, size.x - 20, 1),
+			Color(Theme90.HAIRLINE.r, Theme90.HAIRLINE.g, Theme90.HAIRLINE.b,
+				Theme90.HAIRLINE.a * hov))
+	if off > 0.0:
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 
 static func _spaced(v: int) -> String:

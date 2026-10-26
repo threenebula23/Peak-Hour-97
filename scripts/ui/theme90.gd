@@ -28,6 +28,65 @@ const SUCCESS := Color(0.247059, 0.560784, 0.368627)     # #3F8F5E
 const WARN := Color(0.772549, 0.541176, 0.180392)        # #C58A2E
 const SHADOW := Color(0.0, 0.0, 0.0, 0.094)              # #00000018
 
+# --- ЖАРА: температура узла ------------------------------------------------
+# Аддитивный слой визуальной системы нагрева. COOL = NAVY,
+# WARM = WARN.darkened(0.35), HOT = ERROR.darkened(0.15),
+# CRIT = ERROR.darkened(0.30). Текст использует отдельные, более тёмные
+# оттенки: на PAPER (#E9E6DD) контраст каждого ≥ 4.5:1.
+const HEAT_COOL := Color(0.172549, 0.360784, 0.407843)   # #2C5C68
+const HEAT_WARM := Color(0.502157, 0.351765, 0.117255)   # #804F1E
+const HEAT_HOT := Color(0.646666, 0.303334, 0.246667)    # #A54D3F
+const HEAT_CRIT := Color(0.532549, 0.249804, 0.203137)   # #884033
+
+
+## Цвет колбы/маркера по уровню нагрева.
+static func heat_color(level: int) -> Color:
+	match clampi(level, 0, 3):
+		1:
+			return HEAT_WARM
+		2:
+			return HEAT_HOT
+		3:
+			return HEAT_CRIT
+	return HEAT_COOL
+
+
+## Цвет подписи/числа по уровню: затемнён для контраста ≥ 4.5:1 на бумаге.
+static func heat_text_color(level: int) -> Color:
+	match clampi(level, 0, 3):
+		1:
+			return Color(0.424902, 0.297647, 0.099216)
+		2:
+			return Color(0.570588, 0.267647, 0.217647)
+		3:
+			return Color(0.456470, 0.214118, 0.174118)
+	return NAVY_DEEP
+
+
+## Полное имя уровня для подсказки.
+static func heat_level_name(level: int) -> String:
+	match clampi(level, 0, 3):
+		1:
+			return "ТЕПЛО"
+		2:
+			return "ГОРЯЧО"
+		3:
+			return "КРИТ"
+	return "СПОКОЙНО"
+
+
+## Короткая подпись в меню-баре: 0 — ТЕМП, 3 — КРИТ.
+static func heat_short_name(level: int) -> String:
+	match clampi(level, 0, 3):
+		1:
+			return "ТЕПЛО"
+		2:
+			# «ГОРЯЧО» шире колбы (44 px) — в меню-баре используем «ЖАРА».
+			return "ЖАРА"
+		3:
+			return "КРИТ"
+	return "ТЕМП"
+
 # Совместимость со старыми именами: поверхности теперь бумажные.
 const FACE := PAPER
 const FACE_HI := PAPER_HI
@@ -39,15 +98,29 @@ const BORDER_SOFT := Color(0.254902, 0.239216, 0.203922, 0.12)
 const HAIRLINE := Color(0.254902, 0.239216, 0.203922, 0.10)
 
 # --- Кегли ----------------------------------------------------------------
+# Шкала 11/13/17/26 зафиксирована проверкой ui_smoke.gd — менять только вместе
+# с ней. Кегли крупнее 26 px передаются на местах вызова (24/28/34/46).
 const FS_MICRO := 11
 const FS_BODY := 13
 const FS_HEAD := 17
 const FS_LOGO := 26
 
-## Основной шрифт — Golos Text: гуманистический, с полной кириллицей
-## (О/П/Ё/№), хорошо читается в мелких кеглях 10–14 px.
-const FONT_UI := "res://art/fonts/GolosText-VF.ttf"
+## Основной шрифт — Kechusilka Regular. Нормализован под метрики Golos Text
+## (x-height 0.530 em, те же пропорции строки), поэтому шкала 11/13/17/26
+## работает без пересчёта вёрстки. Статический: оси wght нет.
+const FONT_UI := "res://art/fonts/Kechusilka-Regular.otf"
+## Крупный текст: логотип, заголовки 18 px и выше, «ПОБЕДА»/«ПОРАЖЕНИЕ».
+## Не для тела текста и не для живых счётчиков (см. display()).
+const FONT_DISPLAY := "res://art/fonts/DisplayOTF.otf"
+## Числовой и брендовый акцент — Press Start 2P. Цифры ровно 1 em,
+## поэтому счётчики не «дрожат» при смене значения.
 const FONT_LOGO := "res://art/fonts/PressStart2P-Regular.ttf"
+## Страховка для глифов, которых нет в Kechusilka и DisplayOTF:
+## № – … · × ← → ↑ ↓ ≤ ≥ § ° € • © ± ≈ −. Golos Text закрывает их все.
+const FONT_FALLBACK := "res://art/fonts/GolosText-VF.ttf"
+## Kechusilka статическая (fvar нет): wght не запрашиваем, иначе вариация
+## уходит в файл, где такой оси нет.
+const FONT_UI_HAS_WGHT := false
 
 const ICON_DIR := "res://art/icons"
 
@@ -68,30 +141,70 @@ static func tag(name: String) -> int:
 	return TextServerManager.get_primary_interface().name_to_tag(name)
 
 
-## Golos Text с осью wght (400–900), по умолчанию 600.
+## Страховочный шрифт: подхватывает символы, которых нет в Kechusilka
+## (№ – … · × ← → и т.п.) и в DisplayOTF. Кэшируется один раз.
+static func fallback_font() -> Font:
+	if _fonts.has("fallback"):
+		return _fonts["fallback"]
+	var f: FontFile = load(FONT_FALLBACK)
+	_fonts["fallback"] = f
+	return f
+
+
+## Основной UI-шрифт — всегда FontVariation: этого ожидают тема и ui_smoke.
+## База — Kechusilka, к ней прицеплен Golos Text как fallback, чтобы редкие
+## символы (№, –, …, ·, ×, стрелки) не превращались в «квадратики».
+## weight — 400–900 только для variable-шрифта. Сейчас FONT_UI_HAS_WGHT =
+## false (Kechusilka статическая), поэтому значение принимается, но не
+## применяется; акценты делаются цветом и кеглем, а не «жирным».
 ## elgr/elsh оставлены в сигнатуре для совместимости со старыми вызовами
-## Handjet — у Golos Text таких осей нет, значения игнорируются.
+## Handjet — у Golos Text и DisplayOTF таких осей нет, значения игнорируются.
 static func ui(weight: float = 600.0, _elgr: float = 1.0, _elsh: float = 1.0) -> FontVariation:
 	var w := clampf(weight, 400.0, 900.0)
+	if not FONT_UI_HAS_WGHT:
+		w = 400.0
 	var key := "ui_%d" % int(roundf(w))
 	if _fonts.has(key):
 		return _fonts[key]
 	var base: FontFile = load(FONT_UI)
 	var fv := FontVariation.new()
 	fv.base_font = base
-	fv.variation_opentype = {
-		tag("wght"): w,
-	}
+	if FONT_UI_HAS_WGHT:
+		fv.variation_opentype = {
+			tag("wght"): w,
+		}
+	fv.fallbacks = [fallback_font()]
 	_fonts[key] = fv
 	return fv
 
 
+## Крупный текст — DisplayOTF: узкий плотный рисунок в духе цифрового табло,
+## та же «машинная» интонация, что у Press Start 2P, но с характером.
+## Только 16 px и выше: мельче насечки сливаются.
+## Цифры пропорциональные и без кернинга (GPOS в файле нет), поэтому
+## живые счётчики и часы остаются на logo().
+static func display() -> Font:
+	if _fonts.has("display"):
+		return _fonts["display"]
+	var fv := FontVariation.new()
+	fv.base_font = load(FONT_DISPLAY)
+	fv.fallbacks = [fallback_font()]
+	_fonts["display"] = fv
+	return fv
+
+
+## Числовой и брендовый акцент — Press Start 2P. Цифры моноширинные (1 em),
+## поэтому num_line()/num_right() и часы в шапке не меняют ширину при
+## обновлении значения. Для крупного текста — display().
 static func logo() -> Font:
 	if _fonts.has("logo"):
 		return _fonts["logo"]
-	var f: FontFile = load(FONT_LOGO)
-	_fonts["logo"] = f
-	return f
+	var fv := FontVariation.new()
+	fv.base_font = load(FONT_LOGO)
+	# Не мутируем общий FontFile: fallback только для отсутствующих глифов.
+	fv.fallbacks = [fallback_font()]
+	_fonts["logo"] = fv
+	return fv
 
 
 # --- Текст ----------------------------------------------------------------
@@ -986,7 +1099,7 @@ static func build_theme() -> Theme:
 		t.set_icon("decrement", bar_type, _arrow_tex(0, SHADE, 9))
 		t.set_icon("decrement_highlight", bar_type, _arrow_tex(0, NAVY, 9))
 
-	# Вариации под кегли 10/12/16/24 — единая шкала для разметки.
+	# Вариации под единую шкалу 11/13/17/26 — источник правды для разметки.
 	t.set_type_variation("MicroLabel", "Label")
 	t.set_font_size("font_size", "MicroLabel", FS_MICRO)
 	t.set_color("font_color", "MicroLabel", DARK)
@@ -995,7 +1108,7 @@ static func build_theme() -> Theme:
 	t.set_font("font", "HeadLabel", f)
 	t.set_type_variation("LogoLabel", "Label")
 	t.set_font_size("font_size", "LogoLabel", FS_LOGO)
-	t.set_font("font", "LogoLabel", logo())
+	t.set_font("font", "LogoLabel", display())
 	t.set_color("font_color", "LogoLabel", NAVY)
 	t.set_type_variation("NumLabel", "Label")
 	t.set_font("font", "NumLabel", logo())

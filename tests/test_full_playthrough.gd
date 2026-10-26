@@ -23,6 +23,7 @@ const BUY_ORDER: Array[String] = [
 	"lot_folder",
 	"lot_slots",
 	"lot_shield",
+	"lot_udp",
 ]
 
 var _checks: int = 0
@@ -114,8 +115,15 @@ func _run_seed(seed: int) -> void:
 					"seed %d, час %d: слоты свободны после часа" % [seed, hour_index])
 			_ok(int(report.get("packets_left", -1)) == 0,
 				"seed %d, час %d: packets_left = 0" % [seed, hour_index])
-			_ok(int(report.get("requests_left", -1)) == 0,
-				"seed %d, час %d: requests_left = 0" % [seed, hour_index])
+			# requests_left — состояние ДО очистки конца часа: запрос, заспавненный
+			# у cutoff, может законно дожить до финиша. Проверяем баланс.
+			_ok(int(report.get("requests_left", -1)) >= 0,
+				"seed %d, час %d: requests_left >= 0 (получено %s)" % [
+					seed, hour_index, str(report.get("requests_left", "?"))])
+			_eq(int(report.get("requests_spawned", -1)),
+				int(report.get("completed", 0)) + int(report.get("requests_timed_out", 0))
+					+ int(report.get("requests_rejected", 0)) + int(report.get("requests_left", 0)),
+				"seed %d, час %d: reconcile requests_spawned" % [seed, hour_index])
 			_ok(int(_game.money) >= 0, "seed %d, час %d: money >= 0" % [seed, hour_index])
 			_ok(not is_nan(float(_game.sla)),
 				"seed %d, час %d: SLA не NaN" % [seed, hour_index])
@@ -179,7 +187,47 @@ func _play_tick() -> void:
 	if hd.is_minigame_active():
 		hd._on_send_minigame_finished(0.8)
 
-	# 3. Пакеты: принимаем в первую подходящую папку (или создаём новую).
+	# 3. Запросы (v3): TCP — сначала соединение, затем контейнер и отправка.
+	# Idle-соединения держат слот после успешной отправки — закрываем их, иначе
+	# при одном слоте следующий запрос не сможет подключиться.
+	_disconnect_idle_connections(hd)
+	for req_id in hd.active_requests.keys().duplicate():
+		if not hd.active_requests.has(req_id):
+			continue
+		var req = hd.active_requests[req_id]
+		if req.sending or req.minigame_active or req.connecting or hd.is_request_queued(req_id):
+			continue
+		if str(req.protocol) == "tcp" and not req.has_connection():
+			if not hd.connect_request(req_id):
+				if float(req.time_left) < 2.0:
+					hd.reject_request(req_id)
+				continue
+			# Бот мгновенно проходит мини-игру соединения (UI-слой не подключён).
+			# Контроллер открыл модалку в _on_show_connection — закрываем её,
+			# как это сделал бы экран ConnectionGame после finished.
+			hd.connection_finished(req_id, true)
+			_controller.set_modal_open(false)
+			req = hd.active_requests.get(req_id)
+			if req == null:
+				continue
+			if not req.has_connection():
+				if float(req.time_left) < 2.0:
+					hd.reject_request(req_id)
+				continue
+		var missing: Array = hd.request_missing(req_id)
+		for fid in missing:
+			if not hd.attach_file(req_id, str(fid)):
+				break
+		if hd.request_missing(req_id).is_empty():
+			if hd.start_send(req_id):
+				if hd.is_minigame_active():
+					hd._on_send_minigame_finished(0.8)
+		elif float(req.time_left) < 2.0:
+			hd.reject_request(req_id)
+
+	# 4. Пакеты: принимаем в первую подходящую папку (или создаём новую).
+	# Слот общий с TCP-соединениями, поэтому приём идёт после запросов: иначе
+	# поток пакетов навсегда занимает единственный слот и соединение не встаёт.
 	for packet_id in hd.active_packets.keys().duplicate():
 		if not hd.active_packets.has(packet_id):
 			continue
@@ -188,27 +236,17 @@ func _play_tick() -> void:
 			continue
 		_try_receive(hd, str(packet_id))
 
-	# 4. Запросы: докладываем ИМЕННО required-файлы, затем явный start_send.
-	for req_id in hd.active_requests.keys().duplicate():
-		if not hd.active_requests.has(req_id):
+
+## Соединения без активного запроса (после успешной отправки) занимают слот.
+func _disconnect_idle_connections(hd) -> void:
+	if hd == null:
+		return
+	for conn_id in hd.active_connections.keys().duplicate():
+		var conn = hd.active_connections.get(conn_id)
+		if conn == null:
 			continue
-		var req = hd.active_requests[req_id]
-		if req.sending or req.minigame_active or req.connecting or hd.is_request_queued(req_id):
-			continue
-		var missing: Array = hd.request_missing(req_id)
-		for fid in missing:
-			if not hd.attach_file(req_id, str(fid)):
-				break
-		if hd.request_missing(req_id).is_empty():
-			if hd.start_send(req_id):
-				# Бот мгновенно проходит мини-игру соединения (UI-слой не подключён).
-				var fresh = hd.active_requests.get(req_id)
-				if fresh != null and bool(fresh.connecting):
-					hd.connection_finished(req_id, true)
-				if hd.is_minigame_active():
-					hd._on_send_minigame_finished(0.8)
-		elif float(req.time_left) < 2.0:
-			hd.reject_request(req_id)
+		if not conn.has_request() or not hd.active_requests.has(str(conn.request_id)):
+			hd.disconnect_connection(str(conn_id))
 
 
 func _try_receive(hd, packet_id: String) -> bool:

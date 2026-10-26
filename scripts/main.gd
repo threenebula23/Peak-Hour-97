@@ -24,6 +24,9 @@ var send_window: WindowFrame
 var slots_strip: Panel90
 var status_bar: StatusBar
 var toast_layer: ToastLayer
+## «ЖАРА»: термометр в меню-баре и полноэкранный слой нагрева.
+var temperature_gauge: TemperatureGauge
+var stress_overlay: StressOverlay
 
 var tree: TreePanel
 var grid: FileGrid
@@ -86,7 +89,7 @@ const TUTORIAL_STEPS := [
 	{"key": "attach",
 		"text": "Открой папку и перетащи файл в карточку запроса", "timeout": 40.0},
 	{"key": "connect",
-		"text": "Нажми «СОЕДИНИТЬСЯ» и попади в зелёную зону три раза",
+		"text": "Нажми «ПОДКЛЮЧИТЬСЯ» и попади в зелёную зону три раза",
 		"timeout": 45.0},
 	{"key": "send",
 		"text": "Пройди мини-игру: качество влияет на оплату", "timeout": 40.0},
@@ -126,6 +129,19 @@ var _auto_paused := false
 ## Проверка web-fullscreen после асинхронного запроса браузера.
 var _fs_verify_token := 0
 
+## --- «ЖАРА»: снимок часа и прошлые значения для ΔSLA ----------------------
+## Длительность часа в начале смены (fallback, если core не отдаёт hour_total).
+var _hour_total_cache := 0.0
+## SLA на прошлом снимке; -1 — ещё не инициализировано.
+var _last_sla := -1.0
+## Исходные позиции панелей на время событийного сдвига (≤140 мс).
+var _kick_origin: Dictionary = {}
+var _kick_tweens: Dictionary = {}
+## Твины фазовых фейдов, чтобы не наслаивать.
+var _phase_tweens: Dictionary = {}
+## Исходные позиции панелей для фазового сдвига 6→0 (не двигаем layout навсегда).
+var _phase_origin: Dictionary = {}
+
 ## --- Скролл списка ПРИЁМ (5–8 пакетов не влезают в 416×264) ---------------
 var _recv_bar: ScrollBar90
 var _recv_scroll := 0.0
@@ -158,10 +174,13 @@ func _ready() -> void:
 	_init_mascot()
 	_init_tutorial_hud()
 	_bind_registry_signals()
-	main_menu.set_has_save(controller.has_save())
+	main_menu.set_has_save(controller.can_continue())
+	if not controller.can_continue() and controller.has_save():
+		main_menu.set_has_save(false, "Забег завершён — начните новый")
 	main_menu.visible = true
 	_apply_phase_panels(true)
 	_update_shop_visibility()
+	_fade_modal(main_menu, 0.20)
 	if _demo_requested():
 		call_deferred("_start_demo")
 
@@ -178,12 +197,20 @@ func _process(delta: float) -> void:
 	if controller == null:
 		return
 	_clear_modal_if_dead()
-	if controller.phase == GAME_CONTROLLER.PHASE_HOUR:
+	var phase: StringName = controller.phase
+	var d: Dictionary = {}
+	if phase == GAME_CONTROLLER.PHASE_HOUR:
 		_sync_modal_pause()
 		controller.tick(delta)
+		# Один снимок часа на кадр: и для карточек, и для heat-модели.
+		d = controller.hour_data()
 		# tick мог завершить час — тогда экран уже переключился на отчёт.
 		if controller.phase == GAME_CONTROLLER.PHASE_HOUR:
-			_refresh_hour()
+			_refresh_hour(d)
+	elif phase == GAME_CONTROLLER.PHASE_HOUR_RESULT \
+			or phase == GAME_CONTROLLER.PHASE_RUN_RESULT:
+		d = controller.hour_data()
+	_tick_stress(delta, d)
 
 
 ## Esc: закрывает верхнюю модалку, ставит смену на паузу или игнорируется.
@@ -249,6 +276,7 @@ func _pause_game() -> void:
 	controller.set_paused(true)
 	if pause_modal != null:
 		pause_modal.open()
+		_fade_modal(pause_modal, 0.16)
 
 
 func _resume_game() -> void:
@@ -310,8 +338,10 @@ func _open_settings() -> void:
 		"fullscreen": full,
 		"vhs": main_menu.is_vhs_enabled() if main_menu != null \
 			else bool(_settings_cache.get("vhs", true)),
+		"reduce_motion": bool(_settings_cache.get("reduce_motion", false)),
 	})
 	_sync_modal_pause()
+	_fade_modal(settings_modal, 0.16)
 
 
 ## Применить настройки из SettingsModal и (по умолчанию) сохранить их.
@@ -321,6 +351,10 @@ func _apply_settings(values: Dictionary, persist: bool = true) -> void:
 	var calm := bool(values.get("calm_bg", true))
 	var full := bool(values.get("fullscreen", false))
 	var vhs := bool(values.get("vhs", true))
+	# Ключ reduce_motion может отсутствовать в старом сейве — тогда не сбрасываем.
+	var reduce_motion := bool(_settings_cache.get("reduce_motion", false))
+	if values.has("reduce_motion"):
+		reduce_motion = bool(values.get("reduce_motion", false))
 	Audio.set_sfx_volume(float(sfx) / 100.0)
 	Audio.set_music_volume(float(music) / 100.0)
 	if _backdrop != null:
@@ -332,8 +366,17 @@ func _apply_settings(values: Dictionary, persist: bool = true) -> void:
 		# VHS живёт только на главном меню; игровые панели и модалки не трогаем.
 		main_menu.set_vhs_enabled(vhs)
 	_apply_fullscreen(full)
+	UiMotion.reduced = reduce_motion
+	if reduce_motion:
+		_restore_event_motion()
+	if stress_overlay != null:
+		stress_overlay.set_reduced(reduce_motion)
+	if temperature_gauge != null:
+		temperature_gauge.set_reduced(reduce_motion)
+	if status_bar != null:
+		status_bar.set_reduced(reduce_motion)
 	_settings_cache = {"sfx": sfx, "music": music, "calm_bg": calm,
-		"fullscreen": full, "vhs": vhs}
+		"fullscreen": full, "vhs": vhs, "reduce_motion": reduce_motion}
 	if Game.stats != null:
 		Game.stats["settings"] = _settings_cache.duplicate(true)
 	# В главном меню забега ещё нет: настройки живут в Game.stats, но не должны
@@ -451,6 +494,7 @@ func _confirm_to_menu() -> void:
 		detail = "Прогресс подготовки сохранён."
 	confirm_modal.ask("Выйти в главное меню?", detail, "Выйти", "Отмена", true)
 	_sync_modal_pause()
+	_fade_modal(confirm_modal, 0.16)
 
 
 ## Информационное окно «О программе» (пункт меню МЕНЮ).
@@ -462,6 +506,7 @@ func _show_about() -> void:
 		"Диспетчер файлового обмена · версия 0.1.0 · Godot 4.7.2",
 		"OK", "Закрыть")
 	_sync_modal_pause()
+	_fade_modal(confirm_modal, 0.16)
 
 
 func _to_menu() -> void:
@@ -478,8 +523,9 @@ func _to_menu() -> void:
 		# В час фаза остаётся hour: таймер держим на паузе до «Продолжить».
 		controller.set_paused(controller.phase == GAME_CONTROLLER.PHASE_HOUR)
 	if main_menu != null:
-		main_menu.set_has_save(true)
+		_refresh_menu_save_state()
 		main_menu.visible = true
+		_fade_modal(main_menu, 0.20)
 
 
 # --------------------------------------------------------------------------
@@ -600,6 +646,7 @@ func _start_new_run() -> void:
 	# new_run сбрасывает stats — возвращаем настройки, чтобы они жили между забегами.
 	if not _settings_cache.is_empty() and Game.stats != null:
 		Game.stats["settings"] = _settings_cache.duplicate(true)
+	_reset_stress()
 	# Game.start_new_run создаёт новый FileRegistry — переподключаем сигналы.
 	_bind_registry_signals()
 	main_menu.visible = false
@@ -669,7 +716,7 @@ func _continue_run() -> void:
 	if controller == null:
 		return
 	if not controller.continue_run():
-		_toast("СОХРАНЕНИЕ НЕ НАЙДЕНО", "warn")
+		_toast("ЗАБЕГ ЗАВЕРШЁН · НАЧНИТЕ НОВЫЙ", "warn")
 		return
 	# load_game восстанавливает реестр — сигналы старого больше не нужны.
 	_bind_registry_signals()
@@ -819,7 +866,7 @@ func _init_tutorial_hud() -> void:
 	_tutorial_next_btn = Button90.new()
 	_tutorial_next_btn.name = "TutorialNext"
 	_tutorial_next_btn.caption = "ДАЛЕЕ"
-	_tutorial_next_btn.caption_size = 9
+	_tutorial_next_btn.caption_size = 10
 	_tutorial_next_btn.flat_style = true
 	_tutorial_next_btn.size = Vector2(58, 16)
 	_tutorial_next_btn.tooltip_text = "Пропустить шаг обучения"
@@ -1436,8 +1483,9 @@ func _clear_hour_panels() -> void:
 func _on_phase(phase: StringName) -> void:
 	_clear_modal_if_dead()
 	if phase != GAME_CONTROLLER.PHASE_HOUR:
-		# Конец часа: соединение принудительно закрываем, не оставляя модалку.
-		_drop_connection_modal()
+		# Вне часа не должно оставаться ни одной игровой модалки: send/attack
+		# иначе висят поверх итогов часа/забега.
+		_drop_active_game_modal()
 		# Обучение живёт только внутри часа 1; вне часа шаги не тикают.
 		if _tutorial_active or _tutorial_closing:
 			_tutorial_hide()
@@ -1448,6 +1496,7 @@ func _on_phase(phase: StringName) -> void:
 				main_menu.visible = false
 			if hour_result_modal != null:
 				hour_result_modal.visible = false
+			_reset_stress()
 			_refresh_prep()
 		GAME_CONTROLLER.PHASE_HOUR:
 			_show_hour()
@@ -1468,6 +1517,7 @@ func _on_phase(phase: StringName) -> void:
 		_:
 			pass
 	_update_shop_visibility()
+	_fade_phase()
 
 
 ## v2: в подготовке правая колонка — стол сортировки (4×6), в час —
@@ -1489,9 +1539,14 @@ func _show_hour() -> void:
 	_hour_ui_shown = true
 	if mascot != null:
 		mascot.hide_message()
+	_reset_stress()
+	var active_director = _hour_director()
+	_hour_total_cache = maxf(0.0, float(active_director.time_left)) \
+		if active_director != null else 0.0
 	_clear_hour_panels()
 	_apply_phase_panels(false)
 	_connect_hour_signals()
+	_bind_attack_stress_signals()
 	_refresh_hour()
 	_update_shop_visibility()
 	_toast("ЧАС %d НАЧАЛСЯ" % Game.hour, "success")
@@ -1522,15 +1577,36 @@ func _connect_hour_signals() -> void:
 		if director.has_signal("spawn_frozen") \
 				and not director.spawn_frozen.is_connected(_on_spawn_frozen_ui):
 			director.spawn_frozen.connect(_on_spawn_frozen_ui)
+		# «ЖАРА»: потеря/просрочка и снятие сущностей с доски.
+		if director.has_signal("packet_removed") \
+				and not director.packet_removed.is_connected(_on_packet_removed_stress):
+			director.packet_removed.connect(_on_packet_removed_stress)
+		if director.has_signal("request_removed") \
+				and not director.request_removed.is_connected(_on_request_removed_stress):
+			director.request_removed.connect(_on_request_removed_stress)
+		# Core может добавить эти сигналы параллельно — подключаемся только если есть.
+		if director.has_signal("packet_lost") \
+				and not director.packet_lost.is_connected(_on_packet_lost_stress):
+			director.packet_lost.connect(_on_packet_lost_stress)
+		if director.has_signal("request_expired") \
+				and not director.request_expired.is_connected(_on_request_expired_stress):
+			director.request_expired.connect(_on_request_expired_stress)
+		_bind_attack_stress_signals()
 
 
 ## M8: тост о заморозке приёма, не чаще раза в ~5 секунд.
-func _on_spawn_frozen_ui(_reason: String) -> void:
+## `no_space` — склад (папки/клетки) заполнен, иначе — буфер приёма.
+func _on_spawn_frozen_ui(reason: String) -> void:
+	if stress_overlay != null:
+		stress_overlay.notify("spawn_frozen", 1.0)
 	var now := Time.get_ticks_msec()
 	if now - _spawn_frozen_toast_ms < 5000:
 		return
 	_spawn_frozen_toast_ms = now
-	_toast("БУФЕР ПРИЁМА ПОЛОН · ПРИЁМ ОСТАНОВЛЕН", "warn")
+	if reason == "no_space":
+		_toast("СКЛАД ЗАПОЛНЕН · ПРИЁМ ОСТАНОВЛЕН", "error")
+	else:
+		_toast("БУФЕР ПРИЁМА ПОЛОН · ПРИЁМ ОСТАНОВЛЕН", "warn")
 
 
 ## Атака v2 — только модальная мини-игра, без карточек/оверлеев.
@@ -1656,9 +1732,15 @@ func _on_connection_finished(success: bool, req_id: String, game_node = null) ->
 			else:
 				controller.modal_open = false
 	var director = _hour_director()
+	var connected_now := false
 	if director != null and director.has_method("connection_finished"):
 		director.connection_finished(str(req_id), bool(success), missed)
-	if bool(success):
+		if director.has_method("is_request_connected"):
+			connected_now = bool(director.is_request_connected(str(req_id)))
+	# Успех мини-игры создаёт соединение и занимает слот, но не открывает
+	# отправку (её запускает только start_send). Если слота не было, тост
+	# «УСТАНОВЛЕНО» врал бы — поэтому проверяем реальное соединение.
+	if bool(success) and connected_now:
 		_toast("СОЕДИНЕНИЕ УСТАНОВЛЕНО · %s" % client, "success")
 		_tutorial_notify("connect")
 	# BUG B: неуспех уже озвучивает HourDirector.connection_finished()
@@ -1673,6 +1755,25 @@ func _drop_connection_modal() -> void:
 		if _modal_game.get_parent() != null:
 			_modal_game.get_parent().remove_child(_modal_game)
 		_modal_game.queue_free()
+	_modal_game = null
+	_modal_kind = ""
+	if controller != null:
+		if controller.has_method("set_modal_open"):
+			controller.set_modal_open(false)
+		else:
+			controller.modal_open = false
+
+
+## Снимает любую живую игровую модалку (send/connection/attack).
+func _drop_active_game_modal() -> void:
+	if _modal_game == null:
+		_modal_kind = ""
+		return
+	if is_instance_valid(_modal_game):
+		if _modal_game.get_parent() != null:
+			_modal_game.get_parent().remove_child(_modal_game)
+		if not _modal_game.is_queued_for_deletion():
+			_modal_game.queue_free()
 	_modal_game = null
 	_modal_kind = ""
 	if controller != null:
@@ -1717,7 +1818,9 @@ func _on_minigame_closed_ui(_req_id: String) -> void:
 
 
 ## AttackDirector закончил/отменил атаку: нода уже queue_free — снимаем модалку.
-func _on_attack_resolved_ui(_kind: String, _success: bool, _tier: int) -> void:
+func _on_attack_resolved_ui(_kind: String, success: bool, _tier: int) -> void:
+	if stress_overlay != null:
+		stress_overlay.notify("relief" if success else "attack_fail")
 	_clear_modal_if_dead()
 
 
@@ -1741,7 +1844,7 @@ func _clear_modal_if_dead() -> void:
 	if _modal_game == null:
 		var director = _hour_director()
 		if director != null and director.has_method("is_attack_paused") \
-				and director.is_attack_paused():
+				and director.is_attack_paused() and bool(director.get("running")):
 			director.set_attack_paused(false)
 
 
@@ -1825,10 +1928,10 @@ func _on_modal_game_finished(_a = null, game_node = null) -> void:
 # Час: синхронизация карточек со снимком контроллера
 # --------------------------------------------------------------------------
 
-func _refresh_hour() -> void:
+func _refresh_hour(data: Dictionary = {}) -> void:
 	if controller == null:
 		return
-	var d: Dictionary = controller.hour_data()
+	var d: Dictionary = data if not data.is_empty() else controller.hour_data()
 	var packet_data: Array = d.get("packets", [])
 	var request_data: Array = d.get("requests", [])
 	var slots_data: Array = d.get("slots", [])
@@ -1918,6 +2021,12 @@ func _on_recv_gui_input(event: InputEvent) -> void:
 
 
 func _card_ids(cards: Array) -> Array:
+	# Lane B: play_loss() самоосвобождает карточку через ~0.58 c. Чистим
+	# невалидные ссылки до сравнения ids, чтобы rebuild не падал на freed instance.
+	for i in range(cards.size() - 1, -1, -1):
+		var c = cards[i]
+		if c == null or not is_instance_valid(c):
+			cards.remove_at(i)
 	var out: Array = []
 	for c in cards:
 		out.append(str(c.id))
@@ -1950,6 +2059,8 @@ func _refresh_packets(data: Array) -> void:
 	if not _same_ids(ids, _card_ids(packets)):
 		rebuilt = true
 		for c in packets:
+			if not is_instance_valid(c):
+				continue
 			receive_window.content.remove_child(c)
 			c.queue_free()
 		packets.clear()
@@ -1967,6 +2078,8 @@ func _refresh_packets(data: Array) -> void:
 			break
 		var p: Dictionary = data[i]
 		var card := packets[i]
+		if card == null or not is_instance_valid(card):
+			continue
 		var left := float(p.get("time_left", 0.0))
 		var total := float(p.get("timer_total", 0.0))
 		var progress := 0.0
@@ -1996,6 +2109,8 @@ func _refresh_requests(data: Array) -> void:
 		ids.append(str(r.get("id", "")))
 	if not _same_ids(ids, _card_ids(requests)):
 		for c in requests:
+			if not is_instance_valid(c):
+				continue
 			send_window.content.remove_child(c)
 			c.queue_free()
 		requests.clear()
@@ -2011,6 +2126,7 @@ func _refresh_requests(data: Array) -> void:
 			card.file_dropped.connect(_on_file_to_request)
 			card.detach_pressed.connect(_on_request_detach)
 			card.protocol_toggle_requested.connect(_on_request_protocol_toggle)
+			card.connect_pressed.connect(_on_request_connect)
 			requests.append(card)
 	_layout_request_cards(data.size())
 
@@ -2018,6 +2134,8 @@ func _refresh_requests(data: Array) -> void:
 		if i >= requests.size():
 			break
 		var r: Dictionary = data[i]
+		if requests[i] == null or not is_instance_valid(requests[i]):
+			continue
 		var progress := 0.0
 		var duration := float(r.get("send_duration", 0.0))
 		if bool(r.get("sending", false)) and duration > 0.0:
@@ -2031,8 +2149,8 @@ func _refresh_requests(data: Array) -> void:
 			int(r.get("send_sum", 0)), str(r.get("minigame_id", "")),
 			int(r.get("minigame_tier", 0)), bool(r.get("minigame_active", false)),
 			bool(r.get("ready", false)), bool(r.get("connecting", false)),
-			bool(r.get("connected", false)))
-		requests[i].queue_redraw()
+			bool(r.get("connected", false)), str(r.get("connection_id", "")),
+			float(r.get("udp_chance", 0.0)), float(r.get("udp_retry_left", 0.0)))
 	_sync_send_scroll(data.size())
 	if data.is_empty():
 		_ensure_requests_empty()
@@ -2247,6 +2365,7 @@ func _refresh_slots(data: Array, packets_data: Array = [],
 			cell.position = Vector2(58 + i * 240, 5)
 			cell.size = Vector2(236, 44)
 			cell.cell_pressed.connect(_on_slot_press)
+			cell.disconnect_pressed.connect(_on_slot_disconnect)
 			slot_cells.append(cell)
 
 	for i in 5:
@@ -2259,18 +2378,26 @@ func _refresh_slots(data: Array, packets_data: Array = [],
 			continue
 		var s: Dictionary = data[i]
 		var occupied := bool(s.get("occupied", false))
+		var kind := str(s.get("kind", ""))
 		var dir := "down" if str(s.get("direction", "")) == "in" else "up"
 		var progress := 0.0
 		if occupied:
-			progress = _slot_entity_progress(str(s.get("entity_id", "")), dir,
-				packets_data, requests_data)
-			if progress <= 0.0:
+			if kind == "tcp_connection":
+				# У connection-слота entity_id — id соединения, а не запроса:
+				# прогресс приходит готовым из snapshot.
 				progress = clampf(float(s.get("progress", 0.0)), 0.0, 1.0)
+			else:
+				progress = _slot_entity_progress(str(s.get("entity_id", "")), dir,
+					packets_data, requests_data)
+				if progress <= 0.0:
+					progress = clampf(float(s.get("progress", 0.0)), 0.0, 1.0)
 		cell.setup(str(s.get("entity_id", "")), str(s.get("entity_name", "")), dir,
 			progress,
 			"active" if occupied else "empty",
-			"" if occupied else "СВОБОДЕН", str(int(s.get("index", i)) + 1))
-		# v2: прервать передачу нельзя — крестик не показываем и не подключаем.
+			"" if occupied else "СВОБОДЕН", str(int(s.get("index", i)) + 1),
+			kind, str(s.get("detail", "")), bool(s.get("can_disconnect", false)),
+			bool(s.get("sending", false)))
+		# У connection-слота своя кнопка ОТКЛЮЧИТЬ; старый крестик не нужен.
 		_hide_slot_close(cell)
 
 
@@ -2291,10 +2418,10 @@ func _slot_entity_progress(entity_id: String, dir: String, packets_data: Array,
 				continue
 			if str(p.get("state", "")) != "loading":
 				return 0.0
-			var total := float(p.get("timer_total", 0.0))
-			if total <= 0.0:
+			var duration := float(p.get("loading_duration", 0.0))
+			if duration <= 0.0:
 				return 0.0
-			return clampf(1.0 - float(p.get("time_left", 0.0)) / total, 0.0, 1.0)
+			return clampf(float(p.get("loading_progress", 0.0)) / duration, 0.0, 1.0)
 		return 0.0
 	for r in requests_data:
 		if str(r.get("id", "")) != entity_id:
@@ -2342,10 +2469,332 @@ func _refresh_hour_status(status: Dictionary) -> void:
 
 
 # --------------------------------------------------------------------------
+# «ЖАРА»: снимок часа, heat-оверлей и событийная тряска
+# --------------------------------------------------------------------------
+
+func _reset_stress() -> void:
+	_hour_total_cache = 0.0
+	_last_sla = -1.0
+	if stress_overlay != null:
+		stress_overlay.reset()
+	if temperature_gauge != null:
+		temperature_gauge.set_heat(0.0, 36, 0)
+		temperature_gauge.set_breakdown({})
+	if status_bar != null:
+		status_bar.set_stress(0.0, 0)
+
+
+## Снимок состояния часа для модели heat. Поля core (`request_limit`,
+## `attacks_active`, `attacks_tier`, `hour_total`, `sending_count`,
+## `queued_count`) используются, если есть; иначе — fallback по директору.
+func _stress_snapshot(data: Dictionary = {}) -> Dictionary:
+	if controller == null:
+		return {}
+	var d: Dictionary = data if not data.is_empty() else controller.hour_data()
+	var st: Dictionary = d.get("status", {})
+	var reqs: Array = d.get("requests", [])
+	var director = _hour_director()
+	var attacks_director = director.attack_director if director != null else null
+
+	var sla := float(st.get("sla", Game.sla if Game != null else 0.0))
+	var sla_cap := maxf(1.0, float(Game.sla_cap()) if Game != null else 60.0)
+
+	var req_limit := int(st.get("request_limit", -1))
+	if req_limit <= 0:
+		req_limit = int(director.active_request_limit) if director != null else 1
+	req_limit = maxi(1, req_limit)
+
+	var attacks := int(st.get("attacks_active", -1))
+	if attacks < 0:
+		attacks = attacks_director.active_attacks.size() if attacks_director != null else 0
+	var attack_tier := int(st.get("attacks_tier", -1))
+	if attack_tier < 0:
+		attack_tier = int(attacks_director._active_tier) if attacks_director != null else 0
+
+	var has_counts: bool = st.has("sending_count") and st.has("queued_count")
+	var sending := int(st.get("sending_count", 0)) if has_counts else 0
+	var queued := int(st.get("queued_count", 0)) if has_counts else 0
+	var urgent := 0
+	for r in reqs:
+		if not (r is Dictionary):
+			continue
+		if not has_counts:
+			if bool(r.get("sending", false)):
+				sending += 1
+			if bool(r.get("queued", false)):
+				queued += 1
+		if float(r.get("time_ratio", 1.0)) < 0.25:
+			urgent += 1
+
+	var hour_total := float(st.get("hour_total", 0.0))
+	if hour_total <= 0.0:
+		if _hour_total_cache <= 0.0 and director != null:
+			_hour_total_cache = maxf(0.001, float(director.time_left))
+		hour_total = _hour_total_cache
+	var time_left := float(st.get("time_left", 0.0))
+	if time_left <= 0.0 and director != null:
+		time_left = float(director.time_left)
+	var hour_progress := 0.0
+	if hour_total > 0.0:
+		hour_progress = clampf(1.0 - time_left / hour_total, 0.0, 1.0)
+
+	var channel := float(st.get("channel", 0.0))
+	var channel_cap := maxf(1.0, float(Game.channel_capacity()) if Game != null else 10.0)
+	var buffer_used := int(st.get("buffer_used", 0))
+	var buffer_max := maxi(1, int(st.get("buffer_max", 1)))
+	var slots_max := maxi(1, int(Game.connection_slots()) if Game != null else 1)
+
+	_last_sla = sla
+	return {
+		"sla": sla,
+		"sla_cap": sla_cap,
+		"req_active": reqs.size(),
+		"req_limit": req_limit,
+		"attacks": attacks,
+		"attack_tier": attack_tier,
+		"channel": channel,
+		"channel_capacity": channel_cap,
+		"channel_ratio": clampf(channel / channel_cap, 0.0, 1.0),
+		"buffer_used": buffer_used,
+		"buffer_max": buffer_max,
+		"buffer_ratio": clampf(float(buffer_used) / float(buffer_max), 0.0, 1.0),
+		"urgent": urgent,
+		"sending": sending,
+		"queued": queued,
+		"slots_max": slots_max,
+		"hour_progress": hour_progress,
+	}
+
+
+func _tick_stress(delta: float, data: Dictionary = {}) -> void:
+	if stress_overlay == null or controller == null:
+		return
+	var phase: StringName = controller.phase
+	if phase == GAME_CONTROLLER.PHASE_MENU or phase == GAME_CONTROLLER.PHASE_PREP:
+		# Подготовка: heat = 0, колба пустая.
+		if stress_overlay.heat > 0.001 or stress_overlay.level != 0:
+			_reset_stress()
+		return
+	var paused := false
+	if phase == GAME_CONTROLLER.PHASE_HOUR:
+		paused = bool(controller.paused) or _modal_game != null
+		if settings_modal != null and settings_modal.visible:
+			paused = true
+		if confirm_modal != null and confirm_modal.visible:
+			paused = true
+		if rename_modal != null and rename_modal.visible:
+			paused = true
+	stress_overlay.set_inputs(_stress_snapshot(data))
+	stress_overlay.tick(delta, paused)
+	_sync_stress_ui()
+
+
+func _sync_stress_ui() -> void:
+	if stress_overlay == null:
+		return
+	if temperature_gauge != null:
+		temperature_gauge.set_heat(stress_overlay.heat, stress_overlay.temp_c,
+			stress_overlay.level)
+		temperature_gauge.set_breakdown(stress_overlay.breakdown)
+	if status_bar != null:
+		status_bar.set_stress(stress_overlay.heat, stress_overlay.level)
+
+
+func _on_stress_changed(_heat: float, _level: int, _temp_c: int) -> void:
+	_sync_stress_ui()
+
+
+func _on_attack_added_stress(_id: String) -> void:
+	if stress_overlay == null:
+		return
+	stress_overlay.set_inputs(_stress_snapshot())
+	stress_overlay.notify("attack_start")
+
+
+## AttackDirector пересоздаётся каждый час — сигнал переподключаем перед стартом.
+func _bind_attack_stress_signals() -> void:
+	var director = _hour_director()
+	var attacks = director.attack_director if director != null else null
+	if attacks == null or not attacks.has_signal("attack_added"):
+		return
+	if not attacks.attack_added.is_connected(_on_attack_added_stress):
+		attacks.attack_added.connect(_on_attack_added_stress)
+
+
+func _on_packet_removed_stress(id: String) -> void:
+	_check_sla_drop("packet", id)
+
+
+func _on_request_removed_stress(id: String) -> void:
+	_check_sla_drop("request", id)
+
+
+## Core-сигналы появятся параллельно: подключаемся только при наличии.
+func _on_packet_lost_stress(id: String) -> void:
+	_mark_card_loss("packet", id)
+	if stress_overlay != null:
+		stress_overlay.notify("packet_lost")
+	# Потерю SLA уже учли отдельным импульсом — не удваиваем на packet_removed.
+	_last_sla = -1.0
+
+
+func _on_request_expired_stress(id: String) -> void:
+	_mark_card_loss("request", id)
+	if stress_overlay != null:
+		stress_overlay.notify("expired")
+	_last_sla = -1.0
+
+
+## Падение SLA между снимками: сила импульса зависит от абсолютной просадки.
+func _check_sla_drop(kind: String = "", id: String = "") -> void:
+	if stress_overlay == null or controller == null:
+		return
+	var d: Dictionary = controller.hour_data()
+	var st: Dictionary = d.get("status", {})
+	var now := float(st.get("sla", Game.sla if Game != null else 0.0))
+	if _last_sla < 0.0:
+		_last_sla = now
+		return
+	var drop := _last_sla - now
+	_last_sla = now
+	if drop > 0.5:
+		stress_overlay.notify("sla_drop", drop)
+		if not kind.is_empty():
+			_mark_card_loss(kind, id)
+
+
+## Безопасный крючок для Lane B: play_loss()/flash_error(), если реализованы.
+## Карточка остаётся ребёнком для анимации, но убирается из массива main.*,
+## иначе rebuild-циклы увидят freed instance через ~0.58 c.
+func _mark_card_loss(kind: String, id: String) -> void:
+	if kind == "packet":
+		for i in range(packets.size() - 1, -1, -1):
+			var c = packets[i]
+			if c == null or not is_instance_valid(c):
+				packets.remove_at(i)
+				continue
+			if str(c.get("id")) != str(id):
+				continue
+			_play_card_loss(c)
+			packets.remove_at(i)
+			return
+		return
+	for i in range(requests.size() - 1, -1, -1):
+		var c = requests[i]
+		if c == null or not is_instance_valid(c):
+			requests.remove_at(i)
+			continue
+		if str(c.get("id")) != str(id):
+			continue
+		_play_card_loss(c)
+		requests.remove_at(i)
+		return
+
+
+func _play_card_loss(c) -> void:
+	if c.has_method("play_loss"):
+		c.call("play_loss")
+	elif c.has_method("flash_error"):
+		c.call("flash_error")
+
+
+## Событийный сдвиг панелей: целые пиксели, ≤2 px, 140 мс, без изменения layout.
+func _kick_panels(px: int) -> void:
+	if UiMotion.reduced or DisplayServer.get_name() == "headless":
+		return
+	var shift := clampi(px, -2, 2)
+	if shift == 0:
+		return
+	for c in [workspace, receive_window, send_window, slots_strip]:
+		if c == null or not is_instance_valid(c):
+			continue
+		var id: int = c.get_instance_id()
+		if not _kick_origin.has(id):
+			_kick_origin[id] = _phase_origin.get(id, c.position)
+		if _kick_tweens.has(id):
+			var old = _kick_tweens[id]
+			if old != null and old.is_valid():
+				old.kill()
+		var base: Vector2 = _kick_origin[id]
+		c.position = base + Vector2(float(shift), 0.0)
+		var tw := create_tween()
+		tw.tween_interval(0.10)
+		tw.tween_property(c, "position", base, 0.04)
+		tw.tween_callback(func() -> void: _kick_origin.erase(id))
+		_kick_tweens[id] = tw
+
+
+# --- фейды (в headless и reduce — без движения) ---------------------------
+
+func _motion_enabled() -> bool:
+	return DisplayServer.get_name() != "headless" and not UiMotion.reduced
+
+
+func _fade_modal(control: Control, duration: float) -> void:
+	if control == null or not is_instance_valid(control):
+		return
+	if not _motion_enabled():
+		control.modulate.a = 1.0
+		return
+	control.modulate.a = 0.0
+	var tw := create_tween()
+	tw.tween_property(control, "modulate:a", 1.0, maxf(0.01, duration))
+
+
+func _restore_event_motion() -> void:
+	# «Снизить эффекты» включили посреди 140-мс сдвига/фейда: вернуть layout.
+	for id in _phase_tweens.keys():
+		var tw = _phase_tweens[id]
+		if tw != null and tw.is_valid():
+			tw.kill()
+		var c = instance_from_id(id)
+		if c != null and is_instance_valid(c):
+			if _phase_origin.has(id):
+				c.position = _phase_origin[id]
+			c.modulate.a = 1.0
+	_phase_tweens.clear()
+	for id in _kick_tweens.keys():
+		var tw2 = _kick_tweens[id]
+		if tw2 != null and tw2.is_valid():
+			tw2.kill()
+		var c2 = instance_from_id(id)
+		if c2 != null and is_instance_valid(c2) and _kick_origin.has(id):
+			c2.position = _kick_origin[id]
+	_kick_tweens.clear()
+	_kick_origin.clear()
+
+
+func _fade_phase() -> void:
+	if not _motion_enabled():
+		_restore_event_motion()
+		return
+	for c in [workspace, receive_window, send_window, slots_strip, sorting_table]:
+		if c == null or not is_instance_valid(c):
+			continue
+		var id: int = c.get_instance_id()
+		if not _phase_origin.has(id):
+			_phase_origin[id] = c.position
+		if _phase_tweens.has(id):
+			var old = _phase_tweens[id]
+			if old != null and old.is_valid():
+				old.kill()
+		var base: Vector2 = _phase_origin[id]
+		c.position = base + Vector2(0, 6)
+		c.modulate.a = 0.0
+		var tw := create_tween()
+		tw.set_parallel(true)
+		tw.tween_property(c, "position", base, 0.16)
+		tw.tween_property(c, "modulate:a", 1.0, 0.16)
+		_phase_tweens[id] = tw
+
+
+# --------------------------------------------------------------------------
 # Итоги часа и забега
 # --------------------------------------------------------------------------
 
 func _on_hour_finished(_report: Dictionary) -> void:
+	if stress_overlay != null:
+		stress_overlay.notify("hour_end")
 	_open_hour_result()
 
 
@@ -2368,6 +2817,7 @@ func _open_hour_result() -> void:
 		"sla": int(round(sla)),
 		"sla_max": maxi(1, int(round(float(Game.sla_cap())))),
 	})
+	_fade_modal(hour_result_modal, 0.16)
 
 
 func _on_hour_result_next() -> void:
@@ -2403,6 +2853,7 @@ func _show_run_result() -> void:
 		"sla_max": maxi(1, int(round(float(Game.sla_cap())))),
 		"unlocked": (r.get("unlocked", []) as Array).duplicate(),
 	})
+	_fade_modal(run_result_modal, 0.16)
 	var unlocked: Array = r.get("unlocked", [])
 	if not unlocked.is_empty():
 		_toast("ОТКРЫТО: %s" % ", ".join(unlocked), "success")
@@ -2429,8 +2880,21 @@ func _on_run_result_menu() -> void:
 		hour_result_modal.visible = false
 	_hour_ui_shown = false
 	if main_menu != null:
-		main_menu.set_has_save(controller != null and controller.has_save())
+		_refresh_menu_save_state()
 		main_menu.visible = true
+		_fade_modal(main_menu, 0.20)
+
+
+## «Продолжить» активно только для незавершённого забега. Если сейв есть,
+## но забег закончен — подсказка объясняет причину, а не «нет сохранения».
+func _refresh_menu_save_state() -> void:
+	if main_menu == null or controller == null:
+		return
+	var can: bool = controller.can_continue()
+	var hint := ""
+	if not can and controller.has_save():
+		hint = "Забег завершён — начните новый"
+	main_menu.set_has_save(can, hint)
 
 
 # --------------------------------------------------------------------------
@@ -2485,33 +2949,13 @@ func _build() -> void:
 	menu_btn.pressed.connect(func() -> void: _popup_main_menu(menu_btn))
 	_menu_btn = menu_btn
 
-	# правая часть меню-бара: дата, часы, магазин, старт часа
-	var date_lbl := Label.new()
-	date_lbl.name = "DateLabel"
-	date_lbl.text = "СБ 12 ОКТ 1997"
-	date_lbl.add_theme_font_override("font", Theme90.ui())
-	date_lbl.add_theme_font_size_override("font_size", Theme90.FS_MICRO)
-	date_lbl.add_theme_color_override("font_color", Theme90.DARK)
-	date_lbl.horizontal_alignment = HORIZONTAL_ALIGNMENT_RIGHT
-	date_lbl.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	date_lbl.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	menu_bar.add_child(date_lbl)
-	date_lbl.position = Vector2(852, 1)
-	date_lbl.size = Vector2(140, 18)
-	date_lbl.visible = false
-
-	var clock := Label.new()
-	clock.name = "Clock"
-	clock.text = "03:42"
-	clock.add_theme_font_override("font", Theme90.logo())
-	clock.add_theme_font_size_override("font_size", 10)
-	clock.add_theme_color_override("font_color", Theme90.DARK)
-	clock.horizontal_alignment = HORIZONTAL_ALIGNMENT_LEFT
-	clock.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
-	clock.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	menu_bar.add_child(clock)
-	clock.position = Vector2(998, 1)
-	clock.size = Vector2(54, 18)
+	# правая часть меню-бара: термометр «ЖАРА», магазин, старт часа
+	temperature_gauge = TemperatureGauge.new()
+	temperature_gauge.name = "TemperatureGauge"
+	menu_bar.add_child(temperature_gauge)
+	temperature_gauge.position = Vector2(852, 1)
+	temperature_gauge.size = Vector2(216, 18)
+	temperature_gauge.set_heat(0.0, 36, 0)
 
 	var shop := Button90.new()
 	shop.name = "ShopButton"
@@ -2629,7 +3073,7 @@ func _build() -> void:
 	slot_count_label = tcp_cnt
 	tcp_cnt.text = "2/5"
 	tcp_cnt.add_theme_font_override("font", Theme90.logo())
-	tcp_cnt.add_theme_font_size_override("font_size", 8)
+	tcp_cnt.add_theme_font_size_override("font_size", 10)
 	tcp_cnt.add_theme_color_override("font_color", Theme90.DARK)
 	tcp_cnt.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
 	tcp_cnt.vertical_alignment = VERTICAL_ALIGNMENT_CENTER
@@ -2642,6 +3086,14 @@ func _build() -> void:
 	status_bar = StatusBar.new()
 	status_bar.name = "StatusBar"
 	_place(self, status_bar, Rect2(0, 660, W, 60))
+
+	# слой «ЖАРА»: поверх панелей, но под тостами и модалками.
+	stress_overlay = StressOverlay.new()
+	stress_overlay.name = "StressOverlay"
+	add_child(stress_overlay)
+	stress_overlay.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+	stress_overlay.kick.connect(_kick_panels)
+	stress_overlay.heat_changed.connect(_on_stress_changed)
 
 	# слой сообщений
 	toast_layer = ToastLayer.new()
@@ -2876,7 +3328,14 @@ func _apply_mock() -> void:
 		card.position = Vector2(6, y)
 		card.size = Vector2(400, REQ_CARD_H)
 		card.setup(str(d["id"]), str(d["client"]), str(d["client_id"]), str(d["protocol"]),
-			d["slots"], float(d["left"]), float(d["total"]), float(d["progress"]))
+			d["slots"], float(d["left"]), float(d["total"]), float(d["progress"]),
+			int(d.get("required", 0)), bool(d.get("queued", false)),
+			bool(d.get("sending", false)), int(d.get("send_sum", 0)),
+			str(d.get("minigame_id", "")), int(d.get("minigame_tier", 0)),
+			bool(d.get("minigame_active", false)), bool(d.get("ready", false)),
+			bool(d.get("connecting", false)), bool(d.get("connected", false)),
+			str(d.get("connection_id", "")), float(d.get("udp_chance", 0.0)),
+			float(d.get("udp_retry_left", 0.0)))
 		card.connect_pressed.connect(_on_request_connect)
 		card.reject_pressed.connect(_on_request_reject)
 		card.file_dropped.connect(_on_file_to_request)
@@ -2893,10 +3352,13 @@ func _apply_mock() -> void:
 		cell.position = Vector2(58 + i * 240, 5)
 		cell.size = Vector2(236, 44)
 		cell.setup(str(d["id"]), str(d["name"]), str(d["dir"]), float(d["progress"]),
-			str(d["state"]), str(d.get("sub", "")), str(d.get("label", "")))
+			str(d["state"]), str(d.get("sub", "")), str(d.get("label", "")),
+			str(d.get("kind", "")), str(d.get("detail", "")),
+			bool(d.get("can_disconnect", false)), bool(d.get("sending", false)))
 		cell.close_pressed.connect(_on_slot_close)
 		cell.cell_pressed.connect(_on_slot_press)
 		cell.packet_dropped.connect(_on_packet_to_slot)
+		cell.disconnect_pressed.connect(_on_slot_disconnect)
 		slot_cells.append(cell)
 
 
@@ -3003,18 +3465,20 @@ func _mock_requests() -> Array:
 	return [
 		{"id": "r1", "client": "ООО «Вектор»", "client_id": "cl-4217", "protocol": "TCP",
 			"slots": [
-				{"name": "отчёт_смены", "ext": "xls", "type": "text"},
-				{"name": "смета", "ext": "doc", "type": "text"},
+				{"name": "отчёт_смены", "ext": "xls", "type": "text", "attached": true},
+				{"name": "смета", "ext": "doc", "type": "text", "attached": true},
 				null,
 			],
-			"left": 45.0, "total": 60.0, "progress": 0.0},
+			"left": 45.0, "total": 60.0, "progress": 0.0,
+			"connection_id": "conn_1", "connected": true},
 		{"id": "r2", "client": "ИП Кузнецов", "client_id": "cl-1189", "protocol": "UDP",
 			"slots": [
-				{"name": "логотип_2", "ext": "png", "type": "photo"},
+				{"name": "логотип_2", "ext": "png", "type": "photo", "attached": true},
 				null,
 				null,
 			],
-			"left": 24.0, "total": 45.0, "progress": 0.0},
+			"left": 24.0, "total": 45.0, "progress": 0.0,
+			"required": 1, "udp_chance": 0.4},
 		{"id": "r3", "client": "Студия «Гром»", "client_id": "cl-9314", "protocol": "TCP",
 			"slots": [
 				{"name": "джингл", "ext": "wav", "type": "sound"},
@@ -3024,18 +3488,23 @@ func _mock_requests() -> Array:
 			"left": 8.0, "total": 40.0, "progress": 0.0},
 		{"id": "r4", "client": "АО «Северный»", "client_id": "cl-7772", "protocol": "TCP",
 			"slots": [
-				{"name": "промо_осень", "ext": "avi", "type": "video"},
-				{"name": "кадр_4", "ext": "jpg", "type": "photo"},
+				{"name": "промо_осень", "ext": "avi", "type": "video", "attached": true},
+				{"name": "кадр_4", "ext": "jpg", "type": "photo", "attached": true},
 				null,
 			],
-			"left": 38.0, "total": 60.0, "progress": 0.62},
+			"left": 38.0, "total": 60.0, "progress": 0.62,
+			"connection_id": "conn_2", "connected": true, "sending": true},
 	]
 
 
 func _mock_slots() -> Array:
 	return [
-		{"id": "s1", "name": "реклама_радио.mp3", "dir": "down", "progress": 0.42, "state": "active"},
-		{"id": "s2", "name": "отчёт_07.xls", "dir": "up", "progress": 0.78, "state": "active"},
+		{"id": "conn_1", "name": "ИП Кузнецов", "detail": "10.0.4.17", "dir": "up",
+			"progress": 0.42, "state": "active", "kind": "tcp_connection",
+			"sending": true, "can_disconnect": true},
+		{"id": "conn_2", "name": "ООО «Вектор»", "detail": "10.0.0.8", "dir": "up",
+			"progress": 0.0, "state": "active", "kind": "tcp_connection",
+			"can_disconnect": true},
 		{"id": "s3", "name": "", "dir": "down", "progress": 0.0, "state": "empty",
 			"sub": "СВОБОДЕН"},
 		{"id": "s4", "name": "", "dir": "down", "progress": 0.0, "state": "locked",
@@ -3110,9 +3579,22 @@ func _on_packet_connect(_id: String) -> void:
 	_toast("ПЕРЕТАЩИТЕ ПАКЕТ В ПАПКУ", "info")
 
 
-## Legacy: соединений больше нет. Отправка — явной кнопкой ОТПРАВИТЬ.
-func _on_request_connect(_id: String) -> void:
-	_toast("СОБЕРИТЕ ФАЙЛЫ И НАЖМИТЕ ОТПРАВИТЬ", "info")
+## TCP: установка соединения отдельной кнопкой ПОДКЛЮЧИТЬСЯ.
+## Директор сам проверяет слот/кулдаун/модалку и даёт короткий тост при отказе.
+func _on_request_connect(req_id: String) -> void:
+	if controller == null or controller.hour_director == null:
+		return
+	controller.hour_director.connect_request(req_id)
+	_refresh_hour()
+
+
+## TCP: игрок закрыл соединение из слота — слот освобождается, файлы
+## возвращаются в папки (всё делает директор).
+func _on_slot_disconnect(conn_id: String) -> void:
+	if controller == null or controller.hour_director == null:
+		return
+	controller.hour_director.disconnect_connection(conn_id)
+	_refresh_hour()
 
 
 ## C1: пока открыта игровая модалка, ввод под ней не должен менять состояние часа.
@@ -3130,9 +3612,8 @@ func _on_request_reject(id: String) -> void:
 	if controller == null or controller.hour_director == null:
 		return
 	if controller.hour_director.reject_request(id):
-		_toast("ЗАПРОС ОТКЛОНЁН", "error")
 		_refresh_hour()
-	else:
+	elif str(controller.hour_director.last_toast_text).is_empty():
 		_toast("ЗАПРОС НЕ НАЙДЕН", "warn")
 
 
@@ -3176,7 +3657,7 @@ func _on_file_to_request(request_id: String, _slot_index: int, payload: Dictiona
 		_toast("ФАЙЛ ПРИКРЕПЛЁН", "success")
 		_tutorial_notify("attach")
 		_refresh_hour()
-	else:
+	elif str(controller.hour_director.last_toast_text).is_empty():
 		_toast("НЕ УДАЛОСЬ ПРИКРЕПИТЬ ФАЙЛ", "warn")
 
 
@@ -3192,8 +3673,8 @@ func _maybe_start_send(req_id: String) -> void:
 		return
 	if controller.hour_director.start_send(req_id):
 		_refresh_hour()
-	else:
-		_toast("ОТПРАВКА НЕ НАЧАЛАСЬ: ПРОВЕРЬТЕ ФАЙЛЫ, СЛОТ И МИНИ-ИГРУ", "warn")
+	elif str(controller.hour_director.last_toast_text).is_empty():
+		_toast("ОТПРАВКА НЕ НАЧАЛАСЬ", "warn")
 
 
 func _on_request_protocol_toggle(req_id: String) -> void:
@@ -3207,8 +3688,8 @@ func _on_request_protocol_toggle(req_id: String) -> void:
 	var next := "udp" if str(req.protocol).to_lower() == "tcp" else "tcp"
 	if controller.hour_director.set_request_protocol(req_id, next):
 		_refresh_hour()
-	else:
-		_toast("ПРОТОКОЛ НЕ ИЗМЕНЁН: ЗАПРОС В РАБОТЕ", "warn")
+	elif str(controller.hour_director.last_toast_text).is_empty():
+		_toast("ПРОТОКОЛ НЕ ИЗМЕНЁН", "warn")
 
 
 ## v2: прервать передачу нельзя, слот освободится сам. Заглушка для совместимости.
@@ -3711,6 +4192,7 @@ func _on_shop() -> void:
 	if mascot != null:
 		mascot.hide_message()
 	shop_modal.open_prep(controller.shop, int(Game.money), int(Game.hour))
+	_fade_modal(shop_modal, 0.16)
 
 
 func _on_shop_buy(id: String) -> void:

@@ -19,6 +19,18 @@ signal rotation_changed(rotation: int)
 const HOVER_DELAY := 0.25
 const PREVIEW_OFFSET := Vector2(9, 9)
 
+## Сглаживание превью за мышью и «жизнь» drag (Lane B). Всё — только
+## transform превью: позиции источника/цели и drop-логику не трогаем.
+const SMOOTH_TAU := 0.035
+const TILT_TAU := 0.12
+## Скорость мыши (px/s), при которой наклон максимальный.
+const TILT_MAX_SPEED := 1400.0
+const POP_DUR := 0.10
+const POP_SCALE := 1.035
+const DRAG_ALPHA := 0.92
+const FLINCH_DUR := 0.16
+const FLINCH_PX := 3.0
+
 var _preview: Control = null
 var _mode: String = "shape"
 var _rotation: int = 0
@@ -26,6 +38,15 @@ var _rotate_frame: int = -1
 var _hover_id: String = ""
 var _hover_left: float = 0.0
 var _hover_fired: bool = false
+
+var _pos := Vector2.ZERO
+var _mouse_prev := Vector2.ZERO
+var _tilt := 0.0
+var _pop_t := 1.0
+var _rot_pop_t := 1.0
+var _flinch_left := 0.0
+var _placing := false
+var _motion_on := true
 
 
 func _ready() -> void:
@@ -48,6 +69,11 @@ func begin(preview_control: Control, p_mode: String = "shape",
 			seeded = posmod(int(preview_rotation), 4)
 	_rotation = seeded
 	_rotate_frame = -1
+	_pos = Vector2.ZERO
+	_tilt = 0.0
+	_pop_t = 1.0
+	_rot_pop_t = 1.0
+	_flinch_left = 0.0
 	if is_instance_valid(_preview):
 		_preview.mouse_filter = Control.MOUSE_FILTER_IGNORE
 		_preview.top_level = true
@@ -59,9 +85,17 @@ func begin(preview_control: Control, p_mode: String = "shape",
 		else:
 			_preview.set("mode", _mode)
 		_preview.visible = true
+		_preview.modulate.a = DRAG_ALPHA
+		_preview.scale = Vector2.ONE
+		_preview.rotation = 0.0
+		_placing = true
 		_sync_preview_rotation()
-		_preview.queue_redraw()
+		# Первый кадр — сразу под курсором, чтобы не было рывка из (0,0).
 		_place()
+		_pop_t = 0.0 if not _reduced() else 1.0
+		_mouse_prev = _mouse_pos()
+		_apply_transform()
+		_preview.queue_redraw()
 	set_process(true)
 
 
@@ -76,7 +110,7 @@ func set_mode(p_mode: String) -> void:
 		_preview.queue_redraw()
 
 
-func end() -> void:
+func end(_absorb_to: Variant = null) -> void:
 	var had := is_instance_valid(_preview) or not _hover_id.is_empty()
 	if is_instance_valid(_preview):
 		_preview.visible = false
@@ -84,9 +118,16 @@ func end() -> void:
 		if parent != null:
 			parent.remove_child(_preview)
 		_preview.queue_free()
+	# preview() обязан вернуть null сразу после end() — без ожидания кадра.
 	_preview = null
 	_rotation = 0
 	_rotate_frame = -1
+	_pos = Vector2.ZERO
+	_tilt = 0.0
+	_pop_t = 1.0
+	_rot_pop_t = 1.0
+	_flinch_left = 0.0
+	_placing = false
 	reset_hover()
 	if had:
 		drag_ended.emit()
@@ -114,6 +155,8 @@ func set_rotation(value: int) -> void:
 		return
 	_rotation = next
 	_sync_preview_rotation()
+	_rot_pop_t = 0.0 if not _reduced() else 1.0
+	_apply_transform()
 	rotation_changed.emit(_rotation)
 
 
@@ -181,19 +224,96 @@ func _process(delta: float) -> void:
 			_hover_fired = true
 			hover_open.emit(_hover_id)
 	if is_instance_valid(_preview) and _preview.visible:
-		_place()
+		_animate(delta)
 	if not is_instance_valid(_preview) and (_hover_id.is_empty() or _hover_fired):
 		set_process(false)
+
+
+## Локальный выключатель движения (Lane A зовёт через has_method).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+	if _reduced():
+		_tilt = 0.0
+		_flinch_left = 0.0
+		_pop_t = 1.0
+		_rot_pop_t = 1.0
+		if is_instance_valid(_preview):
+			_pos = _target_pos()
+	_apply_transform()
+
+
+## Короткий отказ: превью дёргается по X, не меняя реальную позицию drag.
+func flinch() -> void:
+	if _reduced():
+		return
+	_flinch_left = FLINCH_DUR
+	if is_instance_valid(_preview):
+		set_process(true)
+
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
+
+
+func _mouse_pos() -> Vector2:
+	var vp := get_viewport()
+	return vp.get_mouse_position() if vp != null else Vector2.ZERO
+
+
+## Куда превью стремится: под курсором, с прежним смещением.
+func _target_pos() -> Vector2:
+	if not is_instance_valid(_preview):
+		return _pos
+	return _mouse_pos() - _preview.custom_minimum_size * 0.5 + PREVIEW_OFFSET
+
+
+func _animate(delta: float) -> void:
+	if not is_instance_valid(_preview):
+		return
+	var target := _target_pos()
+	if _reduced():
+		_pos = target
+		_tilt = 0.0
+		_pop_t = 1.0
+		_rot_pop_t = 1.0
+		_flinch_left = 0.0
+	else:
+		_pos = _pos.lerp(target, UiMotion.k(delta, SMOOTH_TAU))
+		var mouse := _mouse_pos()
+		if delta > 0.0001:
+			var vel := (mouse - _mouse_prev) / delta
+			var want := clampf(vel.x / TILT_MAX_SPEED, -1.0, 1.0) * UiMotion.DRAG_TILT
+			_tilt = lerpf(_tilt, want, UiMotion.k(delta, TILT_TAU))
+		_mouse_prev = mouse
+		_pop_t = minf(1.0, _pop_t + delta / POP_DUR)
+		_rot_pop_t = minf(1.0, _rot_pop_t + delta / POP_DUR)
+		_flinch_left = maxf(0.0, _flinch_left - delta)
+	_apply_transform()
+
+
+func _apply_transform() -> void:
+	if not is_instance_valid(_preview):
+		return
+	_preview.pivot_offset = _preview.custom_minimum_size * 0.5
+	var pop := sin(PI * _pop_t)
+	var rpop := sin(PI * _rot_pop_t)
+	var s := 1.0 + (POP_SCALE - 1.0) * pop + (POP_SCALE - 1.0) * rpop
+	_preview.scale = Vector2(s, s)
+	_preview.rotation = _tilt if not _reduced() else 0.0
+	var off := Vector2.ZERO
+	if _flinch_left > 0.0 and not _reduced():
+		var p := _flinch_left / FLINCH_DUR
+		off.x = sin(p * PI * 3.0) * FLINCH_PX * p
+	_preview.position = _pos + off
 
 
 func _place() -> void:
 	if not is_instance_valid(_preview):
 		return
-	var vp := get_viewport()
-	if vp == null:
-		return
-	_preview.position = vp.get_mouse_position() - _preview.custom_minimum_size * 0.5 \
-		+ PREVIEW_OFFSET
+	if _placing:
+		_pos = _target_pos()
+		_placing = false
+	_apply_transform()
 
 
 func _normalize(value: String) -> String:

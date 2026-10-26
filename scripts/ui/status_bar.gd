@@ -12,6 +12,13 @@ var _floats: Array[Control] = []
 var _buffer_hint: Control = null
 var _channel_hint: Control = null
 
+## «ЖАРА»: пульс подчёркивания SLA и линия CRIT. Раскладку не меняет.
+var _stress_heat := 0.0
+var _stress_level := 0
+var _stress_time := 0.0
+var _reduced := false
+var _last_sla_share := -1.0
+
 const PAD := 14.0
 
 
@@ -30,6 +37,44 @@ func _ready() -> void:
 	_channel_hint = _make_hint("ChannelHint", "channel")
 	resized.connect(_layout_hint)
 	call_deferred("_layout_hint")
+	set_process(false)
+
+
+func set_stress(heat: float, level: int) -> void:
+	var next_level := clampi(level, 0, 3)
+	var sla_share := snappedf(_sla_fill(), 0.01)
+	var changed := next_level != _stress_level \
+		or not is_equal_approx(sla_share, _last_sla_share)
+	_stress_heat = clampf(heat, 0.0, 1.0)
+	_stress_level = next_level
+	_last_sla_share = sla_share
+	var active := _sla_fill() < 0.4 or _stress_level >= 3
+	if not active:
+		_stress_time = 0.0
+	set_process(active and not _reduced)
+	# Пульс сам перерисовывается в _process; здесь — только на смену состояния.
+	if changed:
+		queue_redraw()
+
+
+func set_reduced(value: bool) -> void:
+	_reduced = bool(value)
+	if _reduced:
+		_stress_time = 0.0
+	set_process((_sla_fill() < 0.4 or _stress_level >= 3) and not _reduced)
+	queue_redraw()
+
+
+func _sla_fill() -> float:
+	for s in segments:
+		if str(s.get("key", "")) == "sla":
+			return float(s.get("fill", 1.0))
+	return 1.0
+
+
+func _process(delta: float) -> void:
+	_stress_time += delta
+	queue_redraw()
 
 
 func _make_hint(node_name: String, key: String) -> Control:
@@ -157,6 +202,25 @@ func _draw() -> void:
 			var bar := Rect2(r.position.x + PAD, size.y - 16.0, maxf(4.0, r.size.x - PAD * 2.0), 4.0)
 			Theme90.draw_meter(self, bar, ratio, _gauge_color(s), Theme90.PAPER_LO)
 
+	# «ЖАРА»: подчёркивание SLA при <40% и линия CRIT поверх полосы.
+	var sla_idx := -1
+	for i in segments.size():
+		if str(segments[i].get("key", "")) == "sla":
+			sla_idx = i
+			break
+	var sla_fill := _sla_fill()
+	if sla_idx >= 0 and (sla_fill < 0.4 or _stress_level >= 3):
+		var alpha := 0.7
+		if not _reduced:
+			var period := 1.0 if sla_fill < 0.2 else 1.2
+			alpha = 0.55 + 0.45 * (0.5 + 0.5 * sin(TAU * _stress_time / period))
+		var sr: Rect2 = rects[sla_idx]
+		draw_rect(Rect2(sr.position.x + PAD, size.y - 9.0,
+			maxf(4.0, sr.size.x - PAD * 2.0), 1.0),
+			Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, alpha))
+	if _stress_level >= 3:
+		draw_rect(Rect2(0, 0, size.x, 1), Theme90.ERROR)
+
 
 func _draw_help_badge(f: Font, r: Rect2, label: String) -> void:
 	var lw := f.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, Theme90.FS_MICRO).x
@@ -230,9 +294,13 @@ func set_metric(key: String, value: String, fill: float = -1.0,
 		danger: bool = false) -> void:
 	for s in segments:
 		if str(s["key"]) == key:
+			var new_fill := float(s.get("fill", 0.0)) if fill < 0.0 else fill
+			if str(s["value"]) == value \
+					and is_equal_approx(float(s.get("fill", 0.0)), new_fill) \
+					and bool(s.get("danger", false)) == danger:
+				return
 			s["value"] = value
-			if fill >= 0.0:
-				s["fill"] = fill
+			s["fill"] = new_fill
 			s["danger"] = danger
 			if key == "buffer" and _buffer_hint != null:
 				_buffer_hint.tooltip_text = _buffer_tooltip()

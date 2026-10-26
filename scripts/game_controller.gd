@@ -83,7 +83,7 @@ func new_run(seed: int = 0) -> void:
 
 func continue_run() -> bool:
 	_bind()
-	if game == null or not has_save():
+	if game == null or not can_continue():
 		return false
 	if not bool(game.load_game()):
 		return false
@@ -99,6 +99,11 @@ func continue_run() -> bool:
 
 func has_save() -> bool:
 	return SAVE_SCRIPT.has_save()
+
+
+## «Продолжить» доступно только для незавершённого забега.
+func can_continue() -> bool:
+	return SAVE_SCRIPT.can_continue()
 
 
 func _enter_prep() -> void:
@@ -281,6 +286,7 @@ func hour_data() -> Dictionary:
 	var status := {
 		"tcp_used": 0,
 		"tcp_max": 0,
+		"udp_chance": 0.0,
 		"channel": 0.0,
 		"channel_factor": 1.0,
 		"channel_percent": 0.0,
@@ -312,6 +318,12 @@ func hour_data() -> Dictionary:
 		req_entry["required_count"] = int(hour_director.request_required_count(str(id)))
 		req_entry["missing"] = maxi(0, int(req_entry["required_count"]) - request.attached.size())
 		req_entry["queued"] = bool(hour_director.is_request_queued(str(id)))
+		# UDP: шанс успеха и остаток кулдауна повтора (для карточки/статуса).
+		var is_udp := str(request.protocol) == "udp"
+		req_entry["udp_chance"] = hour_director.udp_success_chance() if is_udp else 0.0
+		req_entry["udp_retry_left"] = maxf(0.0,
+			float(request.udp_retry_until) - float(hour_director.hour_elapsed)) if is_udp else 0.0
+		req_entry["connection_id"] = str(request.connection_id)
 		requests.append(req_entry)
 
 	var used := 0
@@ -320,7 +332,20 @@ func hour_data() -> Dictionary:
 		used = int(hour_director.slots.used_count())
 		max_slots = int(hour_director.slots.max_slots())
 		for slot in hour_director.slots.slots:
-			slots_data.append(slot.to_dict())
+			var entry: Dictionary = slot.to_dict()
+			entry["kind"] = str(slot.kind)
+			entry["detail"] = str(slot.detail)
+			entry["can_disconnect"] = bool(slot.can_disconnect)
+			entry["entity_name"] = str(slot.entity_name)
+			if str(slot.kind) == "tcp_connection":
+				# Данные запроса в слот не попадают: только статус передачи.
+				var linked = hour_director.active_requests.get(str(slot.linked_request_id))
+				entry["sending"] = linked != null and bool(linked.sending)
+				var progress := 0.0
+				if linked != null and bool(linked.sending) and float(linked.send_duration) > 0.0:
+					progress = clampf(float(linked.send_progress) / float(linked.send_duration), 0.0, 1.0)
+				entry["progress"] = progress
+			slots_data.append(entry)
 
 	var channel_load := float(hour_director.channel_load())
 	var capacity := float(ECONOMY.channel_capacity(game.upgrades if game != null else {}))
@@ -328,9 +353,22 @@ func hour_data() -> Dictionary:
 	if capacity > 0.0:
 		percent = channel_load / capacity * 100.0
 
+	var sending_count := 0
+	for request in hour_director.active_requests.values():
+		if request != null and bool(request.sending):
+			sending_count += 1
+	var attacks_active := 0
+	var attacks_tier := 0
+	if hour_director.attack_director != null:
+		if hour_director.attack_director.has_method("active_count"):
+			attacks_active = int(hour_director.attack_director.active_count())
+		if hour_director.attack_director.has_method("current_tier"):
+			attacks_tier = int(hour_director.attack_director.current_tier())
+
 	status = {
 		"tcp_used": used,
 		"tcp_max": max_slots,
+		"udp_chance": float(hour_director.udp_success_chance()),
 		"channel": channel_load,
 		"channel_factor": float(hour_director.channel_factor()),
 		"channel_percent": percent,
@@ -340,6 +378,13 @@ func hour_data() -> Dictionary:
 		"money": int(game.money) if game != null else 0,
 		"hour": int(game.hour) if game != null else int(hour_director.hour),
 		"time_left": float(hour_director.time_left),
+		"hour_total": float(hour_director.hour_seconds()),
+		"requests_active": int(hour_director.active_requests.size()),
+		"request_limit": int(hour_director.active_request_limit),
+		"attacks_active": attacks_active,
+		"attacks_tier": attacks_tier,
+		"sending_count": sending_count,
+		"queued_count": int(hour_director.send_queue_count()),
 	}
 	return {"packets": packets, "requests": requests, "slots": slots_data, "status": status}
 
@@ -445,6 +490,9 @@ func _finish_run(reason: String) -> void:
 	_bind()
 	if game == null:
 		return
+	# Кончился забег посреди часа (SLA=0): останавливаем тик/модалки до смены фазы.
+	if hour_director != null and hour_director.has_method("stop_for_run_end"):
+		hour_director.stop_for_run_end()
 	phase = PHASE_RUN_RESULT
 	paused = false
 	modal_open = false

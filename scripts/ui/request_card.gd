@@ -4,9 +4,10 @@ extends Control
 ##
 ## Сетка 2×2 обязательных файлов (конкретные REQUIRED-id из main), счётчик
 ## «ПРИКРЕПЛЕНО X/Y», прогноз мини-игры (Economy.send_minigame_for по типам
-## обязательных файлов) и явные кнопки СОЕДИНИТЬСЯ/ОТПРАВИТЬ, ОТКРЕПИТЬ,
-## ОТКЛОНИТЬ. Наведение на чип показывает полное имя файла и папку, где он
-## лежит, в подсказке и строке внутри карточки. Атак/фишинга в карточке нет.
+## обязательных файлов) и нижний ряд: ОТПРАВИТЬ, ОТКЛОНИТЬ и (только TCP)
+## ПОДКЛЮЧИТЬСЯ. Открепление — двойным кликом по чипу. Наведение на чип
+## показывает полное имя файла и папку, где он лежит, в подсказке и строке
+## внутри карточки. Атак/фишинга в карточке нет.
 
 signal send_pressed(id: String)
 signal protocol_toggle_requested(id: String)
@@ -30,13 +31,26 @@ const SLOT_H := 26.0
 const PROTO_RECT := Rect2(178, 6, 44, 16)
 ## Полоса полного имени при наведении на чип: правый верх, над счётчиком.
 const HOVER_STRIP := Rect2(196, 17, 196, 13)
-## Если имя и папка не влезают в одну строку — полоса выше на 9 px, папка
+## Если имя и папка не влезают в одну строку — полоса выше на 11 px, папка
 ## идёт второй мелкой строкой. Счётчик «ПРИКРЕПЛЕНО» в этот момент не рисуем:
 ## на его месте оказывается вторая строка полосы.
-const HOVER_STRIP_TALL := 22.0
-const HOVER_FOLDER_SIZE := 7
-## Пояснение к исчезновению файлов после отправки (§2.8).
-const SEND_HINT := "После успешной отправки файлы списываются."
+const HOVER_STRIP_TALL := 24.0
+const HOVER_FOLDER_SIZE := 9
+## Пояснение к судьбе файлов после отправки (§2.8).
+const SEND_HINT := "После отправки файлы остаются в папке."
+
+# --- Motion (Lane B) -------------------------------------------------------
+## Тайминги: вход, готовность, ошибка, вспышка чипа, шкала таймера, пульс.
+const ENTER_DUR := 0.18
+const ENTER_SCALE_FROM := 0.97
+const HOVER_DUR := 0.10
+const READY_POP_DUR := 0.14
+const READY_PULSE_DUR := 0.30
+const ATTACH_FLASH_DUR := 0.22
+const ERROR_SHAKE_DUR := 0.16
+const ERROR_BORDER_DUR := 0.22
+const METER_TAU := 0.15
+const ALERT_PULSE := 0.9
 
 ## Имена игр — только запасной вариант, если Data.minigame_def недоступен.
 const FALLBACK_NAMES := {
@@ -63,6 +77,13 @@ var minigame_active := false
 ## TCP-соединение: идёт мини-игра соединения / соединение уже установлено.
 var connecting := false
 var connected := false
+## TCP: id активного соединения ("" — соединения нет). Источник правды для
+## блокировки чипа протокола и кнопки ПОДКЛЮЧИТЬСЯ.
+var connection_id := ""
+## UDP: шанс успешной отправки (0.0 — backend не прислал, показываем базу 40%).
+var udp_chance := 0.0
+## UDP: остаток кулдауна повтора после потери пакета, секунды.
+var udp_retry_left := 0.0
 ## Готовность контейнера (HourDirector.is_request_ready): файлы собраны.
 var send_ready := false
 var send_sum := 0
@@ -72,15 +93,30 @@ var minigame_tier := 0
 var hovered := false:
 	set(v):
 		hovered = v
+		set_process(true)
 		queue_redraw()
 
 var _send_btn: Button90
-var _detach_btn: Button90
+var _connect_btn: Button90
 var _reject_btn: Button90
 var _blink := 0.0
 var _blink_on := true
 var _hover_slot := -1
 var _drop_slot := -1
+
+var _hover_amt := 0.0
+var _enter_elapsed := ENTER_DUR
+var _enter_delay := 0.0
+var _ready_clock := -1.0
+var _err_shake := 0.0
+var _err_flash := 0.0
+var _attach_clock := -1.0
+var _attach_slot := -1
+var _meter := 0.0
+var _meter_ready := false
+var _pulse := 0.0
+var _motion_on := true
+var _prev_attached: Array = []
 
 
 func _ready() -> void:
@@ -99,16 +135,22 @@ func _ready() -> void:
 	_send_btn.pressed.connect(func() -> void:
 		if can_send():
 			send_pressed.emit(id))
-	_detach_btn = _make_button("ОТКРЕПИТЬ", Vector2(104, 104), Vector2(86, 18), false)
-	_detach_btn.pressed.connect(func() -> void:
-		var index := _last_attached_index()
-		if index >= 0:
-			detach_pressed.emit(id, index))
-	_reject_btn = _make_button("ОТКЛОНИТЬ", Vector2(194, 104), Vector2(90, 18), false)
+	_reject_btn = _make_button("ОТКЛОНИТЬ", Vector2(104, 104), Vector2(90, 18), false)
 	_reject_btn.danger = true
 	_reject_btn.pressed.connect(func() -> void: reject_pressed.emit(id))
+	# TCP: отдельная кнопка установки соединения (справа снизу). Для UDP скрыта.
+	# 100×18 при 10 px: «ПОДКЛЮЧИТЬСЯ» = 82 px, остаются поля по 9 px.
+	_connect_btn = _make_button("ПОДКЛЮЧИТЬСЯ", Vector2(292, 104), Vector2(100, 18), true)
+	_connect_btn.caption_size = 10
+	_connect_btn.tooltip_text = "Установить TCP-соединение и занять слот"
+	_connect_btn.pressed.connect(func() -> void:
+		if not _connect_disabled():
+			connect_pressed.emit(id))
 	set_process(true)
 	_update_buttons()
+	# Авто-вход: main карточку вставляет и сразу раскладывает — к первому
+	# клику (≥0.2 c) карточка уже в нейтрали.
+	enter(0)
 
 
 func _make_button(caption: String, pos: Vector2, sz: Vector2, accent: bool) -> Button90:
@@ -123,13 +165,130 @@ func _make_button(caption: String, pos: Vector2, sz: Vector2, accent: bool) -> B
 	return b
 
 
-## Совместимые первые 16 аргументов v2 + TCP-состояние.
+# --- motion (Lane B) -------------------------------------------------------
+
+## Появление карточки: alpha + scale, stagger по индексу (до 0.09 c).
+## main может не звать — _ready запускает вход сам.
+func enter(index: int = 0) -> void:
+	_enter_delay = 0.0 if _reduced() else minf(float(maxi(index, 0)) * UiMotion.STAGGER,
+		UiMotion.STAGGER_MAX)
+	if _reduced():
+		_enter_elapsed = ENTER_DUR
+		modulate.a = 1.0
+		scale = Vector2.ONE
+		return
+	_enter_elapsed = 0.0
+	modulate.a = 0.0
+	_apply_enter()
+	set_process(true)
+
+
+## Файлы собраны: pop рамки/бейджей и мягкий пульс 0.30 c.
+func flash_ready() -> void:
+	_ready_clock = 0.0
+	set_process(true)
+	queue_redraw()
+
+
+## Отказ: draw-only тряска ±SHAKE и красная рамка.
+func flash_error() -> void:
+	_err_flash = ERROR_BORDER_DUR
+	_err_shake = 0.0 if _reduced() else ERROR_SHAKE_DUR
+	set_process(true)
+	queue_redraw()
+
+
+## Прикрепили файл в чип: короткая вспышка рамки чипа (0.22 c).
+func flash_attach(index: int = -1) -> void:
+	_attach_slot = index
+	_attach_clock = 0.0
+	set_process(true)
+	queue_redraw()
+
+
+## Внешний переключатель движения (Lane A / настройки).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+	if _reduced():
+		_hover_amt = 1.0 if hovered else 0.0
+		_enter_delay = 0.0
+		_enter_elapsed = ENTER_DUR
+		modulate.a = 1.0
+		scale = Vector2.ONE
+		_err_shake = 0.0
+		_pulse = 0.0
+	queue_redraw()
+
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
+
+
+func _enter_progress() -> float:
+	return clampf(_enter_elapsed / ENTER_DUR, 0.0, 1.0)
+
+
+func _apply_enter() -> void:
+	var p := _enter_progress()
+	pivot_offset = size * 0.5
+	var s := lerpf(ENTER_SCALE_FROM, 1.0, p)
+	scale = Vector2(s, s)
+	modulate.a = p
+
+
+## 0..1 pop рамки готовности (короткий, 0.14 c).
+func _ready_pop() -> float:
+	if _ready_clock < 0.0 or _ready_clock > READY_POP_DUR:
+		return 0.0
+	return sin(PI * _ready_clock / READY_POP_DUR)
+
+
+## Draw-only тряска: position карточки и кнопок не меняется.
+func _shake_offset() -> Vector2:
+	if _err_shake <= 0.0:
+		return Vector2.ZERO
+	var p := 1.0 - _err_shake / ERROR_SHAKE_DUR
+	return Vector2(sin(p * PI * 3.0) * UiMotion.SHAKE * (1.0 - p), 0.0)
+
+
+## Прозрачность шкалы/цифр при <20 % времени: мягкий пульс 0.9 c.
+func _alert_alpha() -> float:
+	if _reduced() or time_total <= 0.0 or ratio() >= 0.2:
+		return 1.0
+	return 0.72 + 0.28 * (0.5 + 0.5 * sin(_pulse / ALERT_PULSE * TAU))
+
+
+func _meter_target() -> float:
+	return clampf(progress if sending else ratio(), 0.0, 1.0)
+
+
+## Прикрепили слот между setup()-ами — вспышка без участия main.
+func _sync_attach_flash() -> void:
+	var cur: Array = []
+	for i in mini(required_count, slots.size()):
+		cur.append(_slot_attached(i))
+	if not _prev_attached.is_empty() and _prev_attached.size() == cur.size():
+		for i in cur.size():
+			if bool(cur[i]) and not bool(_prev_attached[i]):
+				flash_attach(i)
+	_prev_attached = cur
+
+
+func _draw_hover() -> float:
+	if _reduced():
+		return 1.0 if hovered else 0.0
+	return _hover_amt
+
+
+## Совместимые первые 16 аргументов v2 + TCP/UDP-состояние.
 func setup(p_id: String, p_client: String, p_client_id: String, p_proto: String,
 		p_slots: Array, p_left: float, p_total: float, p_progress: float = 0.0,
 		p_required: int = 0, p_queued: bool = false, p_sending: bool = false,
 		p_send_sum: int = 0, p_minigame_id: String = "", p_minigame_tier: int = 0,
 		p_minigame_active: bool = false, p_ready: bool = false,
-		p_connecting: bool = false, p_connected: bool = false) -> void:
+		p_connecting: bool = false, p_connected: bool = false,
+		p_connection_id: String = "", p_udp_chance: float = 0.0,
+		p_udp_retry_left: float = 0.0) -> void:
 	id = p_id
 	client_name = p_client
 	client_id = p_client_id
@@ -152,6 +311,9 @@ func setup(p_id: String, p_client: String, p_client_id: String, p_proto: String,
 	minigame_active = p_minigame_active
 	connecting = p_connecting
 	connected = p_connected
+	connection_id = str(p_connection_id)
+	udp_chance = clampf(float(p_udp_chance), 0.0, 1.0)
+	udp_retry_left = maxf(0.0, float(p_udp_retry_left))
 	send_ready = p_ready
 	send_sum = int(p_send_sum)
 	minigame_id = str(p_minigame_id)
@@ -165,35 +327,74 @@ func setup(p_id: String, p_client: String, p_client_id: String, p_proto: String,
 	if size == Vector2.ZERO:
 		size = CARD
 	_update_buttons()
+	_sync_attach_flash()
+	if not _meter_ready:
+		_meter = _meter_target()
+		_meter_ready = true
+	set_process(true)
 	queue_redraw()
 
 
 func _update_buttons() -> void:
 	if _send_btn != null:
-		var caption := _send_caption()
-		if _send_btn.caption != caption:
-			_send_btn.caption = caption
-		_send_btn.disabled = not can_send()
-		if can_send():
-			_send_btn.tooltip_text = ("Провести соединение, затем отправить" \
-				if protocol == "TCP" and not connected else "Отправить контейнер") \
-				+ "\n" + SEND_HINT
-		else:
-			_send_btn.tooltip_text = _send_disabled_reason() + "\n" + SEND_HINT
-	if _detach_btn != null:
-		_detach_btn.disabled = attached_count() <= 0 or sending or minigame_active \
-			or queued or connecting
+		if _send_btn.caption != "ОТПРАВИТЬ":
+			_send_btn.caption = "ОТПРАВИТЬ"
+		var can_press := can_send()
+		_send_btn.disabled = not can_press
+		_send_btn.accent = can_press
+		_send_btn.tooltip_text = _send_tooltip() + "\n" + SEND_HINT
+	if _connect_btn != null:
+		var is_tcp := protocol == "TCP"
+		_connect_btn.visible = is_tcp
+		if is_tcp:
+			var caption := "ПОДКЛЮЧИТЬСЯ"
+			if connecting:
+				caption = "СОЕДИНЕНИЕ…"
+			elif _has_connection():
+				caption = "ПОДКЛЮЧЕНО"
+			if _connect_btn.caption != caption:
+				_connect_btn.caption = caption
+			var blocked := _connect_disabled()
+			_connect_btn.disabled = blocked
+			_connect_btn.accent = not blocked
+			_connect_btn.tooltip_text = _connect_tooltip()
 	if _reject_btn != null:
-		_reject_btn.disabled = sending
+		_reject_btn.disabled = sending or minigame_active or connecting
 
 
-## Текст главной кнопки: TCP без соединения сначала соединяется.
-func _send_caption() -> String:
+## Есть живое TCP-соединение: флага connected мало, connection_id — источник правды.
+func _has_connection() -> bool:
+	return connected or not connection_id.is_empty()
+
+
+## TCP ещё не подключён: чипы и счётчик показываем «ждущими».
+func _tcp_waiting() -> bool:
+	return protocol == "TCP" and not _has_connection()
+
+
+## ПОДКЛЮЧИТЬСЯ заблокирована, пока идёт соединение/отправка или связь уже есть.
+func _connect_disabled() -> bool:
+	return connecting or _has_connection() or sending or queued or minigame_active
+
+
+func _send_tooltip() -> String:
+	if not can_send():
+		return _send_disabled_reason()
+	if _tcp_waiting():
+		return "Сначала подключитесь — затем отправка"
+	if attached_count() < required_count:
+		return "Не хватает файлов: %d из %d" % [attached_count(), required_count]
+	return "Отправить контейнер"
+
+
+func _connect_tooltip() -> String:
+	if _has_connection():
+		return "Соединение установлено"
 	if connecting:
-		return "СОЕДИНЕНИЕ…"
-	if protocol == "TCP" and not connected:
-		return "СОЕДИНИТЬСЯ"
-	return "ОТПРАВИТЬ"
+		return "Идёт установка соединения…"
+	if sending or queued or minigame_active:
+		return _send_disabled_reason()
+	return "Установить TCP-соединение и занять слот"
 
 
 func ratio() -> float:
@@ -218,15 +419,15 @@ func _lost_count() -> int:
 	return n
 
 
-## Все обязательные файлы прикреплены и нет блокирующего состояния.
-## TCP-соединение проверяет backend: кнопка остаётся доступной, чтобы
-## игрок мог нажать её и пройти мини-игру соединения.
+## Кнопка ОТПРАВИТЬ доступна всегда, когда запрос вообще может уходить:
+## есть обязательные файлы и нет блокирующего состояния. Нехватка файлов
+## кнопку не блокирует — backend (start_send) покажет короткий тост.
 func can_send() -> bool:
 	if required_count <= 0:
 		return false
 	if connecting or sending or queued or minigame_active:
 		return false
-	return attached_count() >= required_count
+	return true
 
 
 func send_disabled() -> bool:
@@ -264,14 +465,15 @@ func prediction() -> Dictionary:
 			var t := str((data as Dictionary).get("type", ""))
 			if not t.is_empty():
 				types.append(t)
-	var pick: Dictionary = ECONOMY.selection_for_sum(send_sum) if send_sum > 0 \
+	var pick: Dictionary = ECONOMY.selection_for_sum(send_sum) \
+		if minigame_active and send_sum > 0 \
 		else ECONOMY.send_minigame_for(types)
 	var game := str(pick.get("id", "dots"))
 	# В карточке только игры ОТПРАВКИ: у них три ступени (атаки не показываем).
 	var tier := clampi(int(pick.get("tier", 1)), 1, 3)
 	var sum := int(pick.get("sum", 0))
-	if not minigame_id.is_empty():
-		# Мини-игра уже активна: показываем выбор директора, не пересчитываем.
+	if minigame_active and not minigame_id.is_empty():
+		# Мини-игра активна: показываем выбор директора, не пересчитываем.
 		game = minigame_id
 		if minigame_tier > 0:
 			tier = clampi(minigame_tier, 1, 3)
@@ -288,7 +490,7 @@ func prediction() -> Dictionary:
 
 func minigame_text() -> String:
 	var p := prediction()
-	if int(p.get("sum", 0)) <= 0 and minigame_id.is_empty():
+	if int(p.get("sum", 0)) <= 0:
 		return "МИНИ-ИГРА: —"
 	return "МИНИ-ИГРА: %s · T%d" % [str(p.get("name", "")),
 		clampi(int(p.get("tier", 1)), 1, 3)]
@@ -311,11 +513,82 @@ func _game_name(game_id: String) -> String:
 
 
 func _process(delta: float) -> void:
-	_blink += delta
-	var on := int(_blink * 2.0) % 2 == 0
-	if on != _blink_on:
-		_blink_on = on
+	var busy := _animate(delta)
+	var low := time_total > 0.0 and ratio() < 0.2
+	var need_blink := required_count <= 0 or attached_count() < required_count
+	if need_blink:
+		_blink += delta
+		var on := int(_blink * 2.0) % 2 == 0
+		if on != _blink_on:
+			_blink_on = on
+			queue_redraw()
+			busy = true
+	elif not _blink_on:
+		_blink_on = true
 		queue_redraw()
+	if low and not _reduced():
+		_pulse = fmod(_pulse + delta, ALERT_PULSE)
+		queue_redraw()
+		busy = true
+	if not busy:
+		set_process(false)
+
+
+## Все плавные состояния. Возвращает true, если нужен ещё кадр.
+func _animate(delta: float) -> bool:
+	var changed := false
+	var hov := 1.0 if hovered else 0.0
+	if _reduced():
+		if not is_equal_approx(_hover_amt, hov):
+			_hover_amt = hov
+			changed = true
+	elif not is_equal_approx(_hover_amt, hov):
+		_hover_amt = move_toward(_hover_amt, hov, delta / HOVER_DUR)
+		changed = true
+
+	if _enter_delay > 0.0:
+		_enter_delay = maxf(0.0, _enter_delay - delta)
+		changed = true
+	elif _enter_elapsed < ENTER_DUR:
+		_enter_elapsed = minf(ENTER_DUR, _enter_elapsed + delta)
+		_apply_enter()
+		changed = true
+
+	if _ready_clock >= 0.0:
+		_ready_clock += delta
+		if _ready_clock >= READY_PULSE_DUR:
+			_ready_clock = -1.0
+		changed = true
+
+	if _err_shake > 0.0:
+		_err_shake = maxf(0.0, _err_shake - delta)
+		changed = true
+	if _err_flash > 0.0:
+		_err_flash = maxf(0.0, _err_flash - delta)
+		changed = true
+
+	if _attach_clock >= 0.0:
+		_attach_clock += delta
+		if _attach_clock >= ATTACH_FLASH_DUR:
+			_attach_clock = -1.0
+		changed = true
+
+	var mt := _meter_target()
+	if not _meter_ready:
+		_meter = mt
+		_meter_ready = true
+	elif not is_equal_approx(_meter, mt):
+		if _reduced():
+			_meter = mt
+		else:
+			_meter = lerpf(_meter, mt, UiMotion.k(delta, METER_TAU))
+			if absf(_meter - mt) < 0.002:
+				_meter = mt
+		changed = true
+
+	if changed:
+		queue_redraw()
+	return changed
 
 
 # --- слоты -----------------------------------------------------------------
@@ -403,22 +676,13 @@ func _slot_rect(i: int) -> Rect2:
 		SLOT_Y + floorf(float(i) / 2.0) * SLOT_STEP_Y, SLOT_W, SLOT_H)
 
 
-## Кегль имени в чипе: 10 px; 9 — только если это позволяет показать имя
-## целиком. Длинное имя остаётся 10 px одной строкой с многоточием (полное
-## имя показывает полоса наведения).
-func _chip_name_size(f: Font, name_text: String, width: float) -> int:
-	if f.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x <= width:
-		return 10
-	if f.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x <= width:
-		return 9
-	return 10
-
-
-## Кегль подписи типа/статуса: 8 px, если влезает, иначе прежние 7.
+## Кегль подписи типа/статуса. 9 px — максимум для чипа 86×26: при 10 px
+## (height 13) вторая строка уже вылезает за нижнюю границу. 8 px — только
+## аварийный запас для нестандартной длинной подписи.
 func _chip_sub_size(f: Font, text: String, width: float) -> int:
-	if f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 8).x <= width:
-		return 8
-	return 7
+	if f.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x <= width:
+		return 9
+	return 8
 
 
 func _slot_at(pos: Vector2) -> int:
@@ -437,27 +701,25 @@ func _first_empty() -> int:
 	return -1
 
 
-func _last_attached_index() -> int:
-	for i in range(mini(required_count, slots.size()) - 1, -1, -1):
-		if _slot_attached(i):
-			return i
-	return -1
-
-
 # --- отрисовка -------------------------------------------------------------
 
 func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
-	var bg := Theme90.WHITE if hovered else Theme90.PAPER_HI
-	var border := Theme90.ACCENT_LIGHT if hovered else Theme90.BORDER
-	draw_style_box(Theme90.box(bg, border, 4, 1,
-		Color(0, 0, 0, 0.11) if hovered else Theme90.SHADOW), r)
+	var hov := _draw_hover()
+	var off := _shake_offset()
+	if off.x != 0.0:
+		draw_set_transform(off, 0.0, Vector2.ONE)
+	var bg := Theme90.PAPER_HI.lerp(Theme90.WHITE, hov)
+	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
+	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.11), hov)
+	draw_style_box(Theme90.box(bg, border, 4, 1, shadow), r)
 
 	_draw_avatar(Rect2(8, 6, 20, 20))
 
 	Theme90.text(self, f, Vector2(32, 4), Theme90.fit(f, client_name, 12, 140), 12,
 		Theme90.INK, 140)
+	# 9 px у client_id — предел: при 10 px (height 13) строка задевает чипы (y=30).
 	Theme90.text(self, f, Vector2(32, 18), Theme90.fit(f, client_id, 9, 140), 9,
 		Theme90.SHADE, 140)
 
@@ -476,16 +738,37 @@ func _draw() -> void:
 	if _hover_slot >= 0:
 		_draw_hover_strip(f, tall_strip)
 
-	if hovered and _drop_slot < 0:
-		draw_style_box(Theme90.box(Color(0, 0, 0, 0), Theme90.ACCENT_LIGHT, 4, 1),
-			r.grow(-1.0))
+	if hov > 0.02 and _drop_slot < 0:
+		draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+			Color(Theme90.ACCENT_LIGHT.r, Theme90.ACCENT_LIGHT.g, Theme90.ACCENT_LIGHT.b,
+				hov)), r.grow(-1.0))
 	if _drop_slot >= 0:
 		Theme90.draw_dashed_box(self, Rect2(2, 2, size.x - 4, size.y - 4),
 			Theme90.ACCENT, 4.0, 1.2)
 
+	# Готовность: pop рамки 0.14 c, затем мягкий пульс до 0.30 c.
+	if _ready_clock >= 0.0:
+		var pulse := clampf(1.0 - _ready_clock / READY_PULSE_DUR, 0.0, 1.0)
+		var a := maxf(_ready_pop() * 0.70, pulse * 0.30)
+		if a > 0.01:
+			draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+				Color(Theme90.SUCCESS.r, Theme90.SUCCESS.g, Theme90.SUCCESS.b, a), 4, 2),
+				r.grow(-2.0))
+
+	# Отказ: красная рамка гаснет 0.22 c (позиция карточки не меняется).
+	if _err_flash > 0.0:
+		var ea := clampf(_err_flash / ERROR_BORDER_DUR, 0.0, 1.0) * 0.85
+		draw_style_box(Theme90.box(
+			Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.05 * ea),
+			Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, ea), 4, 2),
+			r.grow(-1.0))
+
+	if off.x != 0.0:
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
 
 func _draw_protocol_chip(f: Font) -> void:
-	var locked := connected
+	var locked := _has_connection()
 	var pcol := Theme90.SHADE if locked else (Theme90.NAVY if protocol == "TCP" else Theme90.WARN)
 	draw_style_box(Theme90.box(Color(pcol.r, pcol.g, pcol.b, 0.13),
 		Color(pcol.r, pcol.g, pcol.b, 0.45), 3, 1), PROTO_RECT)
@@ -523,12 +806,16 @@ func _draw_timer(f: Font) -> void:
 		label = "СОСТОЯНИЕ"
 		value = "МИНИ-ИГРА"
 		col = Theme90.ACCENT
-	Theme90.text(self, f, Vector2(232, 4), label, 9, Theme90.SHADE)
+	Theme90.text(self, f, Vector2(232, 4), label, 10, Theme90.SHADE)
+	var pulse := _alert_alpha()
+	var vcol := col
+	vcol.a *= pulse
 	var vw := f.get_string_size(value, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-	Theme90.text(self, f, Vector2(392 - vw, 3), value, 10, col)
-	var fill := progress if sending else ratio()
-	Theme90.draw_meter(self, Rect2(232, 19, 152, 4), fill,
-		Theme90.ACCENT if sending else col)
+	Theme90.text(self, f, Vector2(392 - vw, 3), value, 10, vcol)
+	var fill := _meter if _meter_ready else (progress if sending else ratio())
+	var mcol := Theme90.ACCENT if sending else col
+	mcol.a *= pulse
+	Theme90.draw_meter(self, Rect2(232, 19, 152, 4), fill, mcol)
 
 
 func _draw_counter(f: Font) -> void:
@@ -537,6 +824,9 @@ func _draw_counter(f: Font) -> void:
 	var col := Theme90.SUCCESS if cap > 0 and have >= cap else Theme90.DARK
 	if _lost_count() > 0:
 		col = Theme90.ERROR
+	elif _tcp_waiting():
+		# TCP без соединения: файлы прикрепить нельзя, счётчик «ждёт» связь.
+		col = Theme90.SHADE
 	Theme90.text(self, f, Vector2(196, 32), "ПРИКРЕПЛЕНО %d/%d" % [have, cap], 11,
 		col, 196)
 
@@ -545,7 +835,7 @@ func _draw_prediction(f: Font) -> void:
 	var p := prediction()
 	Theme90.text(self, f, Vector2(196, 50), Theme90.fit(f, minigame_text(), 10, 196), 10,
 		Theme90.NAVY, 196)
-	Theme90.text(self, f, Vector2(196, 64), "СУММА: %d" % int(p.get("sum", 0)), 9,
+	Theme90.text(self, f, Vector2(196, 64), "СУММА: %d" % int(p.get("sum", 0)), 10,
 		Theme90.DARK, 196)
 
 	var hint := ""
@@ -564,21 +854,33 @@ func _draw_prediction(f: Font) -> void:
 	elif _lost_count() > 0:
 		hint = "ПОТЕРЯН ФАЙЛ"
 		hcol = Theme90.ERROR
-	elif _blink_on and attached_count() < required_count:
-		hint = "НУЖНО ФАЙЛОВ: %d" % maxi(0, required_count - attached_count())
-	elif protocol == "TCP" and not connected:
+	elif _tcp_waiting():
+		# Без соединения файлы не прикрепить — это главный следующий шаг.
 		hint = "СНАЧАЛА СОЕДИНЕНИЕ"
 		hcol = Theme90.SHADE
+	elif protocol == "UDP" and udp_retry_left > 0.0:
+		hint = "ПОТЕРЯ ПАКЕТА · ПОВТОР %d с" % maxi(1, int(ceilf(udp_retry_left)))
+		hcol = Theme90.WARN
+	elif _blink_on and attached_count() < required_count:
+		hint = "НУЖНО ФАЙЛОВ: %d" % maxi(0, required_count - attached_count())
+	elif _has_connection():
+		hint = "СОЕДИНЕНИЕ УСТАНОВЛЕНО"
+		hcol = Theme90.SUCCESS
+	elif protocol == "UDP":
+		var chance := udp_chance if udp_chance > 0.0 else 0.4
+		hint = "UDP · ШАНС %d%%" % int(roundf(chance * 100.0))
+		hcol = Theme90.NAVY
 	if not hint.is_empty():
-		Theme90.text(self, f, Vector2(196, 76), Theme90.fit(f, hint, 9, 196), 9, hcol, 196)
+		Theme90.text(self, f, Vector2(196, 78), Theme90.fit(f, hint, 10, 196), 10, hcol, 196)
 
 
-## Кегль имени в полосе: длинные имена уменьшаем на 1 px, чтобы показать целиком.
+## Кегль имени в полосе: 10 px; 9 — только для очень длинного имени, чтобы
+## показать его целиком (полный текст всё равно есть в tooltip).
 func _hover_text_size(f: Font, name_text: String) -> int:
 	var inner := HOVER_STRIP.size.x - 10.0
-	if f.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x > inner:
-		return 8
-	return 9
+	if f.get_string_size(name_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x > inner:
+		return 9
+	return 10
 
 
 ## Влезают ли имя и папка в одну строку полосы при текущем кегле.
@@ -625,8 +927,8 @@ func _draw_hover_strip(f: Font, tall: bool) -> void:
 	Theme90.text_vcenter(self, f, name_rect,
 		Theme90.fit(f, name_text, text_size, inner), text_size, Theme90.INK,
 		inner, HORIZONTAL_ALIGNMENT_LEFT, 5.0)
-	var folder_rect := Rect2(strip.position + Vector2(0, 12),
-		Vector2(strip.size.x, HOVER_STRIP_TALL - 12.0))
+	var folder_rect := Rect2(strip.position + Vector2(0, 13),
+		Vector2(strip.size.x, HOVER_STRIP_TALL - 13.0))
 	Theme90.text_vcenter(self, f, folder_rect,
 		Theme90.fit(f, "папка: " + folder, HOVER_FOLDER_SIZE, inner),
 		HOVER_FOLDER_SIZE, Theme90.SHADE, inner, HORIZONTAL_ALIGNMENT_LEFT, 5.0)
@@ -683,8 +985,14 @@ func _draw_slot(i: int, f: Font) -> void:
 		draw_style_box(Theme90.box(fill, border, 3, 1), cell)
 	else:
 		# Ждём файл: приглушённая заливка и пунктир в цвете типа.
+		# TCP без соединения — серый пунктир: файл пока прикрепить нельзя.
+		var waiting := _tcp_waiting()
 		fill = Theme90.PAPER
-		border = Theme90.ACCENT_LIGHT if hov else Color(col.r, col.g, col.b, 0.62)
+		if waiting:
+			border = Theme90.ACCENT_LIGHT if hov else \
+				Color(Theme90.SHADE.r, Theme90.SHADE.g, Theme90.SHADE.b, 0.5)
+		else:
+			border = Theme90.ACCENT_LIGHT if hov else Color(col.r, col.g, col.b, 0.62)
 		draw_style_box(Theme90.box(fill, Color(0, 0, 0, 0), 3, 0), cell)
 		Theme90.draw_dashed_box(self, cell, border, 3.0, 1.0)
 	# Иконка файла слева; если текстуры нет — прежняя цветная полоса типа.
@@ -700,20 +1008,35 @@ func _draw_slot(i: int, f: Font) -> void:
 	if attached:
 		name_w -= 8.0
 	var full_name := _display_name(data)
-	var name_size := _chip_name_size(f, full_name, name_w)
+	# Имя в чипе всегда 10 px: 9 px на Kechusilka «сереет». Полное имя дают
+	# полоса наведения и tooltip, длинное — многоточие.
+	var name_size := 10
 	var nm := Theme90.fit(f, full_name, name_size, name_w)
 	Theme90.text(self, f, Vector2(cell.position.x + text_x, cell.position.y + 2), nm,
 		name_size, Theme90.INK, name_w)
 	var sub := FileCard.type_title(t)
 	var sub_col := Theme90.SHADE
 	if not attached:
-		sub = "ЖДЁМ"
-		sub_col = Theme90.WARN
+		if _tcp_waiting():
+			# 9 px: «НЕТ СВЯЗИ» = 49 px, влезает в 58; «ЖДЁМ СВЯЗЬ» (63) — нет.
+			sub = "НЕТ СВЯЗИ"
+			sub_col = Theme90.SHADE
+		else:
+			sub = "ЖДЁМ"
+			sub_col = Theme90.WARN
 	var sub_w := SLOT_W - text_x - 4.0
-	Theme90.text(self, f, Vector2(cell.position.x + text_x, cell.position.y + 15), sub,
+	Theme90.text(self, f, Vector2(cell.position.x + text_x, cell.position.y + 14), sub,
 		_chip_sub_size(f, sub, sub_w), sub_col, sub_w)
 	if attached:
-		Theme90.draw_check_badge(self, Vector2(cell.end.x - 7, cell.position.y + 7), 4.5)
+		var badge_r := 4.5 + 0.9 * _ready_pop()
+		Theme90.draw_check_badge(self, Vector2(cell.end.x - 7, cell.position.y + 7), badge_r)
+	if _attach_clock >= 0.0 and _attach_slot == i:
+		var fa := clampf(1.0 - _attach_clock / ATTACH_FLASH_DUR, 0.0, 1.0)
+		if fa > 0.01:
+			draw_style_box(Theme90.box(
+				Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.12 * fa),
+				Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.9 * fa), 3, 2),
+				cell.grow(-1.0))
 	if _drop_slot == i:
 		Theme90.draw_dashed_box(self, cell.grow(1), Theme90.ACCENT, 2.5, 1.4)
 
@@ -726,8 +1049,8 @@ func _draw_missing_slot(cell: Rect2, i: int, f: Font) -> void:
 	draw_rect(Rect2(cell.position.x + 1, cell.position.y + 4, 3, cell.size.y - 8),
 		Theme90.ERROR)
 	Theme90.text(self, f, Vector2(cell.position.x + 8, cell.position.y + 2), "ПОТЕРЯН",
-		_chip_name_size(f, "ПОТЕРЯН", SLOT_W - 14.0), Theme90.ERROR, SLOT_W - 14.0)
-	Theme90.text(self, f, Vector2(cell.position.x + 8, cell.position.y + 15), "НЕТ ФАЙЛА",
+		10, Theme90.ERROR, SLOT_W - 14.0)
+	Theme90.text(self, f, Vector2(cell.position.x + 8, cell.position.y + 14), "НЕТ ФАЙЛА",
 		_chip_sub_size(f, "НЕТ ФАЙЛА", SLOT_W - 14.0),
 		Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.8), SLOT_W - 14.0)
 	if _drop_slot == i:
@@ -742,7 +1065,7 @@ func _draw_empty_slot(cell: Rect2, i: int) -> void:
 		12, Theme90.SHADE)
 	if _blink_on:
 		Theme90.text(self, f, Vector2(cell.position.x + 16, cell.position.y + 7),
-			"ожидается", 9, Theme90.WARN, SLOT_W - 18.0)
+			"ожидается", 10, Theme90.WARN, SLOT_W - 18.0)
 	if _drop_slot == i:
 		Theme90.draw_dashed_box(self, cell.grow(1), Theme90.ACCENT, 2.5, 1.4)
 
@@ -777,7 +1100,7 @@ func _gui_input(event: InputEvent) -> void:
 	elif event is InputEventMouseButton and event.pressed \
 			and event.button_index == MOUSE_BUTTON_LEFT:
 		if PROTO_RECT.has_point(event.position):
-			if not connected and not connecting:
+			if not _has_connection() and not connecting:
 				protocol_toggle_requested.emit(id)
 			accept_event()
 			return
@@ -797,6 +1120,11 @@ func _can_drop_data(at_position: Vector2, data: Variant) -> bool:
 		return false
 	# Файл со стола сортировки в запрос прикреплять нельзя (§4.7).
 	if str(data.get("from", "")) == "table":
+		return false
+	# TCP без соединения файлы не принимает: drop не подсвечиваем.
+	if _tcp_waiting():
+		_drop_slot = -1
+		queue_redraw()
 		return false
 	var i := _slot_at(at_position)
 	if i < 0:

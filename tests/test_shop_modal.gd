@@ -8,11 +8,12 @@ const MODAL := preload("res://scripts/ui/shop_modal.gd")
 
 const IDS := [
 	"lot_slots", "lot_speed", "lot_sla", "lot_shield",
-	"lot_money", "lot_folder", "lot_channel", "lot_timer",
+	"lot_money", "lot_folder", "lot_channel", "lot_timer", "lot_udp",
 ]
 const MAX_LEVELS := {
 	"lot_slots": 4, "lot_speed": 6, "lot_sla": 4, "lot_shield": 3,
 	"lot_money": 8, "lot_folder": 5, "lot_channel": 6, "lot_timer": 5,
+	"lot_udp": 4,
 }
 
 var _checks := 0
@@ -43,6 +44,7 @@ func _init() -> void:
 	_test_layout_and_texts()
 	_test_maxed_card()
 	_test_unaffordable_card()
+	_test_udp_card()
 	_test_reroll_costs()
 	_test_all_bought()
 	_test_lock_persists()
@@ -133,6 +135,38 @@ func _test_unaffordable_card() -> void:
 			"card %d: НЕ ХВАТАЕТ" % i)
 		_ok(not bool(info.get("affordable", true)), "card %d: not affordable" % i)
 	_ok(_modal._buy_buttons[0].disabled, "не хватает — кнопка disabled")
+
+
+func _test_udp_card() -> void:
+	_set_case("udp_card")
+	var shop = _reset(2, 1000)
+	_set_offers(["lot_udp", "lot_slots", "lot_money"])
+	_modal.open_prep(shop, 1000, 2)
+	var infos: Array = _modal.card_infos()
+	_eq(infos.size(), 3, "udp-кейс: 3 карточки")
+	var info: Dictionary = infos[0]
+	_eq(str(info.get("id", "")), "lot_udp", "первая карточка — lot_udp")
+	_eq(str(info.get("effect", "")), "udp_success", "effect = udp_success")
+	_eq(str(info.get("now_text", "")), "40%", "UDP сейчас 40%")
+	_eq(str(info.get("after_text", "")), "50%", "UDP после покупки 50%")
+	_ok(str(info.get("button_text", "")).contains("60"), "кнопка показывает цену 60")
+	# Покупка через UI обновляет карточку: 50% → 60%.
+	var bought: Array = []
+	var buy_handler := func(id: String) -> void:
+		bought.append(id)
+		shop.buy(id)
+		_modal.refresh()
+	_modal.buy_requested.connect(buy_handler)
+	_modal._on_buy_pressed(0)
+	_eq(bought.size(), 1, "buy_requested эмитится с id")
+	if not bought.is_empty():
+		_eq(str(bought[0]), "lot_udp", "id покупки = lot_udp")
+	_ok(shop.level("lot_udp") >= 1, "покупка через карточку")
+	infos = _modal.card_infos()
+	if not infos.is_empty():
+		_eq(str(infos[0].get("now_text", "")), "50%", "после покупки сейчас 50%")
+		_eq(str(infos[0].get("after_text", "")), "60%", "следующий уровень 60%")
+	_modal.buy_requested.disconnect(buy_handler)
 
 
 func _test_reroll_costs() -> void:

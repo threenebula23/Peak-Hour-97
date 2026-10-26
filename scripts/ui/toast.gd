@@ -16,13 +16,28 @@ const TOP := 44.0
 const ENTER_Y := -40.0
 ## Центр холста 1280 px.
 const LEFT := (1280.0 - W) * 0.5
+## Тайминги (Lane B): вход, перестановка, выход.
+const ENTER_DUR := 0.20
+const RELAYOUT_DUR := 0.16
+const EXIT_DUR := 0.18
+const LIFE_DUR := 3.0
 
 var _items: Array[Control] = []
+var _motion_on := true
 
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+
+
+## Внешний переключатель движения (Lane A / настройки).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
 
 
 func toast(text: String, kind: String = "info") -> void:
@@ -41,12 +56,18 @@ func toast(text: String, kind: String = "info") -> void:
 	add_child(item)
 	_items.append(item)
 	var target := _target_pos(_items.size() - 1)
-	var tw := create_tween().set_parallel(true)
-	tw.tween_property(item, "position", target, 0.24).set_trans(Tween.TRANS_QUAD).set_ease(Tween.EASE_OUT)
-	tw.tween_property(item, "modulate:a", 1.0, 0.16)
+	if _reduced():
+		# Без движения: тост сразу на месте и полностью виден.
+		item.position = target
+		item.modulate.a = 1.0
+	else:
+		var tw := create_tween().set_parallel(true)
+		tw.tween_property(item, "position", target, ENTER_DUR) \
+			.set_trans(UiMotion.EASE_OUT_POS_TRANS).set_ease(UiMotion.EASE_OUT_POS_EASE)
+		tw.tween_property(item, "modulate:a", 1.0, ENTER_DUR)
 	var life := create_tween()
-	life.tween_interval(3.0)
-	life.tween_property(item, "modulate:a", 0.0, 0.45)
+	life.tween_interval(LIFE_DUR)
+	life.tween_property(item, "modulate:a", 0.0, EXIT_DUR)
 	life.tween_callback(func() -> void:
 		if not is_instance_valid(item):
 			# Тост уже удалён извне — не трогаем освобождённый узел.
@@ -88,8 +109,12 @@ func _relayout() -> void:
 		var item := _items[i]
 		if not is_instance_valid(item):
 			continue
+		if _reduced():
+			item.position = _target_pos(i)
+			continue
 		var tw := create_tween()
-		tw.tween_property(item, "position", _target_pos(i), 0.18)
+		tw.tween_property(item, "position", _target_pos(i), RELAYOUT_DUR) \
+			.set_trans(UiMotion.EASE_OUT_POS_TRANS).set_ease(UiMotion.EASE_OUT_POS_EASE)
 
 
 class ToastItem:

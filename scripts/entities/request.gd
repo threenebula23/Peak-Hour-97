@@ -18,6 +18,9 @@ var timer_total: float = 0.0
 
 var slot_reserved: bool = false
 var connected: bool = false
+## TCP: id активного TcpConnection ("" — соединения нет). Файлы нельзя
+## прикреплять, пока connection_id пуст.
+var connection_id: String = ""
 ## TCP: идёт мини-игра установления соединения (полоска). Таймер заморожен.
 var connecting: bool = false
 ## TCP: сколько раз игрок пытался установить соединение в этом часе.
@@ -26,6 +29,10 @@ var connect_attempts: int = 0
 var connect_cooldown_until: float = 0.0
 var minigame_active: bool = false
 var sending: bool = false
+
+## UDP: число потерь пакета за час и момент, до которого повтор запрещён.
+var udp_failures: int = 0
+var udp_retry_until: float = 0.0
 
 var quality: float = 1.0
 var send_progress: float = 0.0
@@ -49,9 +56,14 @@ var minigame_tier: int = 0
 func is_ready() -> bool:
 	if missing_count() > 0:
 		return false
-	if protocol.to_lower() == "tcp" and not connected:
+	if protocol.to_lower() == "tcp" and not has_connection():
 		return false
 	return true
+
+
+## Есть ли реальное TCP-соединение (одного флага connected мало).
+func has_connection() -> bool:
+	return not connection_id.is_empty()
 
 
 func missing_count() -> int:
@@ -97,11 +109,14 @@ func to_dict() -> Dictionary:
 		"timer_total": timer_total,
 		"slot_reserved": slot_reserved,
 		"connected": connected,
+		"connection_id": connection_id,
 		"connecting": connecting,
 		"connect_attempts": connect_attempts,
 		"connect_cooldown_until": connect_cooldown_until,
 		"minigame_active": minigame_active,
 		"sending": sending,
+		"udp_failures": udp_failures,
+		"udp_retry_until": udp_retry_until,
 		"quality": quality,
 		"send_progress": send_progress,
 		"is_attack": is_attack,
@@ -129,11 +144,14 @@ static func from_dict(d: Dictionary):
 	r.timer_total = float(d.get("timer_total", 0.0))
 	r.slot_reserved = bool(d.get("slot_reserved", false))
 	r.connected = bool(d.get("connected", false))
+	r.connection_id = str(d.get("connection_id", ""))
 	r.connecting = bool(d.get("connecting", false))
 	r.connect_attempts = maxi(0, int(d.get("connect_attempts", 0)))
 	r.connect_cooldown_until = maxf(0.0, float(d.get("connect_cooldown_until", 0.0)))
 	r.minigame_active = bool(d.get("minigame_active", false))
 	r.sending = bool(d.get("sending", false))
+	r.udp_failures = maxi(0, int(d.get("udp_failures", 0)))
+	r.udp_retry_until = maxf(0.0, float(d.get("udp_retry_until", 0.0)))
 	r.quality = clampf(float(d.get("quality", 1.0)), 0.0, 1.0)
 	r.send_progress = float(d.get("send_progress", 0.0))
 	r.is_attack = bool(d.get("is_attack", false))

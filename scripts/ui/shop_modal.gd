@@ -458,6 +458,16 @@ func _effect_values(item: Dictionary, level: int) -> Dictionary:
 		"request_timer":
 			var now_timer := int(game.request_timer()) if game != null else 30 + 7 * level
 			return {"now": "%d с" % now_timer, "after": "%d с" % (now_timer + maxi(1, int(value)))}
+		"udp_success":
+			# Надёжность UDP: база 40%, шаг из лота (0.10) = 10%, кап 80%.
+			var base_pct := 40
+			var cap_pct := 80
+			var step_pct := clampi(int(round(value * 100.0)), 1, 20)
+			var now_pct := mini(cap_pct, base_pct + step_pct * maxi(0, level))
+			if game != null and game.has_method("udp_success_chance"):
+				now_pct = int(round(float(game.udp_success_chance()) * 100.0))
+			return {"now": "%d%%" % now_pct,
+				"after": "%d%%" % mini(cap_pct, now_pct + step_pct)}
 	return {"now": "—", "after": "—"}
 
 
@@ -791,6 +801,8 @@ func _effect_color(effect: String) -> Color:
 			return Theme90.WARN
 		"money_mult":
 			return Theme90.ERROR
+		"udp_success":
+			return Theme90.WARN
 	return Theme90.ACCENT
 
 
@@ -812,6 +824,8 @@ func _effect_fallback_desc(effect: String) -> String:
 			return "Канал +6 и буфер приёма +1 за уровень."
 		"request_timer":
 			return "Больше времени на поиск файлов и прикрепление."
+		"udp_success":
+			return "Надёжность UDP +10% за уровень: 40% → 80%."
 	return "Улучшение рабочего места."
 
 

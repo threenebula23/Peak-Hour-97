@@ -135,8 +135,8 @@ func _draw() -> void:
 	draw_rect(Rect2(band.position.x + 12, band.position.y + 1, 80, 2),
 		Theme90.ACCENT if won else Theme90.ERROR)
 
-	Theme90.text(self, Theme90.logo(), band.position + Vector2(16, 9),
-		"ПОБЕДА" if won else "ПОРАЖЕНИЕ", 24,
+	Theme90.text(self, Theme90.display(), band.position + Vector2(16, 9),
+		"ПОБЕДА" if won else "ПОРАЖЕНИЕ", 34,
 		Theme90.NAVY if won else Theme90.ERROR)
 	var reason := str(_data.get("reason", ""))
 	if reason.is_empty():

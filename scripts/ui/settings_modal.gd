@@ -18,7 +18,7 @@ const TITLE_H := 20.0
 const DIM := Color(0.0, 0.0, 0.0, 0.35)
 
 const DEFAULT_STATE := {"sfx": 70, "music": 55, "calm_bg": true, "fullscreen": false,
-	"vhs": true}
+	"vhs": true, "reduce_motion": false}
 
 
 ## Ползунок 90-х: утопленный жёлоб с насечками и объёмный бегунок 9×14.
@@ -105,6 +105,7 @@ var _music: Slider90
 var _calm: Check90
 var _full: Check90
 var _vhs: Check90
+var _reduce: Check90
 var _btn_cancel: Button90
 var _btn_apply: Button90
 var _btn_reset: Button90
@@ -161,6 +162,7 @@ func _apply_state(state: Dictionary) -> void:
 	_state["calm_bg"] = bool(src.get("calm_bg", true))
 	_state["fullscreen"] = bool(src.get("fullscreen", false))
 	_state["vhs"] = bool(src.get("vhs", true))
+	_state["reduce_motion"] = bool(src.get("reduce_motion", false))
 	if _sfx != null:
 		_sfx.set_value(int(_state["sfx"]), false)
 	if _music != null:
@@ -168,6 +170,7 @@ func _apply_state(state: Dictionary) -> void:
 	_set_check(_calm, bool(_state["calm_bg"]))
 	_set_check(_full, bool(_state["fullscreen"]))
 	_set_check(_vhs, bool(_state["vhs"]))
+	_set_check(_reduce, bool(_state["reduce_motion"]))
 	queue_redraw()
 
 
@@ -226,6 +229,14 @@ func _build() -> void:
 	_vhs.checked = true
 	_vhs.toggled.connect(_on_vhs)
 
+	_reduce = Check90.new()
+	_reduce.caption = _tr("ui.reduce_motion", "Снизить эффекты")
+	_reduce.caption_size = Theme90.FS_BODY
+	add_child(_reduce)
+	_reduce.button_pressed = false
+	_reduce.checked = false
+	_reduce.toggled.connect(_on_reduce)
+
 	_btn_reset = Button90.new()
 	_btn_reset.caption = "Сброс"
 	add_child(_btn_reset)
@@ -272,7 +283,10 @@ func _layout() -> void:
 		_full.size = Vector2(400, 16)
 	if _vhs != null:
 		_vhs.position = r.position + Vector2(28, 224)
-		_vhs.size = Vector2(400, 16)
+		_vhs.size = Vector2(240, 16)
+	if _reduce != null:
+		_reduce.position = r.position + Vector2(280, 224)
+		_reduce.size = Vector2(240, 16)
 	if _btn_reset != null:
 		_btn_reset.position = r.position + Vector2(264, 278)
 		_btn_reset.size = Vector2(70, 24)
@@ -308,6 +322,11 @@ func _on_full(on: bool) -> void:
 
 func _on_vhs(on: bool) -> void:
 	_state["vhs"] = on
+	queue_redraw()
+
+
+func _on_reduce(on: bool) -> void:
+	_state["reduce_motion"] = on
 	queue_redraw()
 
 func _on_reset() -> void:

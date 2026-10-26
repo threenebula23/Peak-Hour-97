@@ -478,8 +478,8 @@ func _draw_result_overlay() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.08, 0.10, 0.10, 0.58))
 	var panel := _result_panel_rect()
 	_draw_modal_panel(panel)
-	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 10.0),
-		"РЕЗУЛЬТАТ", 13, Theme90.NAVY_DEEP, panel.size.x,
+	Theme90.text(self, Theme90.display(), Vector2(panel.position.x, panel.position.y + 10.0),
+		"РЕЗУЛЬТАТ", 18, Theme90.NAVY_DEEP, panel.size.x,
 		HORIZONTAL_ALIGNMENT_CENTER)
 	Theme90.text(self, Theme90.ui(), Vector2(panel.position.x, panel.position.y + 30.0),
 		Theme90.fit(Theme90.ui(), title(), 12, panel.size.x - 36.0), 12, Theme90.NAVY,

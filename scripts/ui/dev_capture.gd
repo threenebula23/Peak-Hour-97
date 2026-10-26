@@ -28,6 +28,9 @@ extends SceneTree
 ##   --seed=N          сид мини-игры (по умолчанию 12345)
 ##   --shop            свернуть офферы для часа 2 и открыть ShopModal
 ##   --tutorial        запустить забег и показать маскота-туториал
+##   --sla=N           выставить SLA (dev, для скриншотов «ЖАРЫ»)
+##   --stress=STATE    calm|warm|hot|critical|attack — force_heat оверлея
+##   --reduce          включить «Снизить эффекты» (UiMotion.reduced)
 ##   --menu            контекстное меню 90-х (как раньше)
 ##   --filemenu        выпадающее меню «ФАЙЛ» (как раньше)
 ##   --toast           два демо-тоста (как раньше)
@@ -80,6 +83,10 @@ var _tutorial := false
 var _drag: Array[Vector2] = []
 var _hold := false
 var _raw_coords := false
+## «ЖАРА»: dev-флаги для скриншотов нагрева.
+var _sla := -1.0
+var _stress := ""
+var _reduce := false
 
 ## Снимок делается только после того, как сцена и запрошенные экраны готовы.
 var _setup_done := false
@@ -154,6 +161,12 @@ func _initialize() -> void:
 			_hold = true
 		elif a == "--raw-coords":
 			_raw_coords = true
+		elif a.begins_with("--sla="):
+			_sla = float(a.substr(6))
+		elif a.begins_with("--stress="):
+			_stress = a.substr(9).strip_edges().to_lower()
+		elif a == "--reduce":
+			_reduce = true
 		elif a == "--help" or a == "-h":
 			_print_help()
 			quit(0)
@@ -164,6 +177,9 @@ func _initialize() -> void:
 		return
 	if _hold and _drag.is_empty():
 		_fail("--hold имеет смысл только вместе с --drag")
+		return
+	if not _stress.is_empty() and not ["calm", "warm", "hot", "critical", "attack"].has(_stress):
+		_fail("--stress: неизвестное состояние '%s'" % _stress)
 		return
 	if _probe:
 		root.add_child(Probe.new())
@@ -239,6 +255,13 @@ func _after_ready() -> void:
 		if not _show_minigame():
 			return
 		await _frames(6)
+
+	# «ЖАРА»: dev-флаги нагрева/SLA/reduce — последними, чтобы кадр был стабилен.
+	if _sla >= 0.0 or _reduce or not _stress.is_empty():
+		if not _apply_stress_flags():
+			return
+		# Даём термометру довести display-ease (tau 0.25) до заданного heat.
+		await create_timer(1.5).timeout
 
 	# Прежние сценарии меню/тостов/файлового меню.
 	if _filemenu and _main != null:
@@ -378,6 +401,53 @@ func _seed_demo_files() -> bool:
 		registry.call("create_file", file_name, str(pair[1]), folder_id)
 	if _main.has_method("_refresh_prep"):
 		_main.call("_refresh_prep")
+	return true
+
+
+## «ЖАРА»: --sla=N, --stress=..., --reduce — только для dev-скриншотов.
+func _apply_stress_flags() -> bool:
+	var game_node := root.get_node_or_null("Game")
+	if _sla >= 0.0:
+		if game_node == null:
+			_fail("--sla: автолоад Game недоступен")
+			return false
+		var cap := 60.0
+		if game_node.has_method("sla_cap"):
+			cap = float(game_node.call("sla_cap"))
+		game_node.set("sla", clampf(_sla, 0.0, maxf(1.0, cap)))
+		if _main != null and _main.has_method("_refresh_hour"):
+			_main.call("_refresh_hour")
+	if _reduce:
+		if _main == null or not _main.has_method("_apply_settings"):
+			_fail("--reduce: Main._apply_settings() недоступен")
+			return false
+		_main.call("_apply_settings", {"reduce_motion": true}, false)
+	if _stress.is_empty():
+		return true
+	var overlay = _main.get("stress_overlay") if _main != null else null
+	if overlay == null or not overlay.has_method("force_heat"):
+		_fail("Main.stress_overlay.force_heat() недоступен")
+		return false
+	var heat := 0.0
+	match _stress:
+		"calm":
+			heat = 0.08
+		"warm":
+			heat = 0.46
+		"hot":
+			heat = 0.70
+		"critical":
+			heat = 0.92
+		"attack":
+			heat = 0.88
+		_:
+			_fail("--stress: неизвестное состояние '%s'" % _stress)
+			return false
+	overlay.call("force_heat", heat)
+	if _stress == "attack" and overlay.has_method("notify"):
+		overlay.call("notify", "attack_start")
+	if _main != null and _main.has_method("_sync_stress_ui"):
+		_main.call("_sync_stress_ui")
 	return true
 
 
@@ -589,6 +659,7 @@ func _print_help() -> void:
 	print("  --run --hour --seconds=N --spawn=packet,request")
 	print("  --minigame=ID --tier=N --seed=N --shop --tutorial")
 	print("  --folder=ID --hover=x,y --press=x,y --drag=x1,y1,x2,y2 --hold")
+	print("  --sla=N --stress=calm|warm|hot|critical|attack --reduce")
 	print("  --menu --filemenu --toast --probe --out=PATH --wait=N")
 	print("  Координаты указателя — логические 1280x720; --raw-coords для пикселей окна.")
 	print("  Мини-игры: ", ", ".join(SEND_GAMES + ATTACK_GAMES))

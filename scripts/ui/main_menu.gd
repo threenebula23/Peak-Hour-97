@@ -47,11 +47,16 @@ func _ready() -> void:
 	queue_redraw()
 
 
-func set_has_save(value: bool) -> void:
+func set_has_save(value: bool, hint: String = "") -> void:
 	has_save = value
 	if _btn_continue != null:
 		_btn_continue.disabled = not has_save
-		_btn_continue.tooltip_text = "" if has_save else "Сохранение не найдено"
+		if has_save:
+			_btn_continue.tooltip_text = ""
+		elif hint.is_empty():
+			_btn_continue.tooltip_text = "Сохранение не найдено"
+		else:
+			_btn_continue.tooltip_text = hint
 	queue_redraw()
 
 
@@ -206,8 +211,8 @@ func _draw_hero_text(w: Rect2) -> void:
 
 	Theme90.text(self, f, Vector2(x, w.position.y + 42),
 		"ДИСПЕТЧЕР ФАЙЛОВОГО ОБМЕНА · 1997", 10, Theme90.ACCENT)
-	Theme90.text(self, Theme90.logo(), Vector2(x - 2, w.position.y + 62),
-		"PEAK HOUR 97", 32, Theme90.NAVY)
+	Theme90.text(self, Theme90.display(), Vector2(x - 2, w.position.y + 62),
+		"PEAK HOUR 97", 46, Theme90.NAVY)
 
 	var sub := _tr("ui.subtitle", "Час пик. Одна смена. Ни одного свободного места.")
 	var lines := Theme90.wrap(f, sub, 16, 520, 2)
@@ -248,8 +253,11 @@ func _draw_actions_surface(w: Rect2) -> void:
 	var panel := _panel_rect(w)
 	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER_SOFT, 5, 1), panel)
 	# едва заметный водяной знак в нижней части панели
-	Theme90.text(self, Theme90.logo(), Vector2(panel.get_center().x - 44,
-		panel.end.y - 126), "97", 44, Color(Theme90.NAVY.r, Theme90.NAVY.g,
+	var wf := Theme90.display()
+	var wm := "97"
+	var ww := wf.get_string_size(wm, HORIZONTAL_ALIGNMENT_LEFT, -1, 62).x
+	Theme90.text(self, wf, Vector2(panel.get_center().x - ww * 0.5,
+		panel.end.y - 126), wm, 62, Color(Theme90.NAVY.r, Theme90.NAVY.g,
 		Theme90.NAVY.b, 0.055))
 
 	# вертикальная тонкая линия раздела колонок
