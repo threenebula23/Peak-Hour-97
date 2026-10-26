@@ -174,10 +174,24 @@ func _heal_file_placement(folder, file) -> void:
 		file.origin = origin
 		file.rotation = posmod(rot, 4)
 		file.shape_cells = cells
+	# Анти-фантом: убираем все клетки этого файла, которых нет в актуальном
+	# наборе, до штамповки новых (erase во время keys() — пропуски).
+	var new_cells: Dictionary = {}
+	for cell in cells:
+		new_cells[origin + _cell_of(cell)] = true
+	var stale: Array = []
+	for key in folder.cells.keys():
+		var pos := Vector2i(key)
+		if str(folder.cells[key]) == file_id and not new_cells.has(pos):
+			stale.append(pos)
+	for pos in stale:
+		folder.cells.erase(pos)
 	for cell in cells:
 		folder.cells[origin + _cell_of(cell)] = file_id
-	if not folder.file_ids.has(file_id):
-		folder.file_ids.append(file_id)
+	# file.id должен присутствовать в file_ids ровно один раз.
+	while folder.file_ids.has(file_id):
+		folder.file_ids.erase(file_id)
+	folder.file_ids.append(file_id)
 
 
 func _placement_is_valid(folder, cells: Array, origin: Vector2i, file_id: String) -> bool:

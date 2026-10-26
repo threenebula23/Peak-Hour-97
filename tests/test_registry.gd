@@ -42,6 +42,7 @@ func run(t) -> void:
 	_test_signals(t)
 	_test_attach_detach(t)
 	_test_move_between_folders(t)
+	_test_move_no_phantom(t)
 
 
 # --- setup ------------------------------------------------------------------
@@ -654,6 +655,66 @@ func _test_move_between_folders(t) -> void:
 	t.eq(str(file.folder_id), str(b.id), "folder_id = B")
 	t.eq(reg.validate().size(), 0,
 		"инварианты после move: %s" % str(reg.validate()))
+
+
+## Регрессия фантомных клеток: перенос multi-cell файла внутри папки и A→B
+## не должен оставлять старых клеток и дублей в file_ids.
+func _test_move_no_phantom(t) -> void:
+	t.set_case("move no phantom")
+	var reg = R.new()
+	reg.setup_new_run()
+	var a = reg.folders.get(_folder_id_at(reg, 0), null)
+	var b = reg.folders.get(_folder_id_at(reg, 1), null)
+	if a == null or b == null:
+		t.ok(false, "нужны две папки")
+		return
+	var file = reg.create_file("PhantomSound", "sound", a.id)
+	t.ok(file != null, "sound-файл создан в A")
+	if file == null:
+		return
+	var file_id := str(file.id)
+	var shape_size: int = (file.shape_cells as Array).size()
+	t.eq(shape_size, 2, "sound занимает 2 клетки")
+	var old_cells: Array = []
+	for cell in a.cells.keys():
+		if str(a.cells[cell]) == file_id:
+			old_cells.append(Vector2i(cell))
+	t.eq(old_cells.size(), shape_size, "все клетки файла в A")
+	# Дубль file_ids — heal/clear должны оставить ровно одно вхождение.
+	a.file_ids.append(file_id)
+	_grid_hits = 0
+	reg.grid_changed.connect(_on_grid_changed)
+	t.ok(reg.move_file(file_id, a.id, Vector2i(3, 2), 0), "move внутри A в (3,2)")
+	t.ok(_grid_hits >= 1, "grid_changed для A при внутреннем переносе")
+	var new_cells: Array = []
+	for cell in a.cells.keys():
+		if str(a.cells[cell]) == file_id:
+			new_cells.append(Vector2i(cell))
+	t.eq(new_cells.size(), shape_size, "ровно cells.size() клеток принадлежат файлу")
+	t.ok(new_cells.has(Vector2i(3, 2)), "новая клетка (3,2) у файла")
+	for cell in old_cells:
+		if new_cells.has(cell):
+			continue
+		t.eq(str(a.cells.get(cell, "")), "", "старая клетка %s пуста" % str(cell))
+	t.eq(a.file_ids.count(file_id), 1, "file.id в file_ids A ровно один раз")
+	t.eq(reg.file_count(), 1, "file_count = 1")
+	# A → B: в A не остаётся ни клеток, ни файла.
+	t.ok(reg.move_file(file_id, b.id, Vector2i(0, 0), 0), "move A→B")
+	var a_left := 0
+	for cell in a.cells.keys():
+		if str(a.cells[cell]) == file_id:
+			a_left += 1
+	t.eq(a_left, 0, "в A не осталось клеток файла")
+	t.eq(a.file_ids.count(file_id), 0, "в file_ids A нет файла")
+	t.eq(str(file.folder_id), str(b.id), "folder_id = B")
+	var b_cells := 0
+	for cell in b.cells.keys():
+		if str(b.cells[cell]) == file_id:
+			b_cells += 1
+	t.eq(b_cells, shape_size, "все клетки файла в B")
+	t.eq(b.file_ids.count(file_id), 1, "file.id в file_ids B ровно один раз")
+	t.eq(reg.file_count(), 1, "file_count всё ещё 1")
+	t.eq(reg.validate().size(), 0, "инварианты: %s" % str(reg.validate()))
 
 
 func _folder_owns_cell(folder, file_id: String) -> bool:

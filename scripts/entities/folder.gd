@@ -74,9 +74,14 @@ func set_cell(cell: Vector2i, owner_id: String) -> void:
 
 ## Служебный API: освободить клетки, принадлежащие owner_id.
 func clear_owner(owner_id: String) -> void:
+	# Не удаляем во время обхода keys(): иначе multi-cell фигура оставляет
+	# «фантомную» клетку в старой папке после переноса.
+	var to_erase: Array = []
 	for cell in cells.keys():
 		if str(cells[cell]) == owner_id:
-			cells.erase(cell)
+			to_erase.append(cell)
+	for cell in to_erase:
+		cells.erase(cell)
 
 
 func clear_cells() -> void:

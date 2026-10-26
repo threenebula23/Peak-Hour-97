@@ -42,6 +42,7 @@ func _init() -> void:
 		return
 	await _test_file_grid(registry, folder_id)
 	await _test_grid_self_heal(registry, folder_id)
+	await _test_grid_move_no_phantom(registry, folder_id)
 	await _test_grid_confirmed_reservation(registry)
 	await _test_rotation_preference()
 	await _test_ghost_rotation()
@@ -310,6 +311,56 @@ func _test_grid_self_heal(registry, folder_id: String) -> void:
 		"_cells_owner содержит восстановленный файл")
 	_eq(registry.validate().size(), 0,
 		"инварианты после self-heal: %s" % str(registry.validate()))
+	root.remove_child(grid)
+	grid.queue_free()
+
+
+## Регрессия фантома при переносе: refresh не показывает файл дважды, старые
+## клетки не остаются занятыми, file_ids без дублей.
+func _test_grid_move_no_phantom(registry, folder_id: String) -> void:
+	_set_case("FileGrid move no phantom")
+	var grid = FG.new()
+	grid.name = "TestMovePhantomGrid"
+	grid.size = Vector2(558, 470)
+	root.add_child(grid)
+	await process_frame
+	grid.set_folder(folder_id, "РАЗНОЕ", "C: \\ РАЗНОЕ")
+	await process_frame
+	var file = registry.create_file("Фантом 97", "sound", folder_id)
+	_ok(file != null, "sound-файл создан")
+	if file == null:
+		root.remove_child(grid)
+		grid.queue_free()
+		return
+	var folder = registry.get_folder(folder_id)
+	var old_cells: Array = []
+	for cell in folder.cells.keys():
+		if str(folder.cells[cell]) == str(file.id):
+			old_cells.append(Vector2i(cell))
+	# Дубль file_ids: heal обязан оставить одно вхождение.
+	folder.file_ids.append(str(file.id))
+	_ok(registry.move_file(str(file.id), folder_id, Vector2i(3, 2), 0),
+		"move внутри папки в (3,2)")
+	grid.refresh()
+	var seen := 0
+	for f in grid._files:
+		if str(f.id) == str(file.id):
+			seen += 1
+	_eq(seen, 1, "файл в _files ровно один раз")
+	_eq(grid._by_id.size(), grid._files.size(), "в _by_id нет фантомных записей")
+	_eq(folder.file_ids.count(str(file.id)), 1, "file.id один раз в file_ids")
+	var new_set := {}
+	for cell in registry.file_shape_cells(str(file.id)):
+		new_set[Vector2i(file.origin) + Vector2i(cell)] = true
+	_ok(new_set.has(Vector2i(3, 2)), "новая клетка (3,2) в наборе файла")
+	for cell in old_cells:
+		var owner := str(folder.cells.get(cell, ""))
+		if new_set.has(cell):
+			_eq(owner, str(file.id), "новая клетка принадлежит файлу")
+		else:
+			_eq(owner, "", "старая клетка %s пуста" % str(cell))
+	_eq(registry.validate().size(), 0,
+		"инварианты после переноса: %s" % str(registry.validate()))
 	root.remove_child(grid)
 	grid.queue_free()
 

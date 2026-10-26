@@ -1873,17 +1873,24 @@ func _clear_file_placement(file) -> void:
 	if not file.folder_id.is_empty():
 		var folder = folders.get(file.folder_id)
 		if folder != null:
-			folder.clear_owner(file.id)
-			folder.file_ids.erase(file.id)
+			folder.clear_owner(str(file.id))
+			# Убираем ВСЕ вхождения id (дубли могли накопиться старым кодом).
+			while folder.file_ids.has(str(file.id)):
+				folder.file_ids.erase(str(file.id))
 			# Старая папка тоже должна перерисоваться (перенос/расход файла).
 			grid_changed.emit(folder.id)
-	_clear_table_cells(file.id)
+	_clear_table_cells(str(file.id))
 
 
 func _clear_table_cells(file_id: String) -> void:
+	# Собираем ключи и удаляем после обхода (erase во время keys() пропускает
+	# часть клеток multi-cell фигуры).
+	var to_erase: Array = []
 	for cell in _table_cells.keys():
 		if str(_table_cells[cell]) == file_id:
-			_table_cells.erase(cell)
+			to_erase.append(cell)
+	for cell in to_erase:
+		_table_cells.erase(cell)
 
 
 func _release_reservation(packet_id: String, folder) -> void:
