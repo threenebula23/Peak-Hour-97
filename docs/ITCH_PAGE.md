@@ -107,7 +107,7 @@ FEIS Game Jam, 2026. Команда — 4 человека. Godot 4.7.2, GDScrip
 
 Код, тесты, баланс, документация и звук создавались с ИИ-ассистентами
 (OpenCode + субагенты). Идея, логлайн, исходная спецификация и финальная
-приёмка — человеком. Полный отчёт: [AI_REPORT.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/AI_REPORT.md).
+приёмка — человеком. Отчёт об использовании ИИ (150–500 слов): [AI_REPORT.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/AI_REPORT.md).
 
 ## Ассеты и лицензии
 
@@ -116,13 +116,13 @@ FEIS Game Jam, 2026. Команда — 4 человека. Godot 4.7.2, GDScrip
 (Denis A Serikov). UI, пиксельные иконки (`art/icons/`), маскот **БАЙТ** и
 icon.svg сделаны командой — MIT. SFX и hum.wav сгенерированы скриптом проекта
 — MIT/CC0. Код — MIT. Полный список и инструкции по воспроизведению:
-[ASSETS.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/ASSETS.md).
+[ASSETS.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/ASSETS.md).
 
 ## Ссылки
 
 - Репозиторий: https://git.194-146-38-78.sslip.io/admin/Game-JAM
-- GDD: https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/docs/GDD.md
-- Решения: https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/docs/DECISIONS.md
+- GDD: https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/docs/GDD.md
+- Решения: https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/docs/DECISIONS.md
 
 ## Скриншоты
 
