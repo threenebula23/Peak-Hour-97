@@ -10,6 +10,12 @@ extends SceneTree
 const HD := preload("res://scripts/core/hour_director.gd")
 const AD := preload("res://scripts/systems/attack_director.gd")
 const R := preload("res://scripts/core/file_registry.gd")
+const REQUEST_CARD := preload("res://scripts/ui/request_card.gd")
+
+
+## Заглушка мини-игры отправки: сигнал есть, но процесс не идёт.
+class StubSendGame extends Node:
+	signal finished(quality)
 
 var _checks: int = 0
 var _fails: int = 0
@@ -52,6 +58,7 @@ func _init() -> void:
 
 	_test_start_hour()
 	_test_budgets_and_weights()
+	_test_request_type_weights()
 	_test_spawn_window_budget()
 	_test_carry()
 	_test_receive()
@@ -76,6 +83,8 @@ func _init() -> void:
 	_test_tcp_model_edges()
 	_test_tcp_disconnect_cases()
 	_test_udp_model()
+	_test_spawn_request_protocol()
+	_test_low_quality_retry()
 	_test_lost_required()
 	_test_modal_guard()
 	_test_required_types_stable()
@@ -114,7 +123,7 @@ func _test_start_hour() -> void:
 	_approx(_hd._receive_interval(), 15.0, 0.0001, "спавн-интервал = 90 / 6 = 15")
 	_approx(_hd._send_interval(), 20.0, 0.0001, "send_interval H1 = 20")
 	_eq(_hd._max_requests(), 2, "max concurrent requests H1 = 2")
-	_eq(_hd._type_pool(), ["text", "sound"], "H1: только text/sound")
+	_eq(_hd._type_pool(), ["text"], "H1: только text")
 	_eq(_hd.active_packets.size(), 0, "активных пакетов нет")
 	# H1 bootstrap: 1 seed-файл + 1 запрос на него.
 	_eq(_hd.active_requests.size(), 1, "H1: стартовый запрос создан сразу")
@@ -155,11 +164,23 @@ func _test_budgets_and_weights() -> void:
 
 	_fresh(1)
 	var seen_h1: Dictionary = {}
-	for i in range(400):
+	for i in range(200):
 		var picked: String = str(_hd._pick_type())
 		seen_h1[picked] = true
-		_ok(picked == "text" or picked == "sound", "H1: вес photo/video = 0 (выбран %s)" % picked)
-	_ok(seen_h1.has("text") and seen_h1.has("sound"), "H1: встречаются text и sound")
+		_ok(picked == "text", "H1: только text (выбран %s)" % picked)
+	_eq(seen_h1.size(), 1, "H1: пул типов = один text")
+	_ok(seen_h1.has("text"), "H1: text спавнится")
+	_eq(_hd._type_pool(), ["text"], "H1: _type_pool = [text]")
+
+	# Пороги открытия типов: sound со H2, photo с H4, video с H6.
+	_fresh(2)
+	_eq(_hd._type_pool(), ["text", "sound"], "H2: text/sound")
+	_fresh(3)
+	_eq(_hd._type_pool(), ["text", "sound"], "H3: photo ещё закрыт")
+	_fresh(4)
+	_eq(_hd._type_pool(), ["text", "sound", "photo"], "H4: +photo")
+	_fresh(6)
+	_eq(_hd._type_pool(), ["text", "sound", "photo", "video"], "H6: +video")
 
 	_fresh(9)
 	_eq(_hd._type_pool(), ["text", "sound", "photo", "video"], "H9: все типы открыты")
@@ -173,15 +194,103 @@ func _test_budgets_and_weights() -> void:
 	var seen_1: Dictionary = {}
 	for i in range(300):
 		seen_1[_hd._roll_required_count()] = true
-	_ok(seen_1.size() >= 2, "H1: request_mix даёт 1 и 2 файла")
-	_ok(not seen_1.has(3), "H1: request_mix 3 = 0%")
+	_eq(seen_1.keys(), [1], "H1: request_mix всегда 1 файл")
 
 	_fresh(9)
 	var seen_9: Dictionary = {}
 	for i in range(400):
 		seen_9[_hd._roll_required_count()] = true
-	_ok(seen_9.has(1) and seen_9.has(2) and seen_9.has(3), "H9: request_mix даёт 1/2/3")
-	_ok(seen_9.has(4), "H9: request_mix даёт 4 файла")
+	var keys_9: Array = seen_9.keys()
+	keys_9.sort()
+	_eq(keys_9, [3, 4], "H9: request_mix только 3/4 файла")
+	_ok(seen_9.has(3) and seen_9.has(4), "H9: встречаются и 3, и 4 файла")
+
+
+# --- веса типов в запросах -------------------------------------------------
+
+## v5: required-файлы выбираются по request_type_weights (не по весам приёма),
+## без дублей; strict filter не даёт собрать запрос из «закрытых» типов;
+## пустой конфиг весов → uniform fallback.
+func _test_request_type_weights() -> void:
+	_set_case("request_type_weights")
+	_fresh(9)
+	_approx(float(_hd.request_type_weights.get("text", 0.0)), 0.10, 0.0001,
+		"H9: request text 0.10")
+	_approx(float(_hd.request_type_weights.get("video", 0.0)), 0.45, 0.0001,
+		"H9: request video 0.45")
+
+	# Пул из словарей: _pick_request_files понимает id/type без реестра.
+	var pool: Array = []
+	for type_id in ["text", "sound", "photo", "video"]:
+		for i in range(2):
+			pool.append({"id": "%s_%d" % [type_id, i], "type": type_id})
+	var type_by_id := {}
+	for item in pool:
+		type_by_id[str(item.get("id", ""))] = str(item.get("type", ""))
+
+	var counts := {"text": 0, "sound": 0, "photo": 0, "video": 0}
+	for i in range(400):
+		var picked: Array = _hd._pick_request_files(pool, 1)
+		if picked.size() != 1:
+			_fail("weighted: ожидался 1 файл, получено %d" % picked.size())
+			continue
+		var picked_type := str(type_by_id.get(str(picked[0]), ""))
+		if counts.has(picked_type):
+			counts[picked_type] = int(counts[picked_type]) + 1
+	_ok(int(counts["video"]) > int(counts["text"]),
+		"H9: video чаще text (%d vs %d)" % [counts["video"], counts["text"]])
+	_ok(int(counts["photo"]) > int(counts["text"]),
+		"H9: photo чаще text (%d vs %d)" % [counts["photo"], counts["text"]])
+	_ok(int(counts["video"]) >= int(counts["photo"]),
+		"H9: video — самый частый тип (%d vs %d)" % [counts["video"], counts["photo"]])
+
+	# 4 слота: всегда 4 разных id из пула, без дублей.
+	for i in range(50):
+		var picked4: Array = _hd._pick_request_files(pool, 4)
+		_eq(picked4.size(), 4, "weighted: выбрано 4 файла")
+		var unique := {}
+		for fid in picked4:
+			unique[str(fid)] = true
+			_ok(type_by_id.has(str(fid)), "weighted: id %s из пула" % str(fid))
+		_eq(unique.size(), 4, "weighted: id не повторяются")
+
+	# H1: строгий фильтр по text — sound в пуле игнорируется.
+	_set_case("request_type_strict_filter")
+	_fresh(1)
+	_approx(float(_hd.request_type_weights.get("sound", -1.0)), 0.0, 0.0001,
+		"H1: request sound = 0")
+	_eq(_hd._pick_request_files([{"id": "s1", "type": "sound"}], 1), [],
+		"H1: пул без text → пустая выборка")
+	_eq(_hd._pick_request_files([
+		{"id": "t1", "type": "text"},
+		{"id": "s1", "type": "sound"},
+	], 1), ["t1"], "H1: из смешанного пула берётся только text")
+
+	# Реальный спавн: только sound на складе → запрос не создаётся.
+	var folder_id := _folder_id()
+	var sound_file = _new_file("Строгий звук", "sound", folder_id)
+	_ok(sound_file != null, "sound-файл создан")
+	var spawned_before := int(_hd.requests_spawned)
+	_eq(_hd.spawn_request_now(1), "", "strict filter: запрос не создан")
+	_eq(_hd.requests_spawned, spawned_before, "strict filter: счётчик не вырос")
+	_eq(_hd.active_requests.size(), 0, "strict filter: активных запросов нет")
+
+	# Пустой конфиг весов → uniform fallback по всему пулу.
+	_set_case("request_type_uniform_fallback")
+	_hd.request_type_weights = {}
+	_eq(_hd._pick_request_files([{"id": "s1", "type": "sound"}], 1), ["s1"],
+		"пустой конфиг: uniform fallback выбирает sound")
+	var req_id := str(_hd.spawn_request_now(1))
+	_ok(not req_id.is_empty(), "fallback: запрос создан")
+	if not req_id.is_empty():
+		_eq(_hd.active_requests[req_id].required_types, ["sound"],
+			"fallback: запрос собран из sound")
+		_hd._cleanup_request(req_id, true)
+
+	# Все веса нулевые — тот же uniform fallback.
+	_hd.request_type_weights = {"text": 0.0, "sound": 0.0, "photo": 0.0, "video": 0.0}
+	_eq(_hd._pick_request_files([{"id": "s2", "type": "sound"}], 1), ["s2"],
+		"все веса 0: uniform fallback")
 
 
 # --- поток спавна ----------------------------------------------------------
@@ -226,7 +335,9 @@ func _test_spawn_window_budget() -> void:
 		var delta := spawn_times[i] - spawn_times[i - 1]
 		_ok(delta >= base_interval * 0.8 - 0.2 and delta <= base_interval * 1.2 + 0.2,
 			"интервал спавна ~%.1f с (получено %.2f)" % [base_interval, delta])
-	_ok(spawn_times[spawn_times.size() - 1] >= _hd.spawn_window - base_interval,
+	# Джиттер интервала ±20%: последний спавн не раньше «окно − максимальный
+	# интервал», иначе поток оборвался бы раньше закрытия окна.
+	_ok(spawn_times[spawn_times.size() - 1] >= _hd.spawn_window - base_interval * 1.2 - 0.2,
 		"поток идёт до конца окна спавна (t=%.1f)" % spawn_times[spawn_times.size() - 1])
 	# За окном спавна новых файлов нет (счётчик не растёт).
 	var count_at_window_end := int(_hd.files_spawned)
@@ -758,7 +869,8 @@ func _test_overflow_no_space() -> void:
 ## 1-клеточный text — только text. После освобождения места спавн возобновляется.
 func _test_spawn_fitting_type() -> void:
 	_set_case("spawn_fitting_type")
-	_fresh(1)
+	# H2: в пуле text (1 клетка) и sound (2 клетки) — проверяем фильтр по месту.
+	_fresh(2)
 	var folder_ids: Array = _game.registry.folders.keys()
 	_ok(folder_ids.size() >= 2, "нужно минимум 2 папки")
 	if folder_ids.size() < 2:
@@ -1680,6 +1792,124 @@ func _test_udp_model() -> void:
 	_ok(_game.registry.files.has(fid2), "повторный UDP сохранил файл")
 	_eq(_hd.slots.used_count(), 0, "повторный UDP освободил слот")
 	_hd.udp_roll_override = -1.0
+
+
+# --- v5: протокол нового запроса -------------------------------------------
+
+## spawn_request_now(1, "udp") → UDP без TCP; spawn_request_now(1) → TCP.
+## Готовность UDP не требует соединения (RequestCard тоже).
+func _test_spawn_request_protocol() -> void:
+	_set_case("spawn_request_udp")
+	_fresh(2)
+	var folder_id := _folder_id()
+	_ok(_new_file("UDP спавн", "text", folder_id) != null, "файл для UDP создан")
+	_ok(_new_file("TCP спавн", "text", folder_id) != null, "файл для TCP создан")
+	var udp_id := str(_hd.spawn_request_now(1, "udp"))
+	_ok(not udp_id.is_empty(), "spawn_request_now(1, udp) создал запрос")
+	if udp_id.is_empty():
+		return
+	var udp_req = _hd.active_requests[udp_id]
+	_eq(str(udp_req.protocol), "udp", "форс-спавн: протокол udp")
+	_ok(not udp_req.has_connection(), "UDP: connection_id пуст")
+	_ok(not udp_req.connected, "UDP: connected = false")
+	var udp_ids: Array = _hd.request_required_ids(udp_id)
+	_eq(udp_ids.size(), 1, "UDP: один required")
+	_ok(_hd.attach_file(udp_id, udp_ids[0]), "UDP: attach без TCP разрешён")
+	_ok(_hd.is_request_ready(udp_id), "UDP готов без TCP")
+	_ok(not _hd.is_request_connected(udp_id), "UDP: is_request_connected = false")
+	_minigame_shows = 0
+	_ok(_hd.start_send(udp_id), "UDP: start_send без TCP")
+	_eq(_minigame_shows, 1, "UDP: мини-игра отправки открыта")
+
+	# RequestCard: для UDP нет ожидания TCP и кнопка соединения скрыта.
+	var card = REQUEST_CARD.new()
+	root.add_child(card)
+	card.setup(udp_id, "Клиент", "cli_udp", "UDP",
+		[{"type": "text", "attached": true}], 30.0, 30.0, 0.0, 1,
+		false, false, 1, "text", 1, false, true, false, false, "", 0.5, 0.0)
+	_ok(not card._tcp_waiting(), "RequestCard UDP: не ждёт TCP")
+	_ok(not card._connect_btn.visible, "RequestCard UDP: кнопки соединения нет")
+	_ok(card.can_send(), "RequestCard UDP: can_send = true")
+	_ok(not card.send_disabled(), "RequestCard UDP: ОТПРАВИТЬ активна")
+	card.free()
+	_hd.force_close_send_minigame()
+	_hd._cleanup_request(udp_id, true)
+
+	_set_case("spawn_request_tcp_default")
+	_fresh(2)
+	_new_file("TCP по умолчанию", "text", _folder_id())
+	var tcp_id := str(_hd.spawn_request_now(1))
+	_ok(not tcp_id.is_empty(), "spawn_request_now(1) создал запрос")
+	if tcp_id.is_empty():
+		return
+	_eq(str(_hd.active_requests[tcp_id].protocol), "tcp", "без override → tcp")
+	_ok(not _hd.active_requests[tcp_id].has_connection(), "TCP: соединения ещё нет")
+	var tcp_ids: Array = _hd.request_required_ids(tcp_id)
+	_ok(not _hd.attach_file(tcp_id, tcp_ids[0]), "TCP: attach без соединения запрещён")
+	_ok(not _hd.is_request_ready(tcp_id), "TCP без соединения не готов")
+	_ok(not _hd.is_request_connected(tcp_id), "TCP: is_request_connected = false")
+	_hd._cleanup_request(tcp_id, true)
+
+
+# --- v5: низкое качество мини-игры -----------------------------------------
+
+## q < send_quality_min: передача не стартует, файлы и TCP-соединение целы.
+## Повторная отправка с q=0.8 доходит до выплаты.
+func _test_low_quality_retry() -> void:
+	_set_case("send_low_quality")
+	_fresh(1)
+	_hd.active_request_limit = 0
+	var file = _new_file("Качество", "text", _folder_id())
+	_ok(file != null, "файл создан")
+	if file == null:
+		return
+	var fid := str(file.id)
+	var req_id := str(_hd._create_request(1, "tcp", [fid], false))
+	_ok(not req_id.is_empty(), "TCP-запрос создан")
+	_ok(_connect_tcp(req_id), "TCP-соединение установлено")
+	var req = _hd.active_requests.get(req_id)
+	if req == null:
+		return
+	var conn_id := str(req.connection_id)
+	_ok(not conn_id.is_empty(), "соединение привязано")
+	_ok(_hd.attach_file(req_id, fid), "файл прикреплён")
+
+	_hd.send_game_factory = func(_id, _tier, _seed, _ctx): return StubSendGame.new()
+	_minigame_shows = 0
+	_ok(_hd.start_send(req_id), "старт отправки со stub-игрой")
+	_eq(_minigame_shows, 1, "stub-мини-игра показана")
+	var attached_before: Array = req.attached.duplicate()
+	_toasts.clear()
+	_hd._on_send_minigame_finished(0.2)
+
+	_ok(_hd.active_requests.has(req_id), "q=0.2: запрос остаётся активным")
+	_eq(req.attached, attached_before, "q=0.2: attached не изменился")
+	_ok(_hd.active_connections.has(conn_id), "q=0.2: соединение живо")
+	_ok(_hd._connection_open(conn_id), "q=0.2: соединение открыто")
+	_ok(not req.sending, "q=0.2: отправка не начата")
+	_ok(not req.minigame_active, "q=0.2: мини-игра закрыта")
+	_approx(float(req.quality), 0.2, 0.0001, "q=0.2: качество сохранено")
+	_ok(_hd.is_request_ready(req_id), "q=0.2: запрос снова готов")
+	_ok(_has_toast("НИЗКОЕ КАЧЕСТВО"), "q=0.2: тост о низком качестве")
+
+	# Повторная отправка с нормальным качеством проходит до выплаты.
+	var money_before := int(_game.money)
+	var streak_before := int(_game.streak)
+	_minigame_shows = 0
+	_ok(_hd.start_send(req_id), "повторная отправка стартует")
+	_eq(_minigame_shows, 1, "повторная stub-мини-игра показана")
+	_hd._on_send_minigame_finished(0.8)
+	_ok(bool(req.sending), "q=0.8: отправка пошла")
+	for i in range(200):
+		_hd.tick(0.1)
+		if not _hd.active_requests.has(req_id):
+			break
+	_ok(not _hd.active_requests.has(req_id), "q=0.8: запрос завершён")
+	_ok(int(_game.money) > money_before,
+		"q=0.8: выплата начислена (%d → %d)" % [money_before, int(_game.money)])
+	_eq(int(_game.streak), streak_before + 1, "q=0.8: streak увеличен")
+	_ok(_game.registry.files.has(fid), "q=0.8: файл вернулся в папку")
+	_hd.send_game_factory = Callable()
 
 
 # --- потерянные required-файлы ---------------------------------------------

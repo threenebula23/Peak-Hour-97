@@ -317,6 +317,7 @@ func spawn_attack(kind: String = "") -> String:
 		"name": str(cfg.get("name_ru", FALLBACK_NAMES.get(chosen, chosen))),
 		"reward_text": "АТАКА ОТРАЖЕНА",
 		"penalty_text": "АТАКА ПРОШЛА",
+		"briefing": true,
 	}
 	var seed_value := _randi_range(1, 2147483646)
 	var game_node = null

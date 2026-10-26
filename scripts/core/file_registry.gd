@@ -22,7 +22,7 @@ signal table_changed
 signal registry_changed
 
 const MAX_SECTIONS = 6
-const MAX_FOLDERS_PER_SECTION = 12
+const MAX_FOLDERS_PER_SECTION = 24
 const MAX_FILES_PER_FOLDER = 16 # legacy (v1 capacity), v2 измеряется клетками
 const MAX_FOLDER_NAME = 16
 const SECTION_LETTERS: Array[String] = ["C", "D", "E", "F", "G", "H"]

@@ -33,6 +33,11 @@ const MOTION_SHAKE_PX := 3.0
 const MOTION_SPARK_DUR := 0.9
 const MOTION_SPARK_COUNT := 18
 const MOTION_BAR_PULSE := 1.1
+## Брифинг: панель «КРАТКО», большая кнопка СТАРТ, скан-линии и пульс.
+const BRIEF_PANEL := Rect2(60.0, 56.0, 520.0, 208.0)
+const BRIEF_START := Rect2(245.0, 212.0, 150.0, 34.0)
+const BRIEF_PULSE_DUR := 2.4
+const PRESS_FLASH_DUR := 0.14
 
 const SEND_IDS: Array[String] = [
 	"dots", "sound", "text", "video", "photo", "maze",
@@ -101,6 +106,17 @@ var _fx_shake := 1.0
 var _fx_spark := 1.0
 var _pulse_tween: Tween = null
 var _fx_tween: Tween = null
+## Брифинг: контекст briefing=true держит игру на паузе до СТАРТА.
+## Гейт включается только у окна в дереве: фабрики/unit-тесты (нода вне
+## дерева) ведут себя как раньше, без паузы.
+var _briefing_requested := false
+var _briefing := false
+var _brief_phase := 0.0
+var _brief_tween: Tween = null
+## Отклик кнопок (СТАРТ/ПРОПУСТИТЬ/ПРОДОЛЖИТЬ), draw-only.
+var _press_rect := Rect2()
+var _press_t := 1.0
+var _press_tween: Tween = null
 
 
 func _init() -> void:
@@ -125,6 +141,10 @@ func _ready() -> void:
 		viewport.size_changed.connect(_center_on_screen)
 	# HourDirector зовёт start() до add_child — вход запускаем здесь.
 	if running:
+		# Брифинг тоже взводим только теперь: окно реально на экране.
+		if _briefing_requested and not _finished:
+			_briefing = true
+			call_deferred("_gate_briefing")
 		_arm_motion()
 
 
@@ -166,7 +186,14 @@ func start(type_or_id: String, p_difficulty: float = 1.0, p_seed: int = 0,
 	_center_on_screen()
 	queue_redraw()
 	_enter_pending = true
+	# Контекст без briefing (тесты/фабрики) — прежнее поведение без гейта.
+	_briefing_requested = bool(context.get("briefing", false))
+	_briefing = _briefing_requested and is_inside_tree()
 	_arm_motion()
+	if _briefing:
+		# До СТАРТА subclass _process не идёт: поле не двигается и не тикает.
+		set_process(false)
+		_start_brief_fx()
 
 
 ## Сброс состояния при повторном start() на том же узле.
@@ -178,6 +205,11 @@ func _emitent_reset() -> void:
 	_pending_finish = false
 	_kill_pulse()
 	_kill_fx()
+	_kill_brief_fx()
+	_press_t = 1.0
+	_press_rect = Rect2()
+	_briefing = false
+	_briefing_requested = false
 	_bar_phase = 0.0
 	_fx_stamp = 1.0
 	_fx_shake = 1.0
@@ -204,10 +236,15 @@ func set_motion_enabled(on: bool) -> void:
 		_fx_shake = 1.0
 		_fx_spark = 1.0
 		_enter_pending = false
+		_kill_brief_fx()
+		_press_t = 1.0
 		modulate = Color(1, 1, 1, 1)
 		scale = Vector2.ONE
 	elif running:
-		_arm_bar_pulse()
+		if _briefing:
+			_start_brief_fx()
+		else:
+			_arm_bar_pulse()
 	queue_redraw()
 
 
@@ -218,6 +255,9 @@ func _arm_motion() -> void:
 	if _enter_pending and not _finished:
 		_enter_pending = false
 		_play_enter()
+	if _briefing:
+		_start_brief_fx()
+		return
 	_arm_bar_pulse()
 
 
@@ -336,6 +376,159 @@ func _spark_noise(index: int) -> float:
 	return fposmod(sin(float(index) * 12.9898) * 43758.5453, 1.0)
 
 
+# --- брифинг ---------------------------------------------------------------
+
+func _brief_start_rect() -> Rect2:
+	return BRIEF_START
+
+
+## Отложенный гейт после add_child: subclass _ready мог снова включить process.
+func _gate_briefing() -> void:
+	if not _briefing or _finished or not running:
+		return
+	set_process(false)
+	queue_redraw()
+
+
+## Пульс брифинга: скан-линия и ореол СТАРТА (одна зацикленная tween).
+func _start_brief_fx() -> void:
+	_kill_brief_fx()
+	if _reduced() or not is_inside_tree():
+		return
+	_brief_phase = 0.0
+	_brief_tween = create_tween()
+	_brief_tween.tween_method(_set_brief_phase, 0.0, 1.0, BRIEF_PULSE_DUR)
+	_brief_tween.set_loops()
+
+
+func _kill_brief_fx() -> void:
+	if _brief_tween != null and _brief_tween.is_valid():
+		_brief_tween.kill()
+	_brief_tween = null
+
+
+func _set_brief_phase(v: float) -> void:
+	_brief_phase = v
+	queue_redraw()
+
+
+## СТАРТ: снять гейт, включить игровой кадр и пульс прогресса.
+func _begin_play() -> void:
+	if not _briefing:
+		return
+	_briefing = false
+	_kill_brief_fx()
+	set_process(true)
+	_arm_bar_pulse()
+	queue_redraw()
+
+
+## Короткий отклик нажатия на рисованную кнопку (0.14 c, draw-only).
+func _flash_press(rect: Rect2) -> void:
+	_press_rect = rect
+	_press_t = 0.0
+	if _press_tween != null and _press_tween.is_valid():
+		_press_tween.kill()
+	if not is_inside_tree():
+		_press_t = 1.0
+		return
+	_press_tween = create_tween()
+	_press_tween.tween_method(_set_press, 0.0, 1.0, PRESS_FLASH_DUR)
+
+
+func _set_press(v: float) -> void:
+	_press_t = v
+	queue_redraw()
+
+
+func _is_pressed_rect(rect: Rect2) -> bool:
+	return _press_t < 1.0 and _press_rect == rect
+
+
+func _is_hover_rect(rect: Rect2) -> bool:
+	return not _reduced() and rect.has_point(get_local_mouse_position())
+
+
+## Экран брифинга: полностью закрывает поле до СТАРТА (draw-only).
+func _draw_briefing() -> void:
+	var full := Rect2(Vector2.ZERO, size)
+	Theme90.draw_bevel(self, full, false, Theme90.BEVEL, Theme90.PAPER)
+	var tr := Rect2(1.0, 1.0, size.x - 2.0, HEADER_H - 2.0)
+	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 4), tr)
+	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0), Theme90.HAIRLINE)
+	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0, Theme90.ACCENT)
+	Theme90.text(self, Theme90.display(), Vector2(tr.position.x + 24.0, tr.position.y + 3.0),
+		title(), 18, Theme90.NAVY_DEEP, tr.size.x - 400.0)
+	var badge := Rect2(tr.end.x - 124.0, tr.position.y + 6.0, 116.0, 17.0)
+	draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.BORDER_SOFT, 2, 1), badge)
+	Theme90.text_vcenter(self, Theme90.ui(), badge, tier_label(), 11, Theme90.NAVY, -1,
+		HORIZONTAL_ALIGNMENT_CENTER)
+
+	var phase := clampf(_brief_phase, 0.0, 1.0)
+	var body := Rect2(2.0, HEADER_H, size.x - 4.0, size.y - HEADER_H - 2.0)
+	draw_rect(body, Theme90.PAPER)
+	# Статичные скан-линии + бегущая линия (движение только в _draw).
+	Theme90.draw_scanlines(self, body, Color(0, 0, 0, 0.035), 3.0)
+	var sy := body.position.y + body.size.y * phase
+	draw_rect(Rect2(body.position.x, sy, body.size.x, 1.0),
+		Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.12))
+
+	var panel := BRIEF_PANEL
+	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER, 4, 1, Theme90.SHADOW), panel)
+	var glow := 0.5 + 0.5 * sin(TAU * phase)
+	var bx := panel.position.x + 8.0 + maxf(0.0, panel.size.x - 60.0) * phase
+	draw_rect(Rect2(bx, panel.position.y - 1.0, 44.0, 2.0),
+		Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.55))
+
+	Theme90.text(self, Theme90.display(), Vector2(panel.position.x, panel.position.y + 10.0),
+		"КРАТКО", 18, Theme90.NAVY_DEEP, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	var f := Theme90.ui()
+	var attack := is_attack or is_attack_id(game_id)
+	var kind := "АТАКА" if attack else "ОТПРАВКА"
+	var kind_col := Theme90.ERROR if attack else Theme90.ACCENT
+	Theme90.text(self, f, Vector2(panel.position.x, panel.position.y + 38.0),
+		Theme90.fit(f, "%s · %s · %s" % [kind, title(), tier_label()], 11,
+			panel.size.x - 40.0), 11, kind_col, panel.size.x,
+		HORIZONTAL_ALIGNMENT_CENTER)
+	var atk_name := str(context.get("name", "")).strip_edges()
+	if attack and not atk_name.is_empty():
+		Theme90.text(self, f, Vector2(panel.position.x, panel.position.y + 56.0),
+			Theme90.fit(f, "АТАКА: " + atk_name.to_upper(), 11, panel.size.x - 40.0), 11,
+			Theme90.DARK, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+
+	var goal := _goal_text()
+	if goal.is_empty():
+		goal = "ВЫПОЛНИТЕ ЗАДАНИЕ И НАЖМИТЕ СТАРТ"
+	var gy := panel.position.y + (92.0 if not atk_name.is_empty() else 78.0)
+	for line in Theme90.wrap(f, goal, 12, panel.size.x - 64.0, 2):
+		Theme90.text(self, f, Vector2(panel.position.x + 32.0, gy), line, 12,
+			Theme90.INK, panel.size.x - 64.0, HORIZONTAL_ALIGNMENT_CENTER)
+		gy += 17.0
+	# Подсказка — прямо над кнопкой, без «мёртвой» зоны.
+	Theme90.text(self, f, Vector2(panel.position.x, _brief_start_rect().position.y - 18.0),
+		"Enter / Space — начать" if not attack else "Enter / Space — начать · Esc — сдаться",
+		10, Theme90.SHADE, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+
+	# Большая кнопка СТАРТ: пульс-ореол + hover/press (draw-only).
+	var rect := _brief_start_rect()
+	var pressed := _is_pressed_rect(rect)
+	var face := Theme90.ACCENT
+	if _is_hover_rect(rect):
+		face = face.lightened(0.06)
+	if pressed:
+		face = face.darkened(0.08)
+	var halo := 3.0 + 3.0 * glow
+	draw_style_box(Theme90.box(
+		Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.09 + 0.10 * glow),
+		Color(0, 0, 0, 0), 5, 0), rect.grow(halo))
+	draw_style_box(Theme90.box(face, Theme90.ACCENT.darkened(0.18), 4, 1,
+		Theme90.SHADOW if not pressed else Color(0, 0, 0, 0)), rect)
+	var shift := 1.0 if pressed else 0.0
+	Theme90.text_vcenter(self, Theme90.display(),
+		Rect2(rect.position + Vector2(0, shift), rect.size), "СТАРТ", 16,
+		Theme90.WHITE, -1, HORIZONTAL_ALIGNMENT_CENTER)
+
+
 ## Переопределяется наследником: генерация поля/состояния.
 func _setup() -> void:
 	pass
@@ -416,6 +609,9 @@ func _finish(q: float) -> void:
 	running = false
 	set_process(false)
 	_skip_armed = false
+	if _briefing:
+		_briefing = false
+		_kill_brief_fx()
 	if _result_detail.is_empty():
 		_result_detail = _default_result_detail()
 	_kill_pulse()
@@ -454,6 +650,26 @@ func _default_result_detail() -> String:
 # --- ввод ------------------------------------------------------------------
 
 func _input(event: InputEvent) -> void:
+	# Брифинг: игровой ввод игнорируется до СТАРТА (и Esc тоже).
+	if _briefing and not _finished:
+		if event is InputEventKey:
+			if event.pressed and not event.echo \
+					and event.keycode in [KEY_ENTER, KEY_KP_ENTER, KEY_SPACE]:
+				_mark_input_handled()
+				_begin_play()
+			else:
+				_mark_input_handled()
+			return
+		if event is InputEventMouseButton:
+			if event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
+				var local: Vector2 = event.position - global_position
+				if _brief_start_rect().has_point(local):
+					_mark_input_handled()
+					_begin_play()
+					return
+			_mark_input_handled()
+			return
+		return
 	if event is InputEventKey:
 		if not event.pressed or event.echo:
 			return
@@ -483,6 +699,7 @@ func _input(event: InputEvent) -> void:
 		if event.pressed:
 			if SKIP_RECT.has_point(local):
 				_mark_input_handled()
+				_flash_press(SKIP_RECT)
 				_on_skip_clicked()
 				return
 			if _on_pointer_pressed(local, event):
@@ -515,6 +732,8 @@ func _on_key_pressed(_keycode: int, _event: InputEvent) -> bool:
 
 
 func _on_skip_clicked() -> void:
+	if _briefing:
+		return
 	if not _skip_armed:
 		_skip_armed = true
 		_play_sfx(&"tick")
@@ -538,6 +757,9 @@ func _mark_input_handled() -> void:
 # --- отрисовка -------------------------------------------------------------
 
 func _draw() -> void:
+	if _briefing:
+		_draw_briefing()
+		return
 	var font := Theme90.ui()
 	var full := Rect2(Vector2.ZERO, size)
 	Theme90.draw_bevel(self, full, false, Theme90.BEVEL, Theme90.PAPER)
@@ -602,18 +824,26 @@ func _draw_footer_hint() -> void:
 
 
 func _draw_skip_button() -> void:
+	var pressed := _is_pressed_rect(SKIP_RECT)
 	var face := Theme90.WARN if _skip_armed else Theme90.PAPER_HI
 	var fg := Theme90.WHITE if _skip_armed else Theme90.DARK
 	var border := Theme90.WARN.darkened(0.18) if _skip_armed else Theme90.BORDER
+	if not _skip_armed and _is_hover_rect(SKIP_RECT):
+		face = Theme90.WHITE
+		border = Theme90.ACCENT_LIGHT
+	if pressed:
+		face = face.darkened(0.05)
 	draw_style_box(Theme90.box(face, border, 3, 1,
-		Theme90.SHADOW if not _skip_armed else Color(0, 0, 0, 0)), SKIP_RECT)
+		Theme90.SHADOW if not _skip_armed and not pressed else Color(0, 0, 0, 0)),
+		SKIP_RECT)
 	var label := skip_label()
 	if _skip_armed:
 		label = "ЕЩЁ КЛИК — СДАЧА" if is_attack else "ЕЩЁ КЛИК — ПРОПУСК"
 	else:
 		label = "%s · 2 КЛИКА" % label
-	Theme90.text_vcenter(self, Theme90.ui(), SKIP_RECT, label, 11, fg,
-		-1, HORIZONTAL_ALIGNMENT_CENTER)
+	Theme90.text_vcenter(self, Theme90.ui(),
+		Rect2(SKIP_RECT.position + Vector2(0, 1 if pressed else 0), SKIP_RECT.size),
+		label, 11, fg, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_action_button(rect: Rect2, label: String, enabled: bool = true,
@@ -629,16 +859,27 @@ func _draw_action_button(rect: Rect2, label: String, enabled: bool = true,
 		face = Theme90.PAPER
 		fg = Theme90.DARK
 		border = Theme90.BORDER_SOFT
+	var pressed := enabled and _is_pressed_rect(rect)
+	if enabled and _is_hover_rect(rect):
+		face = face.lightened(0.06) if primary else Theme90.WHITE
+	if pressed:
+		face = face.darkened(0.08)
 	draw_style_box(Theme90.box(face, border, 3, 1,
-		Theme90.SHADOW if enabled else Color(0, 0, 0, 0)), rect)
-	Theme90.text_vcenter(self, Theme90.ui(), rect, label, size_px, fg,
-		-1, HORIZONTAL_ALIGNMENT_CENTER)
+		Theme90.SHADOW if enabled and not pressed else Color(0, 0, 0, 0)), rect)
+	Theme90.text_vcenter(self, Theme90.ui(),
+		Rect2(rect.position + Vector2(0, 1 if pressed else 0), rect.size), label,
+		size_px, fg, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_secondary_button(rect: Rect2, label: String) -> void:
-	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER, 3, 1), rect)
-	Theme90.text_vcenter(self, Theme90.ui(), rect, label, 11, Theme90.DARK,
-		-1, HORIZONTAL_ALIGNMENT_CENTER)
+	var pressed := _is_pressed_rect(rect)
+	var face := Theme90.WHITE if _is_hover_rect(rect) else Theme90.PAPER_HI
+	if pressed:
+		face = face.darkened(0.05)
+	draw_style_box(Theme90.box(face, Theme90.BORDER, 3, 1), rect)
+	Theme90.text_vcenter(self, Theme90.ui(),
+		Rect2(rect.position + Vector2(0, 1 if pressed else 0), rect.size), label, 11,
+		Theme90.DARK, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_modal_panel(rect: Rect2, fill: Color = Theme90.PAPER_HI) -> void:

@@ -51,6 +51,7 @@ func _init() -> void:
 
 	# До старта забега — проверяем, что настройки из меню не пишут save.
 	_test_menu_settings_no_write()
+	_test_menu_layout()
 
 	_main._start_new_run()
 	await process_frame
@@ -72,6 +73,7 @@ func _init() -> void:
 
 	_test_pause_resume()
 	_test_modal_pause()
+	_test_modal_no_x_and_close()
 	_test_settings()
 	_test_confirm_to_menu()
 	_test_escape()
@@ -141,6 +143,24 @@ func _saved_settings_sfx() -> int:
 	return int((settings as Dictionary).get("sfx", -1))
 
 
+## Кнопки главного меню центрированы по панели действий (x ≈ центр ±2 px).
+func _test_menu_layout() -> void:
+	var menu = _main.main_menu
+	_ok(menu != null, "main_menu доступен для проверки раскладки")
+	if menu == null:
+		return
+	var panel: Rect2 = menu._panel_rect(menu._window())
+	var center_x: float = panel.position.x + panel.size.x * 0.5
+	var buttons: Array = [menu._btn_continue, menu._btn_new, menu._btn_tutorial,
+		menu._btn_settings, menu._btn_about]
+	for b in buttons:
+		_ok(b != null, "кнопка меню создана")
+		if b == null:
+			continue
+		_approx(float(b.position.x) + float(b.size.x) * 0.5, center_x, 2.0,
+			"menu «%s» центрирована в панели действий" % str(b.caption))
+
+
 func _test_pause_resume() -> void:
 	_main._pause_game()
 	_ok(bool(_controller.paused), "_pause_game ставит controller.paused=true")
@@ -189,6 +209,50 @@ func _test_modal_pause() -> void:
 		_ok(bool(_controller.paused), "окно переименования ставит паузу")
 		_main.rename_modal.close()
 		_ok(not bool(_controller.paused), "закрытие переименования снимает паузу")
+
+
+## v5: Settings/About/Confirm без «крестика» — закрытие только явной кнопкой.
+func _test_modal_no_x_and_close() -> void:
+	# Settings: отмена — явная кнопка, крестика окна нет.
+	_main._open_settings()
+	_ok(_main.settings_modal.visible, "Settings открыт")
+	_assert_no_window_x(_main.settings_modal, "Settings")
+	_ok(_main.settings_modal._btn_cancel != null, "Settings: кнопка «Отмена» есть")
+	if _main.settings_modal._btn_cancel != null:
+		_main.settings_modal._btn_cancel.pressed.emit()
+	_ok(not _main.settings_modal.visible, "Settings: «Отмена» закрывает окно")
+
+	# About использует ConfirmModal: крестика нет, закрывает «Отмена».
+	_main._show_about()
+	_ok(_main.confirm_modal.visible, "About открыт")
+	_assert_no_window_x(_main.confirm_modal, "About")
+	_ok(_main.confirm_modal._btn_no != null, "About: кнопка закрытия есть")
+	if _main.confirm_modal._btn_no != null:
+		_main.confirm_modal._btn_no.pressed.emit()
+	_ok(not _main.confirm_modal.visible, "About: явная кнопка закрывает окно")
+
+	# Confirm выхода в меню: крестика нет, _answer(false) закрывает и не выходит.
+	_main._confirm_to_menu()
+	_ok(_main.confirm_modal.visible, "Confirm выхода открыт")
+	_assert_no_window_x(_main.confirm_modal, "Confirm")
+	_main.confirm_modal._answer(false)
+	_ok(not _main.confirm_modal.visible, "Confirm: _answer(false) закрывает окно")
+	_eq(_controller.phase, &"hour", "Confirm(false) не выходит из часа")
+
+
+## В модалках нет «крестика» (ни _btn_x, ни кнопки BtnX, ни WindowFrame-закрытия).
+func _assert_no_window_x(node, label: String) -> void:
+	if node == null:
+		_fail("%s: модалка отсутствует" % label)
+		return
+	_eq(node.get("_btn_x"), null, "%s: _btn_x отсутствует" % label)
+	var x_btn = node.get_node_or_null("BtnX")
+	_ok(x_btn == null or not (x_btn as Control).visible,
+		"%s: кнопки-крестика нет" % label)
+	for child in node.get_children():
+		if child is Control and child.get("close_enabled") != null:
+			_ok(not bool(child.get("close_enabled")),
+				"%s: WindowFrame.close_enabled = false" % label)
 
 
 func _test_settings() -> void:

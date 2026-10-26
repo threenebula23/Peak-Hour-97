@@ -18,7 +18,6 @@ const DIM := Color(0.0, 0.0, 0.0, 0.35)
 var _btn_resume: Button90
 var _btn_settings: Button90
 var _btn_menu: Button90
-var _btn_x: Button90
 
 
 func _ready() -> void:
@@ -56,12 +55,6 @@ func _build() -> void:
 	_btn_menu.danger = true
 	_btn_menu.pressed.connect(func() -> void: menu_requested.emit())
 
-	_btn_x = Button90.new()
-	_btn_x.icon = Button90.Icon.X
-	_btn_x.tooltip_text = "Продолжить"
-	_btn_x.pressed.connect(_resume)
-	add_child(_btn_x)
-
 
 func _make_button(caption: String, accent: bool) -> Button90:
 	var b := Button90.new()
@@ -95,16 +88,13 @@ func _window_rect() -> Rect2:
 
 func _layout() -> void:
 	var r := _window_rect()
-	var x := r.position.x + 70.0
+	var x := r.position.x + roundf((W - 300.0) * 0.5)
 	var y := r.position.y + 96.0
 	for b in [_btn_resume, _btn_settings, _btn_menu]:
 		if b != null:
 			b.position = Vector2(x, y)
 			b.size = Vector2(300, 24)
 		y += 32.0
-	if _btn_x != null:
-		_btn_x.position = r.position + Vector2(W - 22, 4)
-		_btn_x.size = Vector2(16, 16)
 
 
 func _unhandled_input(event: InputEvent) -> void:

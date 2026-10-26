@@ -21,7 +21,6 @@ var _yes_text := "Да"
 var _no_text := "Нет"
 var _btn_yes: Button90
 var _btn_no: Button90
-var _btn_x: Button90
 
 
 func _ready() -> void:
@@ -65,12 +64,6 @@ func _build() -> void:
 	add_child(_btn_no)
 	_btn_no.pressed.connect(_answer.bind(false))
 
-	_btn_x = Button90.new()
-	_btn_x.icon = Button90.Icon.X
-	_btn_x.tooltip_text = "Нет"
-	_btn_x.pressed.connect(_answer.bind(false))
-	add_child(_btn_x)
-
 
 func _answer(value: bool) -> void:
 	if not visible:
@@ -88,15 +81,14 @@ func _window_rect() -> Rect2:
 
 func _layout() -> void:
 	var r := _window_rect()
+	# Нижний ряд: 100 + 12 + 100 = 212, по центру панели.
+	var row_x := r.position.x + roundf((W - 212.0) * 0.5)
 	if _btn_yes != null:
-		_btn_yes.position = r.position + Vector2(236, 102)
+		_btn_yes.position = Vector2(row_x, r.position.y + 102)
 		_btn_yes.size = Vector2(100, 24)
 	if _btn_no != null:
-		_btn_no.position = r.position + Vector2(348, 102)
+		_btn_no.position = Vector2(row_x + 112.0, r.position.y + 102)
 		_btn_no.size = Vector2(100, 24)
-	if _btn_x != null:
-		_btn_x.position = r.position + Vector2(W - 22, 4)
-		_btn_x.size = Vector2(16, 16)
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -121,23 +113,31 @@ func _draw_frame(r: Rect2) -> void:
 	Theme90.draw_bevel(self, r, false, Theme90.BEVEL, Theme90.WHITE)
 	Theme90.modal_header(self, r, "ПОДТВЕРЖДЕНИЕ", "ТРЕБУЕТСЯ ОТВЕТ")
 
-	# знак вопроса в утопленной плашке
-	var well := Rect2(r.position + Vector2(18, 28), Vector2(34, 34))
+	# вопрос и пояснение — центрируем иконку и текст как единый блок
+	var f := Theme90.ui()
+	var lines := Theme90.wrap(f, _question, Theme90.FS_BODY, 370, 2)
+	var text_w := 0.0
+	for line in lines:
+		text_w = maxf(text_w, f.get_string_size(line, HORIZONTAL_ALIGNMENT_LEFT, -1,
+			Theme90.FS_BODY).x)
+	var icon_size := 24.0
+	var icon_gap := 10.0
+	var group_w := icon_size + icon_gap + text_w
+	var gx := r.position.x + roundf((W - group_w) * 0.5)
+	var well := Rect2(gx, r.position.y + 27, icon_size, icon_size)
 	Theme90.draw_sunken(self, well)
 	Theme90.text_vcenter(self, Theme90.logo(), well, "?",
-		18, Theme90.ERROR if _danger else Theme90.NAVY)
-
-	# вопрос и пояснение
-	var f := Theme90.ui()
-	var lines := Theme90.wrap(f, _question, Theme90.FS_BODY, 378, 2)
-	var y := r.position.y + 30
+		14, Theme90.ERROR if _danger else Theme90.NAVY)
+	var tx := gx + icon_size + icon_gap
+	var y := r.position.y + 31
 	for line in lines:
-		Theme90.text(self, f, Vector2(r.position.x + 62, y), line, Theme90.FS_BODY, Theme90.INK)
+		Theme90.text(self, f, Vector2(tx, y), line, Theme90.FS_BODY, Theme90.INK,
+			text_w, HORIZONTAL_ALIGNMENT_CENTER)
 		y += 18.0
 	if not _detail.is_empty():
-		Theme90.text(self, f, Vector2(r.position.x + 62, r.position.y + 58),
-			Theme90.fit(f, _detail, Theme90.FS_MICRO, 378), Theme90.FS_MICRO,
-			Theme90.ERROR if _danger else Theme90.DARK)
+		Theme90.text_vcenter(self, f, Rect2(r.position.x + 12, y + 4.0, W - 24, 14),
+			Theme90.fit(f, _detail, Theme90.FS_MICRO, W - 24), Theme90.FS_MICRO,
+			Theme90.ERROR if _danger else Theme90.DARK, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 	# разделитель над кнопками
 	var ly := r.position.y + 88

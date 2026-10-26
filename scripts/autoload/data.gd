@@ -69,20 +69,35 @@ const DEFAULT_SEND_INTERVAL := [20, 24, 18, 24, 24, 24, 24, 24, 24]
 ## Длительность часа: 120 + 30 * (hour - 1) → 120..360.
 const DEFAULT_HOUR_DURATION_BASE := 120
 const DEFAULT_HOUR_DURATION_STEP := 30
-## Порядок: text, sound, photo, video (§2.5).
+## Порядок: text, sound, photo, video (§2.5). Совпадает с
+## DEFAULT_REQUEST_TYPE_WEIGHTS: приём и запросы используют одни типы.
 const DEFAULT_TYPE_WEIGHTS := [
-	[0.70, 0.30, 0.00, 0.00],
-	[0.55, 0.30, 0.15, 0.00],
-	[0.40, 0.30, 0.22, 0.08],
-	[0.30, 0.25, 0.28, 0.17],
-	[0.22, 0.20, 0.32, 0.26],
-	[0.15, 0.15, 0.35, 0.35],
-	[0.10, 0.12, 0.35, 0.43],
-	[0.06, 0.08, 0.32, 0.54],
-	[0.04, 0.04, 0.30, 0.62],
+	[1.00, 0.00, 0.00, 0.00],
+	[0.80, 0.20, 0.00, 0.00],
+	[0.50, 0.50, 0.00, 0.00],
+	[0.40, 0.30, 0.30, 0.00],
+	[0.35, 0.35, 0.30, 0.00],
+	[0.30, 0.30, 0.30, 0.10],
+	[0.22, 0.23, 0.30, 0.25],
+	[0.15, 0.25, 0.35, 0.25],
+	[0.10, 0.15, 0.30, 0.45],
 ]
 ## Доли числа файлов в запросе: 1..4 (§2.6). Добавлен ключ "4" (4 файла).
 const DEFAULT_REQUEST_MIX := {"1": 0.76, "2": 0.24, "3": 0.0, "4": 0.0}
+## Веса выбора ТИПА файлов для required-слотов запроса (§2.6).
+## Отдельно от type_weights: те задают типы входящих пакетов.
+## Порядок: text, sound, photo, video.
+const DEFAULT_REQUEST_TYPE_WEIGHTS := [
+	[1.00, 0.00, 0.00, 0.00],
+	[0.80, 0.20, 0.00, 0.00],
+	[0.50, 0.50, 0.00, 0.00],
+	[0.40, 0.30, 0.30, 0.00],
+	[0.35, 0.35, 0.30, 0.00],
+	[0.30, 0.30, 0.30, 0.10],
+	[0.22, 0.23, 0.30, 0.25],
+	[0.15, 0.25, 0.35, 0.25],
+	[0.10, 0.15, 0.30, 0.45],
+]
 
 const DEFAULT_LOT_IDS := [
 	"lot_slots", "lot_speed", "lot_sla", "lot_shield",
@@ -290,7 +305,8 @@ func difficulty_for(hour: int) -> Dictionary:
 # --- v2: часы --------------------------------------------------------------
 
 ## Строка бюджета часа (duration/files/active_requests/attacks/
-## income_target/type_weights/request_mix). hour > 9 → последняя строка.
+## income_target/type_weights/request_mix/request_type_weights).
+## hour > 9 → последняя строка.
 func hour_def(hour: int) -> Dictionary:
 	var h := maxi(1, int(hour))
 	if hours.is_empty():
@@ -588,8 +604,10 @@ func _default_hour_row(hour: int) -> Dictionary:
 	var idx := clampi(hour - 1, 0, 8)
 	var type_keys := ["text", "sound", "photo", "video"]
 	var weights: Dictionary = {}
+	var req_weights: Dictionary = {}
 	for i in range(type_keys.size()):
 		weights[type_keys[i]] = DEFAULT_TYPE_WEIGHTS[idx][i]
+		req_weights[type_keys[i]] = DEFAULT_REQUEST_TYPE_WEIGHTS[idx][i]
 	return {
 		"hour": maxi(1, hour),
 		"duration": DEFAULT_HOUR_DURATION_BASE + DEFAULT_HOUR_DURATION_STEP * idx,
@@ -600,6 +618,7 @@ func _default_hour_row(hour: int) -> Dictionary:
 		"send_interval": DEFAULT_SEND_INTERVAL[idx],
 		"type_weights": weights,
 		"request_mix": DEFAULT_REQUEST_MIX.duplicate(),
+		"request_type_weights": req_weights,
 	}
 
 

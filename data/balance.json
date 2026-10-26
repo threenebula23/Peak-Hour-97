@@ -31,6 +31,8 @@
     "folders_start": 2,
     "folders_max": 6,
     "folder_new_cost": 180,
+    "folder_price_start": 150,
+    "folder_price_step": 100,
     "max_sections": 1,
     "section_start": "C",
     "folders_per_section": 12,
@@ -46,7 +48,9 @@
     "udp_success_base": 0.40,
     "udp_success_max": 0.80,
     "udp_fail_sla": -3,
-    "udp_retry_cooldown_sec": 4
+    "udp_retry_cooldown_sec": 4,
+    "udp_request_ratio": 0.35,
+    "send_quality_min": 0.45
   },
   "economy": {
     "start_stats": {
@@ -144,8 +148,9 @@
       "attacks": 0,
       "income_target": 100,
       "send_interval": 20,
-      "type_weights": { "text": 0.7, "sound": 0.3, "photo": 0.0, "video": 0.0 },
-      "request_mix": { "1": 0.76, "2": 0.24, "3": 0.0, "4": 0.0 }
+      "type_weights": { "text": 1.0, "sound": 0.0, "photo": 0.0, "video": 0.0 },
+      "request_mix": { "1": 1.0, "2": 0.0, "3": 0.0, "4": 0.0 },
+      "request_type_weights": { "text": 1.0, "sound": 0.0, "photo": 0.0, "video": 0.0 }
     },
     {
       "hour": 2,
@@ -155,8 +160,9 @@
       "attacks": 1,
       "income_target": 220,
       "send_interval": 24,
-      "type_weights": { "text": 0.55, "sound": 0.3, "photo": 0.15, "video": 0.0 },
-      "request_mix": { "1": 0.63, "2": 0.32, "3": 0.05, "4": 0.0 }
+      "type_weights": { "text": 0.80, "sound": 0.20, "photo": 0.0, "video": 0.0 },
+      "request_mix": { "1": 0.70, "2": 0.30, "3": 0.0, "4": 0.0 },
+      "request_type_weights": { "text": 0.80, "sound": 0.20, "photo": 0.0, "video": 0.0 }
     },
     {
       "hour": 3,
@@ -166,8 +172,9 @@
       "attacks": 1,
       "income_target": 380,
       "send_interval": 18,
-      "type_weights": { "text": 0.4, "sound": 0.3, "photo": 0.22, "video": 0.08 },
-      "request_mix": { "1": 0.53, "2": 0.37, "3": 0.10, "4": 0.0 }
+      "type_weights": { "text": 0.50, "sound": 0.50, "photo": 0.0, "video": 0.0 },
+      "request_mix": { "1": 0.20, "2": 0.80, "3": 0.0, "4": 0.0 },
+      "request_type_weights": { "text": 0.50, "sound": 0.50, "photo": 0.0, "video": 0.0 }
     },
     {
       "hour": 4,
@@ -177,8 +184,9 @@
       "attacks": 2,
       "income_target": 560,
       "send_interval": 24,
-      "type_weights": { "text": 0.3, "sound": 0.25, "photo": 0.28, "video": 0.17 },
-      "request_mix": { "1": 0.50, "2": 0.36, "3": 0.12, "4": 0.02 }
+      "type_weights": { "text": 0.40, "sound": 0.30, "photo": 0.30, "video": 0.0 },
+      "request_mix": { "1": 0.0, "2": 0.70, "3": 0.30, "4": 0.0 },
+      "request_type_weights": { "text": 0.40, "sound": 0.30, "photo": 0.30, "video": 0.0 }
     },
     {
       "hour": 5,
@@ -188,8 +196,9 @@
       "attacks": 2,
       "income_target": 760,
       "send_interval": 24,
-      "type_weights": { "text": 0.22, "sound": 0.2, "photo": 0.32, "video": 0.26 },
-      "request_mix": { "1": 0.42, "2": 0.38, "3": 0.16, "4": 0.04 }
+      "type_weights": { "text": 0.35, "sound": 0.35, "photo": 0.30, "video": 0.0 },
+      "request_mix": { "1": 0.0, "2": 0.55, "3": 0.45, "4": 0.0 },
+      "request_type_weights": { "text": 0.35, "sound": 0.35, "photo": 0.30, "video": 0.0 }
     },
     {
       "hour": 6,
@@ -199,8 +208,9 @@
       "attacks": 3,
       "income_target": 980,
       "send_interval": 24,
-      "type_weights": { "text": 0.15, "sound": 0.15, "photo": 0.35, "video": 0.35 },
-      "request_mix": { "1": 0.40, "2": 0.38, "3": 0.17, "4": 0.05 }
+      "type_weights": { "text": 0.30, "sound": 0.30, "photo": 0.30, "video": 0.10 },
+      "request_mix": { "1": 0.0, "2": 0.25, "3": 0.60, "4": 0.15 },
+      "request_type_weights": { "text": 0.30, "sound": 0.30, "photo": 0.30, "video": 0.10 }
     },
     {
       "hour": 7,
@@ -210,8 +220,9 @@
       "attacks": 3,
       "income_target": 1200,
       "send_interval": 24,
-      "type_weights": { "text": 0.1, "sound": 0.12, "photo": 0.35, "video": 0.43 },
-      "request_mix": { "1": 0.32, "2": 0.40, "3": 0.21, "4": 0.07 }
+      "type_weights": { "text": 0.22, "sound": 0.23, "photo": 0.30, "video": 0.25 },
+      "request_mix": { "1": 0.0, "2": 0.15, "3": 0.55, "4": 0.30 },
+      "request_type_weights": { "text": 0.22, "sound": 0.23, "photo": 0.30, "video": 0.25 }
     },
     {
       "hour": 8,
@@ -221,8 +232,9 @@
       "attacks": 4,
       "income_target": 1450,
       "send_interval": 24,
-      "type_weights": { "text": 0.06, "sound": 0.08, "photo": 0.32, "video": 0.54 },
-      "request_mix": { "1": 0.30, "2": 0.39, "3": 0.22, "4": 0.09 }
+      "type_weights": { "text": 0.15, "sound": 0.25, "photo": 0.35, "video": 0.25 },
+      "request_mix": { "1": 0.0, "2": 0.10, "3": 0.45, "4": 0.45 },
+      "request_type_weights": { "text": 0.15, "sound": 0.25, "photo": 0.35, "video": 0.25 }
     },
     {
       "hour": 9,
@@ -232,8 +244,9 @@
       "attacks": 4,
       "income_target": 1700,
       "send_interval": 24,
-      "type_weights": { "text": 0.04, "sound": 0.04, "photo": 0.3, "video": 0.62 },
-      "request_mix": { "1": 0.27, "2": 0.38, "3": 0.23, "4": 0.12 }
+      "type_weights": { "text": 0.10, "sound": 0.15, "photo": 0.30, "video": 0.45 },
+      "request_mix": { "1": 0.0, "2": 0.0, "3": 0.25, "4": 0.75 },
+      "request_type_weights": { "text": 0.10, "sound": 0.15, "photo": 0.30, "video": 0.45 }
     }
   ],
   "payout": {
@@ -610,7 +623,7 @@
     "after_end_hour": "значения часа 9",
     "spawn_speedup_after_end": 0.0,
     "spawn_speedup_period_hours": 2,
-    "type_availability": "веса типов — hours[].type_weights (единственный источник правды); H1 только text/sound, photo с H2, video с H3",
+    "type_availability": "веса типов — hours[].type_weights (единственный источник правды для приёма) и совпадают с hours[].request_type_weights (запросы); H1 только text, H2 text/sound, photo с H4, video с H6",
     "timer_grace": "v2: таймеры не масштабируются по часу (packet 20, request 30+7*level, cap 65)"
   },
   "progression": {

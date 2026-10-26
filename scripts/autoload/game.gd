@@ -283,6 +283,20 @@ func folder_dims() -> Vector2i:
 	return Vector2i(5, 4)
 
 
+## Цена следующей папки: 150 + 100 за каждую сверх стартовых 2.
+## count < 0 → берём текущее число папок из реестра.
+func folder_price(count: int = -1) -> int:
+	var base := int(_const("folder_price_start", 150.0))
+	var step := int(_const("folder_price_step", 100.0))
+	var start := int(_const("folders_start", 2.0))
+	var total := int(count)
+	if total < 0:
+		total = 0
+		if registry != null and registry.has_method("folder_count"):
+			total = int(registry.folder_count())
+	return base + step * maxi(0, total - start)
+
+
 func connection_slots() -> int:
 	var base := int(_const("slots_start", 1.0))
 	var cap := int(_const("slots_max", 5.0))

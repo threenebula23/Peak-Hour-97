@@ -22,7 +22,6 @@ const MAX_NAME := 16
 var edit: LineEdit
 var _btn_ok: Button90
 var _btn_cancel: Button90
-var _btn_x: Button90
 
 
 func _ready() -> void:
@@ -92,12 +91,6 @@ func _build() -> void:
 	_btn_cancel.pressed.connect(close)
 	add_child(_btn_cancel)
 
-	_btn_x = Button90.new()
-	_btn_x.icon = Button90.Icon.X
-	_btn_x.tooltip_text = "Отмена"
-	_btn_x.pressed.connect(close)
-	add_child(_btn_x)
-
 
 func _window_rect() -> Rect2:
 	var s := size
@@ -111,15 +104,14 @@ func _layout() -> void:
 	if edit != null:
 		edit.position = r.position + Vector2(18, 52)
 		edit.size = Vector2(W - 36, 22)
+	# Нижний ряд: 100 + 8 + 96 = 204, по центру панели.
+	var row_x := r.position.x + roundf((W - 204.0) * 0.5)
 	if _btn_cancel != null:
-		_btn_cancel.position = r.position + Vector2(178, 118)
+		_btn_cancel.position = Vector2(row_x, r.position.y + 118)
 		_btn_cancel.size = Vector2(100, 24)
 	if _btn_ok != null:
-		_btn_ok.position = r.position + Vector2(286, 118)
+		_btn_ok.position = Vector2(row_x + 108.0, r.position.y + 118)
 		_btn_ok.size = Vector2(96, 24)
-	if _btn_x != null:
-		_btn_x.position = r.position + Vector2(W - 22, 4)
-		_btn_x.size = Vector2(16, 16)
 
 
 func _submit() -> void:
@@ -157,7 +149,8 @@ func _draw_frame(r: Rect2) -> void:
 	Theme90.text(self, f, Vector2(r.position.x + 18, r.position.y + 34),
 		"ИМЯ ПАПКИ:", Theme90.FS_BODY, Theme90.INK)
 	Theme90.text_vcenter(self, f, Rect2(r.position.x + 18, r.position.y + 80, W - 36, 14),
-		"ENTER — ОК · ESC — ОТМЕНА", Theme90.FS_MICRO, Theme90.SHADE)
+		"ENTER — ОК · ESC — ОТМЕНА", Theme90.FS_MICRO, Theme90.SHADE,
+		-1, HORIZONTAL_ALIGNMENT_CENTER)
 
 	# разделитель над кнопками
 	var ly := r.position.y + 104

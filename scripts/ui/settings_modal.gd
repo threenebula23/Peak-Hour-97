@@ -5,7 +5,7 @@ extends Control
 ##
 ## Окно работает с черновиком: ползунки и галочки меняют только внутреннее
 ## состояние. Наружу настройки уходят одним сигналом settings_changed(dict)
-## по кнопке «Подтвердить»; «Отмена», Esc и X закрывают окно без применения.
+## по кнопке «Подтвердить»; «Отмена» и Esc закрывают окно без применения.
 ## Ключи: sfx (0..100), music (0..100), calm_bg (bool), fullscreen (bool),
 ## vhs (bool).
 
@@ -16,6 +16,21 @@ const W := 540.0
 const H := 320.0
 const TITLE_H := 20.0
 const DIM := Color(0.0, 0.0, 0.0, 0.35)
+
+## Единая центрированная колонка внутри групп «ЗВУК»/«ЭКРАН».
+const GROUP_X := 14.0
+const GROUP_W := W - GROUP_X * 2.0
+const CONTENT_PAD := 16.0
+const CONTENT_X := GROUP_X + CONTENT_PAD
+const CONTENT_W := GROUP_W - CONTENT_PAD * 2.0
+## Звуковая строка: иконка 12 + отступ 6 + подпись 88 + отступ 12 +
+## ползунок 296 + отступ 8 + значение 42 + отступ 2 + «%» 14 = 480.
+const SOUND_LABEL_X := 18.0
+const SOUND_SLIDER_X := 118.0
+const SOUND_SLIDER_W := 296.0
+const SOUND_VALUE_X := 422.0
+const SOUND_VALUE_W := 42.0
+const SOUND_PERCENT_X := 466.0
 
 const DEFAULT_STATE := {"sfx": 70, "music": 55, "calm_bg": true, "fullscreen": false,
 	"vhs": true, "reduce_motion": false}
@@ -109,7 +124,6 @@ var _reduce: Check90
 var _btn_cancel: Button90
 var _btn_apply: Button90
 var _btn_reset: Button90
-var _btn_x: Button90
 
 
 func _ready() -> void:
@@ -253,12 +267,6 @@ func _build() -> void:
 	add_child(_btn_apply)
 	_btn_apply.pressed.connect(_confirm)
 
-	_btn_x = Button90.new()
-	_btn_x.icon = Button90.Icon.X
-	_btn_x.tooltip_text = "Отмена"
-	_btn_x.pressed.connect(close)
-	add_child(_btn_x)
-
 
 func _window_rect() -> Rect2:
 	var s := size
@@ -269,36 +277,37 @@ func _window_rect() -> Rect2:
 
 func _layout() -> void:
 	var r := _window_rect()
+	var bx := r.position.x + CONTENT_X
 	if _sfx != null:
-		_sfx.position = r.position + Vector2(120, 57)
-		_sfx.size = Vector2(330, 14)
+		_sfx.position = Vector2(bx + SOUND_SLIDER_X, r.position.y + 57)
+		_sfx.size = Vector2(SOUND_SLIDER_W, 14)
 	if _music != null:
-		_music.position = r.position + Vector2(120, 89)
-		_music.size = Vector2(330, 14)
+		_music.position = Vector2(bx + SOUND_SLIDER_X, r.position.y + 89)
+		_music.size = Vector2(SOUND_SLIDER_W, 14)
 	if _calm != null:
-		_calm.position = r.position + Vector2(28, 172)
-		_calm.size = Vector2(400, 16)
+		_calm.position = Vector2(bx, r.position.y + 172)
+		_calm.size = Vector2(CONTENT_W, 16)
 	if _full != null:
-		_full.position = r.position + Vector2(28, 198)
-		_full.size = Vector2(400, 16)
+		_full.position = Vector2(bx, r.position.y + 198)
+		_full.size = Vector2(CONTENT_W, 16)
 	if _vhs != null:
-		_vhs.position = r.position + Vector2(28, 224)
-		_vhs.size = Vector2(240, 16)
+		_vhs.position = Vector2(bx, r.position.y + 224)
+		_vhs.size = Vector2((CONTENT_W - 8.0) * 0.5, 16)
 	if _reduce != null:
-		_reduce.position = r.position + Vector2(280, 224)
-		_reduce.size = Vector2(240, 16)
+		_reduce.position = Vector2(bx + (CONTENT_W + 8.0) * 0.5, r.position.y + 224)
+		_reduce.size = Vector2((CONTENT_W - 8.0) * 0.5, 16)
+	# Нижний ряд: 70 + 8 + 80 + 8 + 96 = 262, по центру окна.
+	var row_w := 70.0 + 8.0 + 80.0 + 8.0 + 96.0
+	var row_x := r.position.x + roundf((W - row_w) * 0.5)
 	if _btn_reset != null:
-		_btn_reset.position = r.position + Vector2(264, 278)
+		_btn_reset.position = Vector2(row_x, r.position.y + 278)
 		_btn_reset.size = Vector2(70, 24)
 	if _btn_cancel != null:
-		_btn_cancel.position = r.position + Vector2(342, 278)
+		_btn_cancel.position = Vector2(row_x + 78.0, r.position.y + 278)
 		_btn_cancel.size = Vector2(80, 24)
 	if _btn_apply != null:
-		_btn_apply.position = r.position + Vector2(430, 278)
+		_btn_apply.position = Vector2(row_x + 166.0, r.position.y + 278)
 		_btn_apply.size = Vector2(96, 24)
-	if _btn_x != null:
-		_btn_x.position = r.position + Vector2(W - 26, 4)
-		_btn_x.size = Vector2(16, 16)
 
 
 # --- события ---------------------------------------------------------------
@@ -382,26 +391,32 @@ func _draw_group(r: Rect2, title: String) -> void:
 
 func _draw_labels(r: Rect2) -> void:
 	var f := Theme90.ui()
+	var bx := r.position.x + CONTENT_X
 
 	# звук
-	_draw_speaker(Rect2(r.position + Vector2(28, 58), Vector2(12, 12)))
-	_draw_note(Rect2(r.position + Vector2(28, 90), Vector2(12, 12)))
-	Theme90.text(self, f, Vector2(r.position.x + 46, r.position.y + 57),
+	_draw_speaker(Rect2(Vector2(bx, r.position.y + 58), Vector2(12, 12)))
+	_draw_note(Rect2(Vector2(bx, r.position.y + 90), Vector2(12, 12)))
+	Theme90.text(self, f, Vector2(bx + SOUND_LABEL_X, r.position.y + 57),
 		_tr("ui.volume_sfx", "Звуки"), Theme90.FS_BODY, Theme90.INK)
-	Theme90.text(self, f, Vector2(r.position.x + 46, r.position.y + 89),
+	Theme90.text(self, f, Vector2(bx + SOUND_LABEL_X, r.position.y + 89),
 		_tr("ui.volume_music", "Музыка"), Theme90.FS_BODY, Theme90.INK)
-	Theme90.text_vcenter(self, Theme90.logo(), Rect2(r.position.x + 436, r.position.y + 56, 58, 14),
+	Theme90.text_vcenter(self, Theme90.logo(),
+		Rect2(bx + SOUND_VALUE_X, r.position.y + 56, SOUND_VALUE_W, 14),
 		str(int(_state["sfx"])), 10, Theme90.INK, -1, HORIZONTAL_ALIGNMENT_RIGHT)
-	Theme90.text_vcenter(self, Theme90.logo(), Rect2(r.position.x + 436, r.position.y + 88, 58, 14),
+	Theme90.text_vcenter(self, Theme90.logo(),
+		Rect2(bx + SOUND_VALUE_X, r.position.y + 88, SOUND_VALUE_W, 14),
 		str(int(_state["music"])), 10, Theme90.INK, -1, HORIZONTAL_ALIGNMENT_RIGHT)
-	Theme90.text_vcenter(self, f, Rect2(r.position.x + 496, r.position.y + 56, 14, 14),
+	Theme90.text_vcenter(self, f,
+		Rect2(bx + SOUND_PERCENT_X, r.position.y + 56, 14, 14),
 		"%", Theme90.FS_MICRO, Theme90.DARK)
-	Theme90.text_vcenter(self, f, Rect2(r.position.x + 496, r.position.y + 88, 14, 14),
+	Theme90.text_vcenter(self, f,
+		Rect2(bx + SOUND_PERCENT_X, r.position.y + 88, 14, 14),
 		"%", Theme90.FS_MICRO, Theme90.DARK)
 
 	# подсказки
-	Theme90.text(self, f, Vector2(r.position.x + 16, r.position.y + 254),
-		"ESC — ОТМЕНА · ПРИМЕНЯЕТСЯ ПО «ПОДТВЕРДИТЬ»", Theme90.FS_MICRO, Theme90.DARK)
+	Theme90.text_vcenter(self, f, Rect2(r.position.x + GROUP_X, r.position.y + 254,
+		GROUP_W, 14), "ESC — ОТМЕНА · ПРИМЕНЯЕТСЯ ПО «ПОДТВЕРДИТЬ»",
+		Theme90.FS_MICRO, Theme90.DARK, -1, HORIZONTAL_ALIGNMENT_CENTER)
 
 
 func _draw_speaker(r: Rect2) -> void:

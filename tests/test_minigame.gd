@@ -18,6 +18,7 @@ func _init() -> void:
 	await process_frame
 	_test_base_contract()
 	_test_base_finish()
+	await _test_briefing_gate()
 	_test_base_skip_and_esc()
 	_test_verdicts()
 	_test_factory_send()
@@ -102,6 +103,45 @@ func _test_base_finish() -> void:
 	_approx(_last_q, 0.0, 0.0001, "q клампится снизу в 0.0")
 	neg.free()
 	mg.free()
+
+
+## Брифинг-гейт: context briefing=true держит игру на паузе до клика СТАРТ.
+func _test_briefing_gate() -> void:
+	_set_case("briefing_gate")
+	var got := [0]
+	var mg = FACTORY.create_send("dots", 1, 4242, {"briefing": true})
+	_ok(mg != null, "dots создан с briefing")
+	if mg == null:
+		return
+	mg.finished.connect(func(_q): got[0] += 1)
+	root.add_child(mg)
+	await process_frame
+	await process_frame
+	_ok(bool(mg._briefing), "briefing=true: _briefing взведён")
+	_ok(not mg.is_processing(), "briefing: игровой process стоит")
+	_eq(int(got[0]), 0, "briefing: finished не эмитился")
+
+	# Клик по BRIEF_START снимает гейт (игру не завершает).
+	var click := InputEventMouseButton.new()
+	click.button_index = MOUSE_BUTTON_LEFT
+	click.pressed = true
+	click.position = mg.global_position + mg._brief_start_rect().get_center()
+	mg._input(click)
+	_ok(not bool(mg._briefing), "клик СТАРТ: _briefing снят")
+	_ok(mg.is_processing(), "клик СТАРТ: process включён")
+	_eq(int(got[0]), 0, "клик СТАРТ не завершает игру")
+	mg.free()
+
+	# Контекст без briefing — процесс идёт сразу.
+	var plain = FACTORY.create_send("dots", 1, 4243, {})
+	_ok(plain != null, "dots создан без briefing")
+	if plain == null:
+		return
+	root.add_child(plain)
+	await process_frame
+	_ok(not bool(plain._briefing), "без briefing гейта нет")
+	_ok(plain.is_processing(), "без briefing process идёт сразу")
+	plain.free()
 
 
 func _test_base_skip_and_esc() -> void:

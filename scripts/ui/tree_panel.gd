@@ -17,6 +17,9 @@ var _new_btn: Button90
 var _rows: Array[Dictionary] = []
 var _selected := ""
 var _drag: Node = null
+var _folder_price := 0
+var _price_known := false
+var _price_tween: Tween = null
 
 
 func _ready() -> void:
@@ -43,7 +46,10 @@ func _ready() -> void:
 	_new_btn.icon = Button90.Icon.PLUS
 	_new_btn.caption_size = Theme90.FS_BODY
 	add_child(_new_btn)
-	_new_btn.pressed.connect(func() -> void: new_folder_requested.emit())
+	_new_btn.pressed.connect(func() -> void:
+		_pulse_new_button()
+		new_folder_requested.emit())
+	_set_price_caption(0)
 
 	resized.connect(_relayout)
 	_relayout()
@@ -193,6 +199,45 @@ func _pick_int(fol: Dictionary, keys: Array, fallback: int) -> int:
 
 func _folder_tooltip(files: int, occupied: int, total: int) -> String:
 	return "%d %s · %d из %d клеток" % [files, _plural_files(files), occupied, total]
+
+
+## Ценник всегда на кнопке: «НОВАЯ ПАПКА · $184». 0 — без цены.
+func set_new_folder_price(price: int) -> void:
+	var next := maxi(0, int(price))
+	var changed := next != _folder_price
+	_folder_price = next
+	_set_price_caption(_folder_price)
+	if changed and _price_known and _folder_price > 0:
+		_pulse_new_button()
+	_price_known = true
+
+
+func get_new_folder_price() -> int:
+	return _folder_price
+
+
+func _set_price_caption(price: int) -> void:
+	if _new_btn == null:
+		return
+	if price > 0:
+		_new_btn.caption = "НОВАЯ ПАПКА · $%d" % price
+		_new_btn.tooltip_text = "Создать папку за $%d" % price
+	else:
+		_new_btn.caption = "НОВАЯ ПАПКА"
+		_new_btn.tooltip_text = "Создать папку"
+	_new_btn.queue_redraw()
+
+
+func _pulse_new_button() -> void:
+	if _new_btn == null or UiMotion.reduced \
+			or DisplayServer.get_name() == "headless":
+		return
+	if _price_tween != null and _price_tween.is_valid():
+		_price_tween.kill()
+	_new_btn.modulate = Color(1.14, 1.14, 1.14, 1.0)
+	_price_tween = create_tween()
+	_price_tween.tween_property(_new_btn, "modulate", Color(1, 1, 1, 1),
+		UiMotion.DUR_UI)
 
 
 func _apply_layout() -> void:

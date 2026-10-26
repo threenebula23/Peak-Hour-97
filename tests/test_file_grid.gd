@@ -32,6 +32,7 @@ func _init() -> void:
 	_test_labels_and_rotation()
 	_test_payload_and_edges()
 	_test_plural()
+	await _test_edge_layout_inside_rect()
 	game.start_new_run(1)
 	await process_frame
 	var registry = game.registry
@@ -44,6 +45,7 @@ func _init() -> void:
 	await _test_grid_self_heal(registry, folder_id)
 	await _test_grid_move_no_phantom(registry, folder_id)
 	await _test_grid_confirmed_reservation(registry)
+	await _test_edge_files_drop(registry)
 	await _test_rotation_preference()
 	await _test_ghost_rotation()
 	await _test_sorting_table(registry)
@@ -188,6 +190,57 @@ func _test_plural() -> void:
 	_eq(FG.plural_cells(20), "клеток", "20 клеток")
 	_eq(FG.plural_cells(11), "клеток", "11 клеток")
 	_eq(FG.plural_cells(21), "клетка", "21 клетка")
+
+
+## Регрессия «обрезанная сетка»: у крайних клеток заливка/контур фигуры
+## (GAP/2 + 1.3 px) и dashed-box ghost (+2.6 px) не должны выходить за rect
+## FileGrid. Проверяем все размеры папок лота, включая 9×6 при реальном
+## размере окна файлов 572×492.
+func _test_edge_layout_inside_rect() -> void:
+	_set_case("edge layout inside rect")
+	var grid = FG.new()
+	grid.name = "TestEdgeLayoutGrid"
+	grid.size = Vector2(572, 492)
+	root.add_child(grid)
+	await process_frame
+	var bounds := Rect2(Vector2.ZERO, grid.size)
+	for dims in [Vector2i(5, 4), Vector2i(6, 4), Vector2i(7, 5),
+			Vector2i(8, 5), Vector2i(8, 6), Vector2i(9, 6)]:
+		grid._cols = dims.x
+		grid._rows = dims.y
+		grid._recalc_layout()
+		var m: Dictionary = grid.grid_metrics()
+		var origin: Vector2 = m["origin"]
+		_ok(origin.x >= 4.0 and origin.y >= 4.0,
+			"%dx%d: origin с внутренним отступом: %s" % [dims.x, dims.y, origin])
+		var corners := [Vector2i(0, 0), Vector2i(dims.x - 1, 0),
+			Vector2i(0, dims.y - 1), Vector2i(dims.x - 1, dims.y - 1)]
+		for cell_pos in corners:
+			var r: Rect2 = grid._cell_rect(cell_pos.x, cell_pos.y)
+			var ink := FS.cell_pixel_rect(r.position, Vector2i.ZERO,
+				grid._cell, FG.GAP).grow(1.5)
+			_ok(bounds.encloses(ink),
+				"%dx%d клетка %s: заливка/контур внутри rect: %s" % [
+					dims.x, dims.y, cell_pos, ink])
+			var ghost := r.grow(2.6)
+			_ok(bounds.encloses(ghost),
+				"%dx%d клетка %s: ghost внутри rect: %s" % [
+					dims.x, dims.y, cell_pos, ghost])
+			var payload := {"kind": "file", "id": "edge_probe",
+				"shape_id": "O1", "rotation": 0, "from": "folder"}
+			var fit: Dictionary = grid._resolve_placement(payload, cell_pos, 0)
+			_ok(bool(fit.get("ok", false)) and fit.get("origin") == cell_pos,
+				"%dx%d: O1 влезает в крайнюю клетку %s" % [
+					dims.x, dims.y, cell_pos])
+			var b: Vector2i = FR.shape_bounds(FR.shape_cells("O1", 0))
+			var step: float = grid._cell + FG.GAP
+			var box := Rect2(grid._shape_pos(fit.get("origin", cell_pos)),
+				Vector2(float(b.x) * step - FG.GAP,
+					float(b.y) * step - FG.GAP)).grow(2.6)
+			_ok(bounds.encloses(box),
+				"%dx%d: bounds ghost %s внутри rect" % [dims.x, dims.y, cell_pos])
+	root.remove_child(grid)
+	grid.queue_free()
 
 
 # --- headless-компоненты ---------------------------------------------------
@@ -414,6 +467,94 @@ func _test_grid_confirmed_reservation(registry) -> void:
 	_eq(grid.file_count(), 2, "в сетке оба принятых файла")
 	_eq(registry.validate().size(), 0,
 		"инварианты после приёма: %s" % str(registry.validate()))
+	root.remove_child(grid)
+	grid.queue_free()
+
+
+## Крайние клетки для всех типов + ghost/drop и файл после drop: геометрия
+## фигуры обязана оставаться внутри rect сетки (без clip по краям).
+func _test_edge_files_drop(registry) -> void:
+	_set_case("FileGrid edge files/drop")
+	var folder = registry.create_folder("C", "Края 97")
+	if folder == null:
+		_ok(false, "не удалось создать папку для крайних клеток")
+		return
+	folder.cols = 9
+	folder.rows = 6
+	var grid = FG.new()
+	grid.name = "TestEdgeFilesGrid"
+	grid.size = Vector2(572, 492)
+	root.add_child(grid)
+	await process_frame
+	grid.set_folder(str(folder.id), "КРАЯ", "C: \\ КРАЯ")
+	await process_frame
+	var bounds := Rect2(Vector2.ZERO, grid.size)
+	var corners := [Vector2i(0, 0), Vector2i(8, 0), Vector2i(0, 5), Vector2i(8, 5)]
+	var types := ["text", "sound", "photo", "video"]
+	for i in 4:
+		var type_id := str(types[i])
+		var file = registry.create_file("Край %s 97" % type_id, type_id, str(folder.id))
+		_ok(file != null, "создан %s-файл" % type_id)
+		if file == null:
+			continue
+		file.shape_id = "O1"
+		file.shape_cells = registry.shape_cells("O1", 0)
+		file.rotation = 0
+		_ok(registry.move_file(str(file.id), str(folder.id), Vector2i(corners[i]), 0),
+			"%s в крайнюю клетку %s" % [type_id, corners[i]])
+	grid.refresh()
+	await process_frame
+	for i in 4:
+		var corner := Vector2i(corners[i])
+		var file = registry.find_by_name("Край %s 97" % str(types[i]))
+		_ok(file != null and grid._by_id.has(str(file.id)),
+			"%s-файл виден в сетке" % str(types[i]))
+		if file == null:
+			continue
+		_eq(Vector2i(file.origin), corner, "%s: origin в крайней клетке" % str(types[i]))
+		var r: Rect2 = grid._cell_rect(corner.x, corner.y)
+		var ink := FS.cell_pixel_rect(r.position, Vector2i.ZERO,
+			grid._cell, FG.GAP).grow(1.5)
+		_ok(bounds.encloses(ink),
+			"%s: фигура в клетке %s внутри rect: %s" % [str(types[i]), corner, ink])
+
+	var mover = registry.create_file("Край drop 97", "text", str(folder.id))
+	_ok(mover != null, "файл для drop создан")
+	if mover == null:
+		root.remove_child(grid)
+		grid.queue_free()
+		return
+	mover.shape_id = "O1"
+	mover.shape_cells = registry.shape_cells("O1", 0)
+	mover.rotation = 0
+	_ok(registry.move_file(str(mover.id), str(folder.id), Vector2i(4, 2), 0),
+		"файл для drop в центре")
+	grid.refresh()
+	await process_frame
+	var payload := FG.shape_payload_for(str(mover.id), str(mover.name), "text",
+		"txt", "O1", 0, Vector2i(4, 2), "folder")
+	var drop_cell := Vector2i(8, 2)
+	var drop_pos: Vector2 = grid._cell_rect(drop_cell.x, drop_cell.y).get_center()
+	_ok(grid._can_drop_data(drop_pos, payload), "can_drop у правого края")
+	_eq(grid._ghost_origin, drop_cell, "ghost в крайней клетке")
+	_ok(grid._ghost_ok, "ghost у края валиден")
+	for gp in grid._ghost_cells:
+		var c := Vector2i(gp)
+		_ok(c.x >= 0 and c.y >= 0 and c.x < 9 and c.y < 6,
+			"ghost-клетка %s внутри сетки" % str(c))
+	var ghost_box := Rect2(grid._shape_pos(grid._ghost_origin),
+		Vector2(grid._cell, grid._cell)).grow(2.6)
+	_ok(bounds.encloses(ghost_box),
+		"ghost-box внутри rect: %s" % str(ghost_box))
+	grid._drop_data(drop_pos, payload)
+	_eq(Vector2i(mover.origin), drop_cell, "после drop файл в крайней клетке")
+	grid.refresh()
+	var after: Rect2 = grid._cell_rect(drop_cell.x, drop_cell.y)
+	var after_ink := FS.cell_pixel_rect(after.position, Vector2i.ZERO,
+		grid._cell, FG.GAP).grow(1.5)
+	_ok(bounds.encloses(after_ink), "файл после drop внутри rect: %s" % str(after_ink))
+	_eq(str(grid._cells_owner.get(drop_cell, "")), str(mover.id),
+		"крайняя клетка принадлежит файлу после drop")
 	root.remove_child(grid)
 	grid.queue_free()
 

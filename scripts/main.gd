@@ -13,6 +13,7 @@ const DESKTOP_WINDOW_SIZE := Vector2i(1920, 1080)
 ## Preload вместо глобального имени: работает и без прогретого class cache.
 const GAME_CONTROLLER := preload("res://scripts/game_controller.gd")
 const RENAME_MODAL := preload("res://scripts/ui/rename_modal.gd")
+const ATTACK_ALERT := preload("res://scripts/ui/attack_alert.gd")
 
 var title_bar: WindowFrame
 var menu_bar: Panel90
@@ -75,6 +76,12 @@ var _spawn_frozen_toast_ms: int = -100000
 var _modal_game: Node = null
 ## Тип активной модалки: "send" / "attack" / "connection" / "".
 var _modal_kind := ""
+## Полноэкранное предупреждение «ИДЁТ АТАКА» перед мини-игрой.
+var _attack_alert = null
+## Последние значения для flash/pulse счётчиков и ценника папки.
+var _last_money_seen := -1
+var _last_sla_seen := -1.0
+var _pulse_tweens: Dictionary = {}
 ## M2: шаг обучения «send» подтверждается один раз за открытие мини-игры.
 var _send_tutorial_notified := false
 
@@ -165,6 +172,7 @@ var _current_files: Array = []
 func _ready() -> void:
 	_create_drag_controller()
 	_build()
+	_bind_game_juice_signals()
 	_connect_all()
 	_rename_slot_labels()
 	controller = GAME_CONTROLLER.new()
@@ -218,6 +226,11 @@ func _process(delta: float) -> void:
 
 ## Esc: закрывает верхнюю модалку, ставит смену на паузу или игнорируется.
 func _unhandled_input(event: InputEvent) -> void:
+	# Во время «ИДЁТ АТАКА» ввод заблокирован полноэкранным alert.
+	if _attack_alert != null and is_instance_valid(_attack_alert) \
+			and _attack_alert.visible:
+		_mark_input_handled()
+		return
 	if not (event is InputEventKey):
 		return
 	var key := event as InputEventKey
@@ -735,6 +748,7 @@ func _refresh_prep() -> void:
 	var d: Dictionary = _enrich_prep_data(controller.prep_data())
 	var sections: Array = d.get("sections", [])
 	tree.set_data(sections)
+	_refresh_folder_price()
 	tree_window.set_title("ДИСКИ",
 		_plural_ru(_count_folders(sections), "ПАПКА", "ПАПКИ", "ПАПОК"))
 
@@ -985,9 +999,14 @@ func _hour_director():
 
 
 func _on_hour_packet_added(_id: String) -> void:
+	_kick_panels(1)
 	if _tutorial_active and _tutorial_waiting_spawn:
 		_tutorial_waiting_spawn = false
 		_tutorial_begin_step(0)
+
+
+func _on_hour_request_added(_id: String) -> void:
+	_kick_panels(1)
 
 
 func _tutorial_begin_step(index: int) -> void:
@@ -1484,6 +1503,9 @@ func _clear_hour_panels() -> void:
 
 
 func _on_phase(phase: StringName) -> void:
+	if _attack_alert != null and is_instance_valid(_attack_alert):
+		_attack_alert.finish_now()
+		_attack_alert = null
 	_clear_modal_if_dead()
 	if phase != GAME_CONTROLLER.PHASE_HOUR:
 		# Вне часа не должно оставаться ни одной игровой модалки: send/attack
@@ -1548,6 +1570,7 @@ func _show_hour() -> void:
 		if active_director != null else 0.0
 	_clear_hour_panels()
 	_apply_phase_panels(false)
+	_refresh_folder_price()
 	_connect_hour_signals()
 	_bind_attack_stress_signals()
 	_refresh_hour()
@@ -1570,12 +1593,18 @@ func _connect_hour_signals() -> void:
 	# раньше, чем UI успевает получить finished — чистим висячий указатель.
 	controller.minigame_closed.connect(_on_minigame_closed_ui)
 	controller.attack_resolved.connect(_on_attack_resolved_ui)
+	if controller.has_signal("slot_changed") \
+			and not controller.slot_changed.is_connected(_on_slot_changed_ui):
+		controller.slot_changed.connect(_on_slot_changed_ui)
 	# Прямая страховка: HourDirector может эмитить packet_added сам.
 	var director = _hour_director()
 	if director != null:
 		if director.has_signal("packet_added") \
 				and not director.packet_added.is_connected(_on_hour_packet_added):
 			director.packet_added.connect(_on_hour_packet_added)
+		if director.has_signal("request_added") \
+				and not director.request_added.is_connected(_on_hour_request_added):
+			director.request_added.connect(_on_hour_request_added)
 		# M8: спавн замер из-за полного буфера — раньше сигнал никто не слушал.
 		if director.has_signal("spawn_frozen") \
 				and not director.spawn_frozen.is_connected(_on_spawn_frozen_ui):
@@ -1613,8 +1642,43 @@ func _on_spawn_frozen_ui(reason: String) -> void:
 
 
 ## Атака v2 — только модальная мини-игра, без карточек/оверлеев.
+## Перед показом — короткий alert «ИДЁТ АТАКА» (1.1 с). В headless — сразу.
 func _on_show_attack_minigame(game_node, kind: String) -> void:
-	_toast("АТАКА: %s" % _attack_kind_name(kind), "warn")
+	var attack_name := _attack_display_name(kind)
+	_toast("АТАКА: %s" % attack_name.to_upper(), "warn")
+	var headless := DisplayServer.get_name() == "headless"
+	if not headless and game_node != null and is_instance_valid(game_node):
+		var briefing := bool(game_node.get("_briefing")) \
+			if game_node.get("_briefing") != null else false
+		if not briefing:
+			game_node.set_process(false)
+			game_node.set_process_input(false)
+		_attack_alert = ATTACK_ALERT.new()
+		_attack_alert.name = "AttackAlert"
+		if modal_root != null:
+			modal_root.add_child(_attack_alert)
+			modal_root.move_child(_attack_alert, -1)
+		else:
+			add_child(_attack_alert)
+		_attack_alert.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
+		_attack_alert.play("ИДЁТ АТАКА", attack_name, 1.1)
+		await _attack_alert.finished
+		_attack_alert = null
+		# Игра умерла/отменена за время предупреждения — безопасно выходим.
+		if not is_instance_valid(game_node) or game_node.is_queued_for_deletion():
+			_restore_modal_open_state()
+			return
+		if controller == null or controller.phase != GAME_CONTROLLER.PHASE_HOUR:
+			_restore_modal_open_state()
+			return
+		# Briefing-режим Lane B сам держит set_process(false) до кнопки СТАРТ.
+		if not briefing:
+			game_node.set_process(true)
+			game_node.set_process_input(true)
+	_show_attack_game(game_node, kind)
+
+
+func _show_attack_game(game_node, _kind: String) -> void:
 	if _show_modal_game(game_node, "attack"):
 		_tutorial_notify("sla")
 		return
@@ -1625,6 +1689,16 @@ func _on_show_attack_minigame(game_node, kind: String) -> void:
 			and director.attack_director.has_method("cancel_active"):
 		director.attack_director.cancel_active()
 	_restore_modal_open_state()
+
+
+## Название атаки для alert: Data.attack_def(kind).name_ru, иначе kind.
+func _attack_display_name(kind: String) -> String:
+	if Data != null and Data.has_method("attack_def"):
+		var def: Dictionary = Data.attack_def(kind)
+		var name := str(def.get("name_ru", "")).strip_edges()
+		if not name.is_empty():
+			return name
+	return _attack_kind_name(kind)
 
 
 ## C1: после отката чужой модалки вернуть controller.modal_open в актуальное
@@ -1822,6 +1896,9 @@ func _on_minigame_closed_ui(_req_id: String) -> void:
 
 ## AttackDirector закончил/отменил атаку: нода уже queue_free — снимаем модалку.
 func _on_attack_resolved_ui(_kind: String, success: bool, _tier: int) -> void:
+	if _attack_alert != null and is_instance_valid(_attack_alert):
+		_attack_alert.finish_now()
+		_attack_alert = null
 	if stress_overlay != null:
 		stress_overlay.notify("relief" if success else "attack_fail")
 	_clear_modal_if_dead()
@@ -4033,8 +4110,6 @@ func _destroy_folder_contents(folder_id: String) -> void:
 	else:
 		_refresh_hour()
 	_toast("СОДЕРЖИМОЕ УНИЧТОЖЕНО · SLA −5", "error")
-	if status_bar != null:
-		status_bar.flash("sla", "−5", Theme90.ERROR)
 
 
 ## Открыть диалог переименования папки (только для реальных папок, не секций).
@@ -4089,6 +4164,7 @@ func _delete_folder(folder_id: String) -> void:
 		_refresh_prep()
 	elif controller != null:
 		_refresh_hour()
+	_refresh_folder_price()
 	_toast("ПАПКА УДАЛЕНА", "success")
 
 
@@ -4202,32 +4278,105 @@ func _new_folder_in(folder_id: String) -> void:
 	if Game.registry == null:
 		_toast("ХРАНИЛИЩЕ НЕДОСТУПНО", "error")
 		return
-	var folders_max := int(Data.const_value("folders_max", 6))
-	if Game.registry.folder_count() >= folders_max:
-		_toast(_tr_or("msg.folder_limit", "ДОСТИГНУТ ЛИМИТ ПАПОК"), "warn")
-		return
-	var cost := int(Data.const_value("folder_new_cost", 100))
-	if int(Game.money) < cost:
+	var cost := _folder_price_now()
+	if cost > 0 and int(Game.money) < cost:
 		_toast(_tr_or("msg.folder_need_money", "НУЖНО {cost} $")
 			.replace("{cost}", str(cost)), "warn")
 		return
 	# Имя генерируется из пула Data и делается уникальным внутри секции.
 	var folder_name := _unique_folder_name(section_id, Data.folder_name())
-	Game.add_money(-cost, "folder")
+	if cost > 0:
+		Game.add_money(-cost, "folder")
 	var folder = Game.registry.create_folder(section_id, folder_name)
 	if folder == null:
-		Game.add_money(cost, "folder_refund")
-		# Возврат не должен засчитываться в заработок часа/забега.
-		if Game.stats != null:
-			Game.stats["money_earned"] = maxi(0,
-				int(Game.stats.get("money_earned", 0)) - cost)
+		if cost > 0:
+			Game.add_money(cost, "folder_refund")
+			# Возврат не должен засчитываться в заработок часа/забега.
+			if Game.stats != null:
+				Game.stats["money_earned"] = maxi(0,
+					int(Game.stats.get("money_earned", 0)) - cost)
+		_refresh_folder_price()
 		_toast("НЕ УДАЛОСЬ СОЗДАТЬ ПАПКУ", "error")
 		return
 	if controller != null:
 		controller.save()
-	_refresh_prep()
+	if controller != null and controller.phase == GAME_CONTROLLER.PHASE_PREP:
+		_refresh_prep()
+	else:
+		_refresh_hour()
 	_on_folder_selected(str(folder.id))
-	_toast("СОЗДАНА ПАПКА «%s» · −%d $" % [str(folder.name), cost], "success")
+	_refresh_folder_price()
+	_kick_panels(1)
+	var price_text := " · −%d $" % cost if cost > 0 else ""
+	_toast("СОЗДАНА ПАПКА «%s»%s" % [str(folder.name), price_text], "success")
+
+
+## Цена следующей папки: backend Game.folder_price(), иначе старый fallback.
+func _folder_price_now() -> int:
+	if Game != null and Game.has_method("folder_price"):
+		return maxi(0, int(Game.folder_price()))
+	return maxi(0, int(Data.const_value("folder_new_cost", 180)))
+
+
+func _refresh_folder_price() -> void:
+	if tree != null:
+		tree.set_new_folder_price(_folder_price_now())
+
+
+func _bind_game_juice_signals() -> void:
+	if Game == null:
+		return
+	if not Game.money_changed.is_connected(_on_money_changed_ui):
+		Game.money_changed.connect(_on_money_changed_ui)
+	if not Game.sla_changed.is_connected(_on_sla_changed_ui):
+		Game.sla_changed.connect(_on_sla_changed_ui)
+	_last_money_seen = int(Game.money)
+	_last_sla_seen = float(Game.sla)
+	_refresh_folder_price()
+
+
+func _on_money_changed_ui(value: int) -> void:
+	var now := int(value)
+	if _last_money_seen >= 0 and now != _last_money_seen:
+		var delta := now - _last_money_seen
+		var in_game: bool = controller != null \
+			and (controller.phase == GAME_CONTROLLER.PHASE_PREP \
+				or controller.phase == GAME_CONTROLLER.PHASE_HOUR)
+		if in_game and _motion_enabled() and status_bar != null:
+			status_bar.flash("money", "%+d" % delta,
+				Theme90.SUCCESS if delta > 0 else Theme90.ERROR)
+	_last_money_seen = now
+	_refresh_folder_price()
+
+
+func _on_sla_changed_ui(value: float) -> void:
+	var now := float(value)
+	if _last_sla_seen >= 0.0:
+		var delta := now - _last_sla_seen
+		var in_hour: bool = controller != null \
+			and controller.phase == GAME_CONTROLLER.PHASE_HOUR
+		if absf(delta) >= 0.5 and in_hour and _motion_enabled() and status_bar != null:
+			status_bar.flash("sla", "%+d" % int(roundf(delta)),
+				Theme90.SUCCESS if delta > 0.0 else Theme90.ERROR)
+	_last_sla_seen = now
+
+
+func _pulse_control(c: Control) -> void:
+	if c == null or not is_instance_valid(c) or not _motion_enabled():
+		return
+	var id := c.get_instance_id()
+	if _pulse_tweens.has(id):
+		var old = _pulse_tweens[id]
+		if old != null and old.is_valid():
+			old.kill()
+	c.modulate = Color(1.14, 1.14, 1.14, 1.0)
+	var tw := create_tween()
+	tw.tween_property(c, "modulate", Color(1, 1, 1, 1), UiMotion.DUR_UI)
+	_pulse_tweens[id] = tw
+
+
+func _on_slot_changed_ui() -> void:
+	_pulse_control(slot_count_label)
 
 
 ## Уникальное имя в секции: «Имя», «Имя 2», «Имя 3», … с обрезкой до 16.

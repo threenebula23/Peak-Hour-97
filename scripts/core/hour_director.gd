@@ -78,6 +78,19 @@ const MAX_REQUIRED_FILES := 4
 const TYPE_ORDER: Array[String] = ["text", "sound", "photo", "video"]
 const DEFAULT_REQUEST_MIX := {"1": 0.76, "2": 0.24, "3": 0.0, "4": 0.0}
 const DEFAULT_TYPE_WEIGHTS := {"text": 1.0, "sound": 0.0, "photo": 0.0, "video": 0.0}
+## Fallback весов ТИПА файлов для required-слотов запроса (если нет JSON).
+## Порядок: text, sound, photo, video.
+const DEFAULT_REQUEST_TYPE_WEIGHTS := [
+	[1.00, 0.00, 0.00, 0.00],
+	[0.80, 0.20, 0.00, 0.00],
+	[0.50, 0.50, 0.00, 0.00],
+	[0.40, 0.30, 0.30, 0.00],
+	[0.35, 0.35, 0.30, 0.00],
+	[0.30, 0.30, 0.30, 0.10],
+	[0.22, 0.23, 0.30, 0.25],
+	[0.15, 0.25, 0.35, 0.25],
+	[0.10, 0.15, 0.30, 0.45],
+]
 
 ## Активные сущности часа.
 var active_packets: Dictionary = {}
@@ -108,6 +121,8 @@ var _hour_duration: float = 0.0
 var spawn_window: float = DEFAULT_HOUR_SECONDS * SPAWN_WINDOW_RATIO
 var request_mix: Dictionary = DEFAULT_REQUEST_MIX.duplicate()
 var type_weights: Dictionary = DEFAULT_TYPE_WEIGHTS.duplicate()
+## Веса выбора типа файлов для required-слотов (text/sound/photo/video).
+var request_type_weights: Dictionary = {"text": 1.0, "sound": 0.0, "photo": 0.0, "video": 0.0}
 
 var spawn_recv_accum: float = 0.0
 var spawn_send_accum: float = 0.0
@@ -208,6 +223,9 @@ func start_hour(p_hour: int) -> void:
 	type_weights = _dict_of(def.get("type_weights", DEFAULT_TYPE_WEIGHTS))
 	if type_weights.is_empty():
 		type_weights = _default_type_weights(hour)
+	request_type_weights = _dict_of(def.get("request_type_weights", {}))
+	if request_type_weights.is_empty():
+		request_type_weights = _default_request_type_weights(hour)
 	spawn_window = _hour_duration * _spawn_window_ratio()
 
 	time_left = _hour_duration
@@ -696,8 +714,10 @@ func receive_packet(packet_id: String, folder_id: String,
 
 # --- запросы ---------------------------------------------------------------
 
-func spawn_request_now(count_override: int = 0) -> String:
-	return _spawn_random_request(true, int(count_override))
+## Тестовый/dev-спавн: по умолчанию TCP (protocol_override="").
+## Протокол можно форсировать: spawn_request_now(1, "udp").
+func spawn_request_now(count_override: int = 0, protocol_override: String = "") -> String:
+	return _spawn_random_request(true, int(count_override), protocol_override)
 
 
 ## Пул файлов, из которых можно собрать запрос: лежат в разблокированной
@@ -727,18 +747,81 @@ func _request_file_pool() -> Array:
 	return pool
 
 
-## Выбрать N конкретных файлов: один равномерный shuffle пула, первые N.
+## Выбрать N конкретных файлов взвешенно по ТИПУ (request_type_weights),
+## без повторов.
+## Если в конфиге есть положительные веса — берём ТОЛЬКО файлы этих типов;
+## нет ни одного такого файла в пуле → [] (запрос не создаётся).
+## Uniform fallback — только когда конфиг весов пуст/все нули.
 func _pick_request_files(pool: Array, count: int) -> Array[String]:
 	var out: Array[String] = []
 	var want := clampi(int(count), 1, MAX_REQUIRED_FILES)
 	if pool.is_empty():
 		return out
-	want = mini(want, pool.size())
-	var shuffled := pool.duplicate()
-	_shuffle_array(shuffled)
-	for i in range(want):
-		out.append(str(shuffled[i].id))
+	var allowed := _weighted_types()
+	var candidates: Array = []
+	if allowed.is_empty():
+		candidates = pool.duplicate()
+	else:
+		for item in pool:
+			if allowed.has(_pool_item_type(item)):
+				candidates.append(item)
+	if candidates.is_empty():
+		return out
+	want = mini(want, candidates.size())
+	while out.size() < want and not candidates.is_empty():
+		var idx := _pick_weighted_file_index(candidates)
+		out.append(_pool_item_id(candidates[idx]))
+		candidates.remove_at(idx)
 	return out
+
+
+## Типы с положительным весом в request_type_weights (пусто — веса не заданы).
+func _weighted_types() -> Array:
+	var out: Array = []
+	for type_id in TYPE_ORDER:
+		if float(request_type_weights.get(type_id, 0.0)) > 0.0:
+			out.append(type_id)
+	return out
+
+
+## id элемента пула (FileItem или Dictionary).
+func _pool_item_id(item) -> String:
+	if item is Dictionary:
+		return str((item as Dictionary).get("id", ""))
+	return str(item.id)
+
+
+## Тип элемента пула (FileItem или Dictionary).
+func _pool_item_type(item) -> String:
+	if item is Dictionary:
+		return str((item as Dictionary).get("type", ""))
+	return str(item.type)
+
+
+## Индекс файла в пуле по весам типов. Fallback — uniform.
+func _pick_weighted_file_index(items: Array) -> int:
+	var total := 0.0
+	var weights: Array = []
+	for item in items:
+		var w := maxf(0.0, float(request_type_weights.get(_pool_item_type(item), 0.0)))
+		weights.append(w)
+		total += w
+	if total <= 0.0:
+		return _randi_range(0, items.size() - 1)
+	var roll := _randf() * total
+	var acc := 0.0
+	var last_positive := -1
+	for i in range(items.size()):
+		var w := float(weights[i])
+		if w <= 0.0:
+			continue
+		last_positive = i
+		acc += w
+		if roll < acc:
+			return i
+	if last_positive >= 0:
+		return last_positive
+	return _randi_range(0, items.size() - 1)
 
 
 func _shuffle_array(items: Array) -> void:
@@ -749,7 +832,8 @@ func _shuffle_array(items: Array) -> void:
 		items[j] = tmp
 
 
-func _spawn_random_request(force: bool = false, count_override: int = 0) -> String:
+func _spawn_random_request(force: bool = false, count_override: int = 0,
+		protocol_override: String = "") -> String:
 	if registry == null:
 		return ""
 	if not force:
@@ -768,11 +852,23 @@ func _spawn_random_request(force: bool = false, count_override: int = 0) -> Stri
 	var file_ids := _pick_request_files(pool, count)
 	if file_ids.is_empty():
 		return ""
-	var req_id := _create_request(count, "tcp", file_ids)
+	var req_id := _create_request(count, _request_spawn_protocol(force, protocol_override), file_ids)
 	if req_id.is_empty():
 		return ""
 	requests_spawned += 1
 	return req_id
+
+
+## Протокол нового запроса: override → как задано; force/dev → TCP;
+## нормальный спавн → UDP с шансом constants.udp_request_ratio.
+func _request_spawn_protocol(force: bool, protocol_override: String) -> String:
+	var forced := _clean_protocol(protocol_override)
+	if not forced.is_empty():
+		return forced
+	if force:
+		return "tcp"
+	var ratio := clampf(_const_float("udp_request_ratio", 0.35), 0.0, 1.0)
+	return "udp" if _randf() < ratio else "tcp"
 
 
 ## Legacy-хелпер: создать запрос на переданные файлы (уже подключённый TCP).
@@ -1312,6 +1408,7 @@ func _launch_send_minigame(req_id: String) -> bool:
 		"sum": req.send_sum,
 		"protocol": req.protocol,
 		"reward_text": "КОНТЕЙНЕР УХОДИТ",
+		"briefing": true,
 	}
 	var seed_value := _randi_range(1, 2147483646)
 	var game_node = null
@@ -1346,6 +1443,15 @@ func _on_send_minigame_finished(quality: float) -> void:
 		return
 	req.minigame_active = false
 	req.quality = clampf(float(quality), 0.0, 1.0)
+	# Слишком грязный результат: передача не начинается. Файлы остаются в
+	# контейнере, соединение не трогаем — игрок жмёт ОТПРАВИТЬ ещё раз.
+	if req.quality < _const_float("send_quality_min", 0.45):
+		req.sending = false
+		req.set_meta("queued", false)
+		request_changed.emit(req_id)
+		if running and not _finish_guard:
+			_emit_toast("НИЗКОЕ КАЧЕСТВО · ОТПРАВКА ОТМЕНЕНА · ПОВТОРИТЕ")
+		return
 	request_changed.emit(req_id)
 	if not running or _finish_guard:
 		return
@@ -2307,6 +2413,7 @@ func _hour_def() -> Dictionary:
 		"send_interval": DEFAULT_SEND_INTERVAL,
 		"type_weights": _default_type_weights(hour),
 		"request_mix": DEFAULT_REQUEST_MIX.duplicate(),
+		"request_type_weights": _default_request_type_weights(hour),
 	}
 
 
@@ -2386,18 +2493,29 @@ func _type_pool() -> Array:
 
 func _default_type_weights(p_hour: int) -> Dictionary:
 	var idx := clampi(int(p_hour) - 1, 0, 8)
+	# Держим равными весам запросов: пул приёма соответствует спросу.
 	var table := [
-		[0.70, 0.30, 0.00, 0.00],
-		[0.55, 0.30, 0.15, 0.00],
-		[0.40, 0.30, 0.22, 0.08],
-		[0.30, 0.25, 0.28, 0.17],
-		[0.22, 0.20, 0.32, 0.26],
-		[0.15, 0.15, 0.35, 0.35],
-		[0.10, 0.12, 0.35, 0.43],
-		[0.06, 0.08, 0.32, 0.54],
-		[0.04, 0.04, 0.30, 0.62],
+		[1.00, 0.00, 0.00, 0.00],
+		[0.80, 0.20, 0.00, 0.00],
+		[0.50, 0.50, 0.00, 0.00],
+		[0.40, 0.30, 0.30, 0.00],
+		[0.35, 0.35, 0.30, 0.00],
+		[0.30, 0.30, 0.30, 0.10],
+		[0.22, 0.23, 0.30, 0.25],
+		[0.15, 0.25, 0.35, 0.25],
+		[0.10, 0.15, 0.30, 0.45],
 	]
 	var row: Array = table[idx]
+	var out := {}
+	for i in range(TYPE_ORDER.size()):
+		out[TYPE_ORDER[i]] = float(row[i])
+	return out
+
+
+## Fallback весов типов required-файлов, если в строке часа их нет.
+func _default_request_type_weights(p_hour: int) -> Dictionary:
+	var idx := clampi(int(p_hour) - 1, 0, 8)
+	var row: Array = DEFAULT_REQUEST_TYPE_WEIGHTS[idx]
 	var out := {}
 	for i in range(TYPE_ORDER.size()):
 		out[TYPE_ORDER[i]] = float(row[i])

@@ -27,6 +27,11 @@ const DRAG_CONTROLLER = preload("res://scripts/ui/drag_controller.gd")
 const GAP := 6.0
 const CELL_MIN := 56.0
 const CELL_MAX := 104.0
+## Внутренний отступ сетки: фигура расширяет заливку/контур на GAP/2 + 1.3 px
+## (выделение 2.6) за границу клетки, ghost рисует dashed-box +2.6 px. Без
+## запаса клип Control (и clip_contents родителя) срезал левый/правый край
+## файла в клетках (0,*) и (cols-1,*).
+const GRID_PAD := 5.0
 const DEFAULT_COLS := 5
 const DEFAULT_ROWS := 4
 
@@ -598,11 +603,19 @@ func _on_resized() -> void:
 
 
 func _recalc_layout() -> void:
+	# Клетку считаем как раньше, но если сетка упирается в край ближе GRID_PAD,
+	# пересчитываем по уменьшенному view. Так outline/label/ghost у крайних
+	# клеток не попадают под clip, а обычный 5×4 не раздувается.
 	_cell = cell_size(size, _cols, _rows)
 	var gs := grid_size_of(_cols, _rows, _cell, GAP)
+	if gs.x + GRID_PAD * 2.0 > size.x or gs.y + GRID_PAD * 2.0 > size.y:
+		var inner := Vector2(maxf(0.0, size.x - GRID_PAD * 2.0),
+			maxf(0.0, size.y - GRID_PAD * 2.0))
+		_cell = cell_size(inner, _cols, _rows)
+		gs = grid_size_of(_cols, _rows, _cell, GAP)
 	_grid_origin = Vector2(
-		maxf(1.0, roundf((size.x - gs.x) * 0.5)),
-		maxf(1.0, roundf((size.y - gs.y) * 0.5)))
+		maxf(GRID_PAD, roundf((size.x - gs.x) * 0.5)),
+		maxf(GRID_PAD, roundf((size.y - gs.y) * 0.5)))
 
 
 func _cell_rect(c: int, r: int) -> Rect2:

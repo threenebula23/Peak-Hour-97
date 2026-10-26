@@ -18,6 +18,7 @@ func _init() -> void:
 	_test_data()
 	_test_start_stats()
 	_test_levels_and_caps()
+	_test_folder_price()
 	_test_sla_rules()
 	_test_channel_and_timers()
 	_test_transfer_time()
@@ -62,13 +63,18 @@ func _test_data() -> void:
 	_approx(float(h1.get("income_target", 0.0)), 100.0, EPS, "H1: цель дохода 100")
 	_approx(float(h1.get("send_interval", 0.0)), 20.0, EPS, "H1: send_interval 20")
 	var w1: Dictionary = h1.get("type_weights", {})
-	_approx(float(w1.get("text", 0.0)), 0.70, EPS, "H1: text 70%")
-	_approx(float(w1.get("sound", 0.0)), 0.30, EPS, "H1: sound 30%")
+	_approx(float(w1.get("text", 0.0)), 1.0, EPS, "H1: text 100%")
+	_approx(float(w1.get("sound", 0.0)), 0.0, EPS, "H1: sound 0%")
 	_approx(float(w1.get("photo", 0.0)), 0.0, EPS, "H1: photo 0%")
 	_approx(float(w1.get("video", 0.0)), 0.0, EPS, "H1: video 0%")
+	var rw1: Dictionary = h1.get("request_type_weights", {})
+	_approx(float(rw1.get("text", 0.0)), 1.0, EPS, "H1: request text 100%")
+	_approx(float(rw1.get("sound", 0.0)), 0.0, EPS, "H1: request sound 0%")
+	_approx(float(rw1.get("photo", 0.0)), 0.0, EPS, "H1: request photo 0%")
+	_approx(float(rw1.get("video", 0.0)), 0.0, EPS, "H1: request video 0%")
 	var m1: Dictionary = h1.get("request_mix", {})
-	_approx(float(m1.get("1", 0.0)), 0.76, EPS, "H1: 1 файл 76%")
-	_approx(float(m1.get("2", 0.0)), 0.24, EPS, "H1: 2 файла 24%")
+	_approx(float(m1.get("1", 0.0)), 1.0, EPS, "H1: 1 файл 100%")
+	_approx(float(m1.get("2", 0.0)), 0.0, EPS, "H1: 2 файла 0%")
 	_approx(float(m1.get("3", 0.0)), 0.0, EPS, "H1: 3 файла 0%")
 	_approx(float(m1.get("4", 0.0)), 0.0, EPS, "H1: 4 файла 0%")
 	_eq(int(data.hour_def(2).get("files", 0)), 6, "H2: 6 файлов")
@@ -89,12 +95,67 @@ func _test_data() -> void:
 		_ok(not row.has("request_cap"), "H%d: request_cap удалён" % (i + 1))
 		_ok(not row.has("recv_interval"), "H%d: recv_interval удалён" % (i + 1))
 
+	# v5: веса приёма и запросов совпадают и задают кривую сложности.
+	# Порядок: text, sound, photo, video.
+	var expected_weights := [
+		[1.00, 0.00, 0.00, 0.00],
+		[0.80, 0.20, 0.00, 0.00],
+		[0.50, 0.50, 0.00, 0.00],
+		[0.40, 0.30, 0.30, 0.00],
+		[0.35, 0.35, 0.30, 0.00],
+		[0.30, 0.30, 0.30, 0.10],
+		[0.22, 0.23, 0.30, 0.25],
+		[0.15, 0.25, 0.35, 0.25],
+		[0.10, 0.15, 0.30, 0.45],
+	]
+	var type_keys := ["text", "sound", "photo", "video"]
 	for row in data.hours:
+		var h := int(row.get("hour", 0))
+		var idx := clampi(h - 1, 0, expected_weights.size() - 1)
 		var weights: Dictionary = row.get("type_weights", {})
+		var req_weights: Dictionary = row.get("request_type_weights", {})
 		var total := 0.0
-		for key in ["text", "sound", "photo", "video"]:
+		for i in range(type_keys.size()):
+			var key := str(type_keys[i])
+			_approx(float(weights.get(key, 0.0)), float(expected_weights[idx][i]), EPS,
+				"H%d: type_weights.%s" % [h, key])
+			_approx(float(req_weights.get(key, 0.0)), float(expected_weights[idx][i]), EPS,
+				"H%d: request_type_weights.%s" % [h, key])
 			total += float(weights.get(key, 0.0))
-		_approx(total, 1.0, EPS, "веса типов часа %d суммируются в 1.0" % int(row.get("hour", 0)))
+		_approx(total, 1.0, EPS, "веса типов часа %d суммируются в 1.0" % h)
+
+	# Явные пороги доступности типов: H1 text-only, photo с H4, video с H6.
+	var h1_w: Dictionary = data.hour_def(1).get("type_weights", {})
+	_approx(float(h1_w.get("sound", -1.0)), 0.0, EPS, "H1: sound ещё закрыт")
+	var h2_w: Dictionary = data.hour_def(2).get("type_weights", {})
+	_approx(float(h2_w.get("sound", 0.0)), 0.20, EPS, "H2: sound 0.20")
+	_approx(float(h2_w.get("photo", -1.0)), 0.0, EPS, "H2: photo ещё закрыт")
+	var h3_w: Dictionary = data.hour_def(3).get("type_weights", {})
+	_approx(float(h3_w.get("photo", -1.0)), 0.0, EPS, "H3: photo ещё закрыт")
+	var h4_w: Dictionary = data.hour_def(4).get("type_weights", {})
+	_approx(float(h4_w.get("photo", 0.0)), 0.30, EPS, "H4: photo 0.30")
+	_approx(float(h4_w.get("video", -1.0)), 0.0, EPS, "H4: video ещё закрыт")
+	var h5_w: Dictionary = data.hour_def(5).get("type_weights", {})
+	_approx(float(h5_w.get("video", -1.0)), 0.0, EPS, "H5: video ещё закрыт")
+	var h6_w: Dictionary = data.hour_def(6).get("type_weights", {})
+	_approx(float(h6_w.get("video", 0.0)), 0.10, EPS, "H6: video 0.10")
+	var h8_w: Dictionary = data.hour_def(8).get("type_weights", {})
+	_eq([float(h8_w.get("text", -1.0)), float(h8_w.get("sound", -1.0)),
+		float(h8_w.get("photo", -1.0)), float(h8_w.get("video", -1.0))],
+		[0.15, 0.25, 0.35, 0.25], "H8: 15/25/35/25")
+	var h9_w: Dictionary = data.hour_def(9).get("type_weights", {})
+	_eq([float(h9_w.get("text", -1.0)), float(h9_w.get("sound", -1.0)),
+		float(h9_w.get("photo", -1.0)), float(h9_w.get("video", -1.0))],
+		[0.10, 0.15, 0.30, 0.45], "H9: 10/15/30/45")
+	var h9_rw: Dictionary = data.hour_def(9).get("request_type_weights", {})
+	_eq([float(h9_rw.get("text", -1.0)), float(h9_rw.get("sound", -1.0)),
+		float(h9_rw.get("photo", -1.0)), float(h9_rw.get("video", -1.0))],
+		[0.10, 0.15, 0.30, 0.45], "H9: request_type_weights = type_weights")
+
+	var h9_mix: Dictionary = data.hour_def(9).get("request_mix", {})
+	_eq([float(h9_mix.get("1", -1.0)), float(h9_mix.get("2", -1.0)),
+		float(h9_mix.get("3", -1.0)), float(h9_mix.get("4", -1.0))],
+		[0.0, 0.0, 0.25, 0.75], "H9: request_mix только 3/4 файла")
 
 	var lots: Array = data.lot_defs()
 	_eq(lots.size(), 9, "ровно 9 лотов")
@@ -248,6 +309,41 @@ func _test_levels_and_caps() -> void:
 		var d: Vector2i = game.folder_dims()
 		_eq(d.x, int(expected[lvl][0]), "folder dims[%d].x" % lvl)
 		_eq(d.y, int(expected[lvl][1]), "folder dims[%d].y" % lvl)
+	game.free()
+
+
+## Цена следующей папки: 150 + 100 за каждую сверх стартовых 2, без минуса.
+func _test_folder_price() -> void:
+	_set_case("folder_price")
+	var game = G.new()
+	game.start_new_run(77)
+	_ok(game.registry != null, "реестр создан")
+	_eq(game.registry.folder_count(), 2, "старт: 2 папки")
+	_eq(game.folder_price(), 150, "2 папки → 3-я стоит 150")
+	_eq(game.folder_price(0), 150, "count 0 → 150")
+	_eq(game.folder_price(1), 150, "count 1 → 150")
+	_eq(game.folder_price(2), 150, "count 2 → 150")
+	_eq(game.folder_price(-99), 150, "отрицательное count → 150")
+	_ok(game.folder_price(-99) >= 0, "цена никогда не отрицательная")
+
+	var f3 = game.registry.create_folder("C", "ПАПКА 3")
+	_ok(f3 != null, "3-я папка создана")
+	_eq(game.registry.folder_count(), 3, "папок стало 3")
+	_eq(game.folder_price(), 250, "3 папки → 4-я стоит 250")
+	var f4 = game.registry.create_folder("C", "ПАПКА 4")
+	_ok(f4 != null, "4-я папка создана")
+	_eq(game.folder_price(), 350, "4 папки → 5-я стоит 350")
+	var f5 = game.registry.create_folder("C", "ПАПКА 5")
+	_ok(f5 != null, "5-я папка создана")
+	_eq(game.folder_price(), 450, "5 папок → 6-я стоит 450")
+	_eq(game.folder_price(7), 650, "count 7 → 650")
+	_ok(game.folder_price(1000) > 0, "большое count не уходит в минус")
+
+	# Без реестра считаем от нуля папок: цена остаётся базовой.
+	var registry_before = game.registry
+	game.registry = null
+	_eq(game.folder_price(), 150, "нет реестра → базовая 150")
+	game.registry = registry_before
 	game.free()
 
 

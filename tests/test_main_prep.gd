@@ -11,6 +11,7 @@ var _checks := 0
 var _fails := 0
 
 const SHOP := preload("res://scripts/systems/shop.gd")
+const REGISTRY_SCRIPT := preload("res://scripts/core/file_registry.gd")
 
 
 func _init() -> void:
@@ -245,52 +246,73 @@ func _test_search(main) -> void:
 
 
 ## Имена новых папок генерируются и остаются уникальными в секции.
-## v3: папки №3–6 стоят `folder_new_cost` (180 $), №7 упирается в
-## `folders_max` (6); без денег новая папка не создаётся.
+## v5: цена динамическая — Game.folder_price() 150/250/350…; прежний лимит
+## 6 папок из constants больше не применяется (registry safety = 24).
 func _test_folder_name_generation(main, game) -> void:
 	_eq(main._unique_folder_name("C", "Разное"), "Разное 2",
 		"занятое имя получает суффикс 2")
 
-	var cost := int(_const_value("folder_new_cost", 180))
-	var folders_max := int(_const_value("folders_max", 6))
+	var folders_max_legacy := int(_const_value("folders_max", 6))
+	var folder_new_cost := int(_const_value("folder_new_cost", 180))
 	var before: int = game.registry.folder_count()
 	_eq(before, 2, "на старте ровно 2 папки")
+	_eq(game.folder_price(), 150, "3-я папка стоит 150")
+	_eq(int(game.folder_price()), int(main.tree.get_new_folder_price()),
+		"ценник дерева = Game.folder_price()")
+	_ok(int(game.folder_price()) != folder_new_cost,
+		"цена не старый folder_new_cost=%d" % folder_new_cost)
+
 	# Без денег третья папка не создаётся.
 	game.money = 0
 	main._new_folder_in("C")
 	_eq(game.registry.folder_count(), before, "без денег папка не создаётся")
 	_eq(int(game.money), 0, "неудачная покупка не уводит деньги в минус")
 
-	# 3-я папка: ровно folder_new_cost и списание.
-	game.add_money(cost)
+	# 3-я папка: 150 $.
+	var expected_prices := [150, 250, 350]
+	var expected_counts := [3, 4, 5]
+	var price3 := int(game.folder_price())
+	_eq(price3, 150, "3-я папка: цена 150 $")
+	game.add_money(price3)
 	main._new_folder_in("C")
-	_eq(game.registry.folder_count(), before + 1,
-		"3-я папка создана за %d $" % cost)
-	_eq(int(game.money), 0, "3-я папка списала %d $" % cost)
+	_eq(game.registry.folder_count(), 3, "3-я папка создана за 150 $")
+	_eq(int(game.money), 0, "3-я папка списала 150 $")
 	var third_id := str(main.grid.folder_id)
 	_ok(game.registry.rename_folder(third_id, "Разное 2"),
 		"третья папка переименована для проверки имён")
 	_eq(main._unique_folder_name("C", "Разное"), "Разное 3",
 		"следующий дубль получает суффикс 3")
 
-	# 4-я … folders_max-я папки — тоже по folder_new_cost.
-	var expected_count := before + 2
-	while expected_count <= folders_max:
-		game.add_money(cost)
+	# 4-я и 5-я папки: 250 / 350 $.
+	for i in range(1, 3):
+		var price := int(game.folder_price())
+		_eq(price, int(expected_prices[i]),
+			"%d-я папка: цена %d $" % [expected_counts[i], price])
+		game.add_money(price)
 		main._new_folder_in("C")
-		_eq(game.registry.folder_count(), expected_count,
-			"%d-я папка создана за %d $" % [expected_count, cost])
-		_eq(int(game.money), 0, "%d-я папка списала %d $" % [expected_count, cost])
-		expected_count += 1
-	_ok(game.registry.folder_count() <= folders_max,
-		"всего не больше %d папок" % folders_max)
+		_eq(game.registry.folder_count(), int(expected_counts[i]),
+			"%d-я папка создана за %d $" % [expected_counts[i], price])
+		_eq(int(game.money), 0,
+			"%d-я папка списала %d $" % [expected_counts[i], price])
+	_eq(int(main.tree.get_new_folder_price()), 450,
+		"после 5 папок ценник 450")
 
-	# Следующая папка запрещена лимитом, деньги не списываются.
-	game.add_money(cost)
-	main._new_folder_in("C")
-	_eq(game.registry.folder_count(), folders_max,
-		"%d-я папка заблокирована лимитом" % (folders_max + 1))
-	_eq(int(game.money), cost, "заблокированная папка не списала деньги")
+	# 6-я и 7-я папки создаются: лимит 6 больше не действует.
+	for expected in [6, 7]:
+		var price := int(game.folder_price())
+		_ok(price > 0, "%d-я папка: цена > 0 (%d $)" % [expected, price])
+		_ok(price != folder_new_cost, "%d-я папка: цена не 180 $" % expected)
+		game.add_money(price)
+		main._new_folder_in("C")
+		_eq(game.registry.folder_count(), expected,
+			"%d-я папка создана за %d $" % [expected, price])
+		_eq(int(game.money), 0, "%d-я папка списала %d $" % [expected, price])
+	_ok(game.registry.folder_count() > folders_max_legacy,
+		"лимита %d папок нет (создано %d)" % [
+			folders_max_legacy, game.registry.folder_count()])
+	_eq(int(REGISTRY_SCRIPT.MAX_FOLDERS_PER_SECTION), 24,
+		"registry safety = 24 папки в секции")
+	_eq(game.folder_price(7), 650, "8-я папка стоит 650")
 	main._refresh_prep()
 
 

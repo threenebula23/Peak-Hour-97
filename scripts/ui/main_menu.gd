@@ -136,14 +136,18 @@ func _window() -> Rect2:
 
 func _layout() -> void:
 	var w := _window()
-	var px := w.position.x + 660.0
+	var panel := _panel_rect(w)
+	# Кнопки живут в панели действий: центрируем по её ширине,
+	# вертикальный ритм (52 px) сохраняем.
+	var btn_w := 300.0
+	var px := roundf(panel.position.x + (panel.size.x - btn_w) * 0.5)
 	var py := w.position.y + 112.0
 	var buttons: Array[Button90] = [_btn_continue, _btn_new, _btn_tutorial,
 		_btn_settings, _btn_about]
 	for b in buttons:
 		if b != null:
 			b.position = Vector2(px, py)
-			b.size = Vector2(300, 34 if b == _btn_tutorial else 38)
+			b.size = Vector2(btn_w, 34 if b == _btn_tutorial else 38)
 		py += 52.0
 
 
