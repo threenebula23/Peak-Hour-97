@@ -126,8 +126,8 @@ func _draw_frame(r: Rect2) -> void:
 	var gx := r.position.x + roundf((W - group_w) * 0.5)
 	var well := Rect2(gx, r.position.y + 27, icon_size, icon_size)
 	Theme90.draw_sunken(self, well)
-	Theme90.text_vcenter(self, Theme90.logo(), well, "?",
-		14, Theme90.ERROR if _danger else Theme90.NAVY)
+	Theme90.glyph_center(self, Theme90.logo(), well, "?", 14,
+		Theme90.ERROR if _danger else Theme90.NAVY)
 	var tx := gx + icon_size + icon_gap
 	var y := r.position.y + 31
 	for line in lines:

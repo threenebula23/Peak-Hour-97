@@ -60,7 +60,7 @@ const DEFAULT_ACHIEVABLE_SUMS := [
 	21, 22, 24, 25, 26, 28, 32,
 ]
 
-const DEFAULT_HOUR_FILES := [6, 6, 7, 8, 9, 9, 10, 10, 10]
+const DEFAULT_HOUR_FILES := [8, 8, 9, 10, 11, 11, 12, 12, 12]
 const DEFAULT_ACTIVE_REQUESTS := [1, 2, 2, 3, 3, 3, 4, 4, 4]
 const DEFAULT_ATTACKS := [0, 1, 1, 2, 2, 3, 3, 4, 4]
 const DEFAULT_INCOME_TARGET := [90, 220, 380, 560, 760, 980, 1200, 1450, 1700]

@@ -228,6 +228,36 @@ static func text_vcenter(ci: CanvasItem, f: Font, rect: Rect2, s: String, size: 
 	text(ci, f, Vector2(x, y), s, size, color, width, align)
 
 
+## Центрирует одиночный глиф по видимым (ink) границам, а не по строковым
+## метрикам. Нужен для «?» в квадратных well/бейджах: у Press Start 2P
+## верхний вынос больше нижнего, а боковой bearing отрицательный, поэтому
+## text_vcenter оставляет знак выше и левее геометрического центра.
+## Для строк из 2+ символов — обычный text_vcenter.
+static func glyph_center(ci: CanvasItem, f: Font, rect: Rect2, s: String, size: int,
+		color: Color) -> void:
+	if s.is_empty():
+		return
+	var ts := TextServerManager.get_primary_interface()
+	if s.length() > 1 or ts == null or f.get_rids().is_empty():
+		text_vcenter(ci, f, rect, s, size, color, -1, HORIZONTAL_ALIGNMENT_CENTER)
+		return
+	var rid: RID = f.get_rids()[0]
+	var gi := ts.font_get_glyph_index(rid, size, s.unicode_at(0), 0)
+	var ink: Rect2
+	if gi > 0:
+		ink = Rect2(ts.font_get_glyph_offset(rid, Vector2i(size, 0), gi),
+			ts.font_get_glyph_size(rid, Vector2i(size, 0), gi))
+	else:
+		var asc := f.get_ascent(size)
+		ink = Rect2(0.0, -asc,
+			f.get_string_size(s, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x,
+			asc + f.get_descent(size))
+	var origin := Vector2(
+		rect.position.x + roundf((rect.size.x - ink.size.x) * 0.5) - ink.position.x,
+		rect.position.y + roundf((rect.size.y - ink.size.y) * 0.5) - ink.position.y)
+	ci.draw_string(f, origin.round(), s, HORIZONTAL_ALIGNMENT_LEFT, -1, size, color)
+
+
 ## Совместимость: раньше «гравировка» с белой тенью. Теперь — спокойный текст.
 static func text_engraved(ci: CanvasItem, f: Font, top_left: Vector2, s: String, size: int,
 		color: Color = SHADE) -> void:
@@ -507,6 +537,20 @@ const ICON_FILES := {
 	"packet": "packet",
 }
 
+## Иконки лотов магазина (см. shop_icon_path). Ключ — id лота, fallback — effect.
+const SHOP_ICON_DIR := "res://art/icons/shop"
+const SHOP_ICON_BY_EFFECT := {
+	"connection_slots": "lot_slots",
+	"transfer_speed": "lot_speed",
+	"sla_cap": "lot_sla",
+	"shield_charge": "lot_shield",
+	"money_mult": "lot_money",
+	"folder_cells": "lot_folder",
+	"channel_capacity": "lot_channel",
+	"request_timer": "lot_timer",
+	"udp_success": "lot_udp",
+}
+
 
 ## Текстура иконки по типу (кэшируется). null — файла нет или тип неизвестен.
 static func file_icon(kind: String) -> Texture2D:
@@ -540,6 +584,53 @@ static func draw_file_icon(ci: CanvasItem, rect: Rect2, kind: String,
 	if prev != CanvasItem.TEXTURE_FILTER_NEAREST:
 		ci.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
 	ci.draw_texture_rect(tex, target, false, modulate)
+	if prev != CanvasItem.TEXTURE_FILTER_NEAREST:
+		ci.texture_filter = prev
+	return true
+
+
+## Путь к иконке лота: имя файла — id лота (lot_*), для legacy-каталога
+## без id — fallback по effect. "" — иконки нет.
+static func shop_icon_path(id: String, effect: String = "") -> String:
+	var key := id.strip_edges().to_lower()
+	if not key.begins_with("lot_"):
+		key = str(SHOP_ICON_BY_EFFECT.get(effect.strip_edges().to_lower(), ""))
+	if key.is_empty():
+		return ""
+	var path := SHOP_ICON_DIR + "/" + key + ".png"
+	return path if ResourceLoader.exists(path) else ""
+
+
+## Текстура иконки лота (кэшируется). null — иконки нет, рисуйте без неё.
+static func shop_icon(id: String, effect: String = "") -> Texture2D:
+	var path := shop_icon_path(id, effect)
+	if path.is_empty():
+		return null
+	if _icons.has(path):
+		return _icons[path]
+	var tex := load(path) as Texture2D
+	_icons[path] = tex
+	return tex
+
+
+## Рисует иконку лота по центру rect с ближайшей фильтрацией (pixel art).
+## false — если текстуры нет: карточка остаётся без иконки.
+static func draw_shop_icon(ci: CanvasItem, rect: Rect2, id: String,
+		effect: String = "") -> bool:
+	var tex := shop_icon(id, effect)
+	if tex == null:
+		return false
+	var s := minf(rect.size.x, rect.size.y)
+	if s <= 0.0:
+		return false
+	var side := roundf(s)
+	var target := Rect2(
+		(rect.position + (rect.size - Vector2(side, side)) * 0.5).round(),
+		Vector2(side, side))
+	var prev := ci.texture_filter
+	if prev != CanvasItem.TEXTURE_FILTER_NEAREST:
+		ci.texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	ci.draw_texture_rect(tex, target, false)
 	if prev != CanvasItem.TEXTURE_FILTER_NEAREST:
 		ci.texture_filter = prev
 	return true

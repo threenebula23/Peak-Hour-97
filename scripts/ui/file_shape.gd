@@ -7,6 +7,10 @@ extends Control
 ## клетке. Тот же painter (`paint`) использует FileGrid — так превью и сетка
 ## выглядят одинаково.
 ##
+## Иконка в подписи — из атласа FileIcons по opts.icon_id (назначает бэкенд);
+## если icon_id = -1/вне диапазона — иконка типа (Theme90.draw_file_icon),
+## затем векторный fallback draw_type_icon.
+##
 ## Режимы:
 ##   shape  — полимино по shape_id/rotation (для сетки и стола);
 ##   square — одна клетка 1×1 (для карточки запроса: файл = квадрат).
@@ -15,6 +19,7 @@ extends Control
 ## FileRegistry подключаем через preload.
 
 const FR = preload("res://scripts/core/file_registry.gd")
+const FILE_ICONS = preload("res://scripts/ui/file_icons.gd")
 
 const GAP := 0.0
 
@@ -23,6 +28,8 @@ var shape_id: String = "O1"
 var shape_rotation: int = 0
 var file_name: String = ""
 var ext: String = ""
+## Индекс иконки из атласа FileIcons (0..63); -1 — рисовать иконку типа.
+var icon_id: int = -1
 var cell_size: float = 48.0
 var mode: String = "shape"
 var state: String = "stored"
@@ -41,12 +48,13 @@ func _init() -> void:
 
 
 func setup(p_type: String, p_shape_id: String, p_rotation: int, p_name: String,
-		p_ext: String, p_cell: float) -> void:
+		p_ext: String, p_cell: float, p_icon_id: int = -1) -> void:
 	file_type = p_type
 	shape_id = p_shape_id if not p_shape_id.is_empty() else "O1"
 	shape_rotation = posmod(int(p_rotation), 4)
 	file_name = p_name
 	ext = p_ext
+	icon_id = p_icon_id
 	cell_size = maxf(8.0, p_cell)
 	_sync_size()
 
@@ -95,6 +103,7 @@ func _draw() -> void:
 		"type": file_type,
 		"name": file_name,
 		"ext": ext,
+		"icon_id": icon_id,
 		"state": state,
 		"selected": selected,
 		"hovered": hovered,
@@ -195,14 +204,15 @@ static func edge_segment(pos: Vector2, from_cell: Vector2i, dir: Vector2i,
 
 # --- painter ---------------------------------------------------------------
 
-## Рисует фигуру. opts: type, name, ext, state, selected, hovered, alpha,
-## show_label, gap, square, outline, fill.
+## Рисует фигуру. opts: type, name, ext, icon_id, state, selected, hovered,
+## alpha, show_label, gap, square, outline, fill.
 static func paint(ci: CanvasItem, pos: Vector2, cells: Array, cell_px,
 		opts: Dictionary = {}) -> void:
 	var cs := _cell_vec(cell_px)
 	if cells.is_empty() or cs.x <= 0.0 or cs.y <= 0.0:
 		return
 	var file_type := str(opts.get("type", "text"))
+	var icon_id := int(opts.get("icon_id", -1))
 	var name := str(opts.get("name", ""))
 	var ext_value := str(opts.get("ext", ""))
 	var state := str(opts.get("state", "stored"))
@@ -267,10 +277,11 @@ static func paint(ci: CanvasItem, pos: Vector2, cells: Array, cell_px,
 		return
 	var lbl := FR.label_cell(cells)
 	if square:
-		_paint_square_label(ci, pos, lbl, cs, gap, base, file_type, name, alpha, locked)
+		_paint_square_label(ci, pos, lbl, cs, gap, base, file_type, icon_id, name,
+			alpha, locked)
 	else:
-		_paint_cell_label(ci, pos, lbl, cs, gap, base, file_type, name, ext_value,
-			alpha, locked, state)
+		_paint_cell_label(ci, pos, lbl, cs, gap, base, file_type, icon_id, name,
+			ext_value, alpha, locked, state)
 
 
 ## Кегль подписи файла по размеру клетки: 12 / 14 / 16 px.
@@ -406,8 +417,9 @@ static func _label_layout(f: Font, name: String, cell_px: float, first_w: float,
 
 
 static func _paint_cell_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
-		cs: Vector2, gap: float, base: Color, file_type: String, name: String,
-		ext_value: String, alpha: float, locked: bool, state: String) -> void:
+		cs: Vector2, gap: float, base: Color, file_type: String, icon_id: int,
+		name: String, ext_value: String, alpha: float, locked: bool,
+		state: String) -> void:
 	var step := cs + Vector2(gap, gap)
 	var lr := Rect2(pos + Vector2(float(lbl.x) * step.x, float(lbl.y) * step.y), cs)
 	if lr.size.x < 16.0 or lr.size.y < 16.0:
@@ -443,7 +455,9 @@ static func _paint_cell_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
 	var text_top := ty if icon_inline else ty + first_h
 	var icon := Rect2(Vector2(text_x, ty + maxf(0.0, (line_h - icon_size) * 0.5))
 		.round(), Vector2(icon_size, icon_size))
-	if not Theme90.draw_file_icon(ci, icon, file_type, _with_alpha(Color.WHITE, alpha)):
+	if not FILE_ICONS.draw(ci, icon, icon_id, alpha) \
+			and not Theme90.draw_file_icon(ci, icon, file_type,
+				_with_alpha(Color.WHITE, alpha)):
 		draw_type_icon(ci, icon, file_type, base, alpha)
 
 	var last_bottom := ty
@@ -485,8 +499,8 @@ static func _paint_cell_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
 
 
 static func _paint_square_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
-		cs: Vector2, gap: float, base: Color, file_type: String, name: String,
-		alpha: float, locked: bool) -> void:
+		cs: Vector2, gap: float, base: Color, file_type: String, icon_id: int,
+		name: String, alpha: float, locked: bool) -> void:
 	var step := cs + Vector2(gap, gap)
 	var lr := Rect2(pos + Vector2(float(lbl.x) * step.x, float(lbl.y) * step.y), cs)
 	var f := Theme90.ui()
@@ -502,7 +516,9 @@ static func _paint_square_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
 		icon = Rect2(lr.position.x + 3.0,
 			name_y + (float(name_size) - icon_size) * 0.5,
 			icon_size, icon_size)
-	if not Theme90.draw_file_icon(ci, icon, file_type, _with_alpha(Color.WHITE, alpha)):
+	if not FILE_ICONS.draw(ci, icon, icon_id, alpha) \
+			and not Theme90.draw_file_icon(ci, icon, file_type,
+				_with_alpha(Color.WHITE, alpha)):
 		draw_type_icon(ci, icon, file_type, base, alpha)
 	if has_name:
 		var col := Theme90.SHADE if locked else Theme90.INK
@@ -512,7 +528,8 @@ static func _paint_square_label(ci: CanvasItem, pos: Vector2, lbl: Vector2i,
 			_with_alpha(col, alpha), lr.end.x - nx - 3.0)
 
 
-## 8×8 иконка типа: строки (text), волна (sound), горы (photo), play (video).
+## Векторный фолбэк-значок типа (когда нет ни атласа, ни PNG типа):
+## строки (text), волна (sound), горы (photo), play (video).
 static func draw_type_icon(ci: CanvasItem, rect: Rect2, file_type: String,
 		color: Color, alpha: float = 1.0) -> void:
 	var s := minf(rect.size.x, rect.size.y)

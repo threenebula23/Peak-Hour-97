@@ -50,7 +50,10 @@
     "udp_fail_sla": -3,
     "udp_retry_cooldown_sec": 4,
     "udp_request_ratio": 0.35,
-    "send_quality_min": 0.45
+    "send_quality_min": 0.45,
+    "file_expire_base": 0.03,
+    "file_expire_step": 0.05,
+    "file_expire_cap": 0.55
   },
   "economy": {
     "start_stats": {
@@ -143,7 +146,7 @@
     {
       "hour": 1,
       "duration": 120,
-      "files": 6,
+      "files": 8,
       "active_requests": 2,
       "attacks": 0,
       "income_target": 100,
@@ -155,7 +158,7 @@
     {
       "hour": 2,
       "duration": 150,
-      "files": 6,
+      "files": 8,
       "active_requests": 2,
       "attacks": 1,
       "income_target": 220,
@@ -167,7 +170,7 @@
     {
       "hour": 3,
       "duration": 180,
-      "files": 7,
+      "files": 9,
       "active_requests": 2,
       "attacks": 1,
       "income_target": 380,
@@ -179,7 +182,7 @@
     {
       "hour": 4,
       "duration": 210,
-      "files": 8,
+      "files": 10,
       "active_requests": 3,
       "attacks": 2,
       "income_target": 560,
@@ -191,7 +194,7 @@
     {
       "hour": 5,
       "duration": 240,
-      "files": 9,
+      "files": 11,
       "active_requests": 3,
       "attacks": 2,
       "income_target": 760,
@@ -203,7 +206,7 @@
     {
       "hour": 6,
       "duration": 270,
-      "files": 9,
+      "files": 11,
       "active_requests": 3,
       "attacks": 3,
       "income_target": 980,
@@ -215,7 +218,7 @@
     {
       "hour": 7,
       "duration": 300,
-      "files": 10,
+      "files": 12,
       "active_requests": 4,
       "attacks": 3,
       "income_target": 1200,
@@ -227,7 +230,7 @@
     {
       "hour": 8,
       "duration": 330,
-      "files": 10,
+      "files": 12,
       "active_requests": 4,
       "attacks": 4,
       "income_target": 1450,
@@ -239,7 +242,7 @@
     {
       "hour": 9,
       "duration": 360,
-      "files": 10,
+      "files": 12,
       "active_requests": 4,
       "attacks": 4,
       "income_target": 1700,

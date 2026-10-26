@@ -137,6 +137,12 @@ func end_hour() -> bool:
 		return true
 	var finished := hour
 	hour += 1
+	# Старение файлов — только на переходе часа (не во время часа и не на победе).
+	var expired := 0
+	if registry != null and registry.has_method("age_files_between_hours"):
+		expired = int(registry.age_files_between_hours())
+	if expired > 0:
+		stats["files_expired"] = int(stats.get("files_expired", 0)) + expired
 	phase = &"prep"
 	# Рероллы живут одну подготовку.
 	shop_rerolls = 0
@@ -144,6 +150,8 @@ func end_hour() -> bool:
 	hour_changed.emit(hour)
 	phase_changed.emit(phase)
 	toast.emit(_tr("msg.hour_end", "Час %d завершён" % finished))
+	if expired > 0:
+		toast.emit(_tr("msg.files_expired", "АРХИВ: %d файлов списано") % expired)
 	return true
 
 
@@ -554,6 +562,7 @@ func _default_stats() -> Dictionary:
 		"files_received": 0,
 		"attacks_blocked": 0,
 		"failed": 0,
+		"files_expired": 0,
 	}
 
 

@@ -21,10 +21,18 @@ signal grid_changed(folder_id)
 signal table_changed
 signal registry_changed
 
+## Транзиентное состояние переноса. На время move/place файл уже снят со старых
+## клеток, но новый location ещё не выставлен. FileGrid.refresh обязан НЕ
+## «лечить» такой файл обратно в старую папку, иначе первый drag даёт фантомный
+## дубль (клетки вычищены, а location/folder_id ещё старые).
+const MOVING := &"moving"
+
 const MAX_SECTIONS = 6
 const MAX_FOLDERS_PER_SECTION = 24
 const MAX_FILES_PER_FOLDER = 16 # legacy (v1 capacity), v2 измеряется клетками
 const MAX_FOLDER_NAME = 16
+## Количество доступных иконок файла; icon_id — стабильный индекс 0..63.
+const FILE_ICON_COUNT := 64
 const SECTION_LETTERS: Array[String] = ["C", "D", "E", "F", "G", "H"]
 
 const DEFAULT_COLS = 5
@@ -35,6 +43,12 @@ const DEFAULT_FOLDERS_START = 2
 
 ## Fallback, если data/balance.json ещё не содержит grid.folder_dims.
 const GRID_DIMS = [[5, 4], [6, 4], [7, 5], [8, 5], [8, 6], [9, 6]]
+
+## Fallback-вероятность списания файла в конце часа:
+## p = clamp(base + step * hours_lived, 0, cap).
+const FILE_EXPIRE_BASE := 0.03
+const FILE_EXPIRE_STEP := 0.05
+const FILE_EXPIRE_CAP := 0.55
 
 ## Fallback-формы (совпадают с data/balance.json → grid.shapes).
 const SHAPES = {
@@ -499,9 +513,18 @@ func place_file(file_id: String, folder_id: String, origin: Vector2i, rotation: 
 	_ensure_shape(file)
 	if not can_place(folder, file.shape_id, origin, rotation, file.id):
 		return false
-	_clear_file_placement(file)
+	var old_folder = folders.get(file.folder_id)
+	var prev_loc := _begin_move(file)
+	_clear_file_placement(file, false)
 	_put_in_folder(file, folder, origin, rotation)
+	if not _file_in_folder(file, folder):
+		_abort_move(file, prev_loc)
+		_emit_grid(folders.get(file.folder_id))
+		return false
 	_after_placement_change(file, folder, "")
+	if old_folder != null and old_folder != folder:
+		# Старая папка перерисовывается только с финальным location файла.
+		grid_changed.emit(old_folder.id)
 	return true
 
 
@@ -519,9 +542,17 @@ func auto_place_file(file_id: String, folder_id: String) -> bool:
 	var fit = _find_fit(folder, file.shape_id, file.rotation)
 	if fit.is_empty():
 		return false
-	_clear_file_placement(file)
+	var old_folder = folders.get(file.folder_id)
+	var prev_loc := _begin_move(file)
+	_clear_file_placement(file, false)
 	_put_in_folder(file, folder, fit.origin, fit.rotation)
+	if not _file_in_folder(file, folder):
+		_abort_move(file, prev_loc)
+		_emit_grid(folders.get(file.folder_id))
+		return false
 	_after_placement_change(file, folder, "")
+	if old_folder != null and old_folder != folder:
+		grid_changed.emit(old_folder.id)
 	return true
 
 
@@ -670,7 +701,7 @@ func folder_cell_stats(folder_id: String) -> Dictionary:
 ## Создать файл. Имя уникально в пределах забега (без учёта регистра).
 ## Форма выбирается случайно; при location="folder" файл сразу раскладывается
 ## first-fit. Если места нет — null (пакет остаётся в буфере/на столе).
-func create_file(name: String, type: String, folder_id: String, location: StringName = &"folder"):
+func create_file(name: String, type: String, folder_id: String, location: StringName = &"folder", icon_id: int = -1):
 	var clean = name.strip_edges()
 	if clean.is_empty():
 		return null
@@ -694,7 +725,7 @@ func create_file(name: String, type: String, folder_id: String, location: String
 		fit = _find_table_fit(shape, 0)
 		if fit.is_empty():
 			return null
-	var file = _make_file(clean, type, shape)
+	var file = _make_file(clean, type, shape, icon_id)
 	if loc == "folder":
 		_put_in_folder(file, folder, fit.origin, fit.rotation)
 		file.location = &"folder"
@@ -771,9 +802,13 @@ func auto_place_table(file_id: String) -> bool:
 	var fit = _find_table_fit(file.shape_id, file.rotation)
 	if fit.is_empty():
 		return false
+	var prev_loc := _begin_move(file)
 	_clear_table_cells(file.id)
 	_stamp_table(file, fit.origin, fit.rotation)
 	file.location = &"table"
+	if not _table_cells.values().has(str(file.id)):
+		_abort_move(file, prev_loc)
+		return false
 	file_changed.emit(file)
 	table_changed.emit()
 	registry_changed.emit()
@@ -802,12 +837,20 @@ func move_file_to_table(file_id: String, origin: Vector2i = Vector2i(-1, -1), ro
 	elif not can_place_table(file.shape_id, target, use_rotation, file.id):
 		return false
 	var old_folder = folders.get(file.folder_id)
-	_clear_file_placement(file)
+	var prev_loc := _begin_move(file)
+	_clear_file_placement(file, false)
 	_stamp_table(file, target, use_rotation)
 	file.location = &"table"
 	file.attached_request = ""
+	if not _table_cells.values().has(str(file.id)):
+		_abort_move(file, prev_loc)
+		if old_folder != null:
+			_emit_grid(old_folder)
+		return false
 	if old_folder != null:
 		folder_changed.emit(old_folder)
+		# Сетка старой папки перерисовывается только когда location уже "table".
+		grid_changed.emit(old_folder.id)
 	file_changed.emit(file)
 	table_changed.emit()
 	registry_changed.emit()
@@ -837,8 +880,22 @@ func move_from_table(file_id: String, folder_id: String = "", origin: Vector2i =
 		use_rotation = fit.rotation
 	elif not can_place(folder, file.shape_id, target, use_rotation, file.id):
 		return false
+	var prev_folder_id := str(file.folder_id)
+	var prev_origin: Vector2i = file.origin
+	var prev_rotation := int(file.rotation)
+	_begin_move(file)
 	_clear_table_cells(file.id)
 	_put_in_folder(file, folder, target, use_rotation)
+	if not _file_in_folder(file, folder):
+		# Откат: файл возвращается на стол на прежнее место — без потерь.
+		folder.clear_owner(str(file.id))
+		folder.file_ids.erase(str(file.id))
+		file.folder_id = prev_folder_id
+		file.location = &"table"
+		_stamp_table(file, prev_origin, prev_rotation)
+		table_changed.emit()
+		_emit_grid(folder)
+		return false
 	file.location = &"folder"
 	file_changed.emit(file)
 	table_changed.emit()
@@ -913,7 +970,7 @@ func auto_reserve_packet(packet_id: String, folder_id: String, shape_id: String,
 
 
 ## Завершить загрузку: превратить резервацию в файл на тех же клетках.
-func confirm_reservation(packet_id: String, name: String, type: String):
+func confirm_reservation(packet_id: String, name: String, type: String, icon_id: int = -1):
 	var folder = _folder_for_reservation(packet_id)
 	if folder == null:
 		return null
@@ -928,7 +985,7 @@ func confirm_reservation(packet_id: String, name: String, type: String):
 	var origin: Vector2i = res.get("origin", Vector2i.ZERO)
 	var rot = int(res.get("rotation", 0))
 	_release_reservation(packet_id, folder)
-	var file = _make_file(clean, type, shape)
+	var file = _make_file(clean, type, shape, icon_id)
 	_put_in_folder(file, folder, origin, rot)
 	file.location = &"folder"
 	files[file.id] = file
@@ -1186,6 +1243,47 @@ func consume_file(file_id: String) -> bool:
 	file_removed.emit(file)
 	registry_changed.emit()
 	return true
+
+
+## Конец часа: каждый файл старится на 1 час, затем с вероятностью
+## p = clamp(base + step * hours_lived, 0, cap) списывается в архив без штрафов.
+## Вызывается только при переходе часа (Game.end_hour), не во время часа.
+## attached/required_by/moving не трогаем — это страховка от удаления файла,
+## который прямо сейчас нужен запросу или переносится.
+## roll_override в [0, 1] фиксирует бросок для тестов; -1 — обычный RNG.
+## Возвращает число удалённых файлов.
+func age_files_between_hours(roll_override: float = -1.0) -> int:
+	var base := _const_float("file_expire_base", FILE_EXPIRE_BASE)
+	var step := _const_float("file_expire_step", FILE_EXPIRE_STEP)
+	var cap := _const_float("file_expire_cap", FILE_EXPIRE_CAP)
+	_sync_rng()
+	var removed := 0
+	var table_touched := false
+	for file_id in files.keys():
+		var file = files.get(file_id)
+		if file == null:
+			continue
+		var loc := String(file.location)
+		if loc == "moving" or loc == "attached":
+			continue
+		if not file.attached_request.is_empty() or not file.required_by.is_empty():
+			continue
+		file.hours_lived = maxi(0, int(file.hours_lived)) + 1
+		var p := clampf(base + step * float(file.hours_lived), 0.0, cap)
+		var roll := roll_override if roll_override >= 0.0 else _rng.randf()
+		if roll >= p:
+			continue
+		if loc == "table":
+			table_touched = true
+		_clear_file_placement(file)
+		files.erase(file_id)
+		file_removed.emit(file)
+		removed += 1
+	if table_touched:
+		table_changed.emit()
+	if removed > 0:
+		registry_changed.emit()
+	return removed
 
 
 ## v1-совместимое удаление: без force только malicious/failed.
@@ -1448,6 +1546,9 @@ func from_dict(d: Dictionary) -> bool:
 		var file = FILE_ITEM_SCRIPT.from_dict(raw)
 		if file.id.is_empty():
 			file.id = str(key)
+		# Старые сейвы без icon_id: стабильно выводим индекс из имени файла.
+		if file.icon_id < 0:
+			file.icon_id = absi(hash(file.name)) % FILE_ICON_COUNT
 		files[file.id] = file
 
 	_migrate(raw_files, specs)
@@ -1785,7 +1886,7 @@ func validate() -> Array:
 
 # --- служебное -------------------------------------------------------------
 
-func _make_file(clean: String, type: String, shape: String):
+func _make_file(clean: String, type: String, shape: String, icon_id: int = -1):
 	var info = _type_info(type)
 	var file = FILE_ITEM_SCRIPT.new()
 	file.id = "file_%d" % _next_file_id
@@ -1795,6 +1896,7 @@ func _make_file(clean: String, type: String, shape: String):
 	file.ext = FILE_ITEM_SCRIPT.normalize_ext(str(info.get("ext", "")))
 	file.size_kb = int(info.get("size_kb", 0))
 	file.created_at = FILE_ITEM_SCRIPT.now_unix()
+	file.icon_id = icon_id if icon_id >= 0 else _rng.randi_range(0, FILE_ICON_COUNT - 1)
 	file.shape_id = shape if not shape.is_empty() else "O1"
 	file.shape_cells = shape_cells(file.shape_id, 0)
 	if file.shape_cells.is_empty():
@@ -1869,7 +1971,38 @@ func _stamp_reservation(folder, packet_id: String, res: Dictionary) -> void:
 		folder.cells[Vector2i(res.get("origin", Vector2i.ZERO)) + cell] = packet_id
 
 
-func _clear_file_placement(file) -> void:
+## Начать перенос: старые клетки ещё не сняты, но новый location неизвестен.
+## Возвращает прежний location для откатa. Пока location == MOVING, FileGrid
+## не восстанавливает файл в старой папке (иначе фантом при первом drag).
+func _begin_move(file) -> StringName:
+	var prev: StringName = file.location
+	file.location = MOVING
+	return prev
+
+
+## Откат начатого переноса: вернуть исходный location, файл не теряется.
+func _abort_move(file, prev_location: StringName) -> void:
+	file.location = prev_location
+	file.shape_cells = shape_cells(file.shape_id, file.rotation)
+	file_changed.emit(file)
+
+
+## Реально ли файл стоит в папке после _put_in_folder (защита от отката).
+func _file_in_folder(file, folder) -> bool:
+	if file == null or folder == null:
+		return false
+	if not folder.file_ids.has(str(file.id)):
+		return false
+	for cell in shape_cells(file.shape_id, file.rotation):
+		if str(folder.cells.get(file.origin + cell, "")) == str(file.id):
+			return true
+	return false
+
+
+## Снять файл со старой папки и стола. emit_grid=false используется переносами:
+## старую сетку перерисовываем уже после финального location, иначе FileGrid
+## успевает показать файл в промежуточном состоянии (фантом при первом drag).
+func _clear_file_placement(file, emit_grid: bool = true) -> void:
 	if not file.folder_id.is_empty():
 		var folder = folders.get(file.folder_id)
 		if folder != null:
@@ -1878,7 +2011,8 @@ func _clear_file_placement(file) -> void:
 			while folder.file_ids.has(str(file.id)):
 				folder.file_ids.erase(str(file.id))
 			# Старая папка тоже должна перерисоваться (перенос/расход файла).
-			grid_changed.emit(folder.id)
+			if emit_grid:
+				grid_changed.emit(folder.id)
 	_clear_table_cells(str(file.id))
 
 
@@ -2041,6 +2175,19 @@ func _const_int(key: String, fallback_value: int) -> int:
 			var value = data.const_value(key, null)
 			if value != null:
 				return int(value)
+	return fallback_value
+
+
+func _const_float(key: String, fallback_value: float) -> float:
+	var data = _data_node()
+	if data != null:
+		var constants = data.get("constants")
+		if constants is Dictionary and (constants as Dictionary).has(key):
+			return float((constants as Dictionary)[key])
+		if data.has_method("const_value"):
+			var value = data.const_value(key, null)
+			if value != null:
+				return float(value)
 	return fallback_value
 
 

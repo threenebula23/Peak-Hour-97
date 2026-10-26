@@ -54,7 +54,7 @@ func _test_data() -> void:
 	_eq(int(data.type_def("nope").get("cells", 0)), 1, "неизвестный тип → text (merge defaults)")
 
 	var h1: Dictionary = data.hour_def(1)
-	_eq(int(h1.get("files", 0)), 6, "H1: 6 файлов")
+	_eq(int(h1.get("files", 0)), 8, "H1: 8 файлов")
 	_ok(not h1.has("request_cap"), "H1: request_cap удалён")
 	_ok(not h1.has("recv_interval"), "H1: recv_interval удалён")
 	_approx(float(h1.get("duration", 0.0)), 120.0, EPS, "H1: duration 120")
@@ -77,12 +77,12 @@ func _test_data() -> void:
 	_approx(float(m1.get("2", 0.0)), 0.0, EPS, "H1: 2 файла 0%")
 	_approx(float(m1.get("3", 0.0)), 0.0, EPS, "H1: 3 файла 0%")
 	_approx(float(m1.get("4", 0.0)), 0.0, EPS, "H1: 4 файла 0%")
-	_eq(int(data.hour_def(2).get("files", 0)), 6, "H2: 6 файлов")
-	_eq(int(data.hour_def(9).get("files", 0)), 10, "H9: 10 файлов")
+	_eq(int(data.hour_def(2).get("files", 0)), 8, "H2: 8 файлов")
+	_eq(int(data.hour_def(9).get("files", 0)), 12, "H9: 12 файлов")
 	_ok(not data.hour_def(9).has("request_cap"), "H9: request_cap удалён")
 	_eq(int(data.hour_def(100).get("hour", 0)), 9, "hour > 9 → последняя строка")
 	_eq(data.hours.size(), 9, "9 строк бюджета часов")
-	var expected_files := [6, 6, 7, 8, 9, 9, 10, 10, 10]
+	var expected_files := [8, 8, 9, 10, 11, 11, 12, 12, 12]
 	var expected_duration := [120.0, 150.0, 180.0, 210.0, 240.0, 270.0, 300.0, 330.0, 360.0]
 	var expected_send := [20.0, 24.0, 18.0, 24.0, 24.0, 24.0, 24.0, 24.0, 24.0]
 	for i in range(9):

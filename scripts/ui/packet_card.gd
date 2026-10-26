@@ -12,6 +12,7 @@ signal connect_pressed(id: String)  # legacy: соединение удален�
 const CARD := Vector2(400, 52)
 const FR = preload("res://scripts/core/file_registry.gd")
 const FILE_SHAPE = preload("res://scripts/ui/file_shape.gd")
+const FILE_ICONS = preload("res://scripts/ui/file_icons.gd")
 const DRAG_CONTROLLER = preload("res://scripts/ui/drag_controller.gd")
 const PREVIEW_CELL := 6.0
 const PREVIEW_GAP := 1.0
@@ -43,6 +44,8 @@ var size_kb := 0
 var state := "waiting"
 var shape_id := "O1"
 var shape_rotation := 0
+## Индекс иконки из атласа FileIcons (0..63); -1 — иконка типа.
+var icon_id := -1
 
 var hovered := false:
 	set(v):
@@ -80,12 +83,13 @@ func _ready() -> void:
 	_recv_clock = 0.0
 
 
-## Совместимая сигнатура: первые 9 аргументов как в v1, затем состояние и
-## форма пакета. Атаки удалены — их аргументов здесь нет.
+## Совместимая сигнатура: первые 9 аргументов как в v1, затем состояние,
+## форма пакета и иконка (icon_id из атласа FileIcons, -1 — иконка типа).
+## Атаки удалены — их аргументов здесь нет.
 func setup(p_id: String, p_name: String, p_ext: String, p_type: String, p_proto: String,
 		p_left: float, p_total: float, p_progress: float = 0.0, p_size_kb: int = 0,
 		p_state: String = "waiting", p_shape_id: String = "O1",
-		p_rotation: int = 0) -> void:
+		p_rotation: int = 0, p_icon_id: int = -1) -> void:
 	id = p_id
 	file_name = p_name
 	ext = p_ext
@@ -98,6 +102,7 @@ func setup(p_id: String, p_name: String, p_ext: String, p_type: String, p_proto:
 	state = p_state
 	shape_id = p_shape_id if not p_shape_id.is_empty() else "O1"
 	shape_rotation = posmod(int(p_rotation), 4)
+	icon_id = p_icon_id
 	_update_tooltip()
 	if not _meter_ready:
 		_meter = ratio()
@@ -371,8 +376,9 @@ func _draw() -> void:
 
 	_draw_shape_preview(Rect2(4, 10, 30, 30))
 
-	# Иконка типа 14×14 сразу слева от имени файла.
-	if not type.is_empty():
+	# Иконка из атласа (по icon_id) 14×14 сразу слева от имени файла;
+	# старые пакеты без icon_id — прежняя иконка типа.
+	if not FILE_ICONS.draw(self, Rect2(40, 2, 14, 14), icon_id) and not type.is_empty():
 		Theme90.draw_file_icon(self, Rect2(40, 2, 14, 14), type)
 
 	Theme90.text(self, f, Vector2(57, 2), Theme90.fit(f, _display_name(), 13, 151), 13,
@@ -463,6 +469,7 @@ func _draw_shape_preview(rect: Rect2) -> void:
 		roundf((grid_w - shape_h) * 0.5))
 	FILE_SHAPE.paint(self, pos, cs, PREVIEW_CELL, {
 		"type": type,
+		"icon_id": icon_id,
 		"alpha": 0.95,
 		"show_label": false,
 		"gap": PREVIEW_GAP,
@@ -477,6 +484,7 @@ func _get_drag_data(_at_position: Vector2) -> Variant:
 		"protocol": protocol,
 		"type": type,
 		"ext": ext,
+		"icon_id": icon_id,
 		"size_kb": size_kb,
 		"shape_id": shape_id,
 		# Внутреннее поле — shape_rotation (Control.rotation занят), но ключ
@@ -487,7 +495,7 @@ func _get_drag_data(_at_position: Vector2) -> Variant:
 	var dc := _drag_controller()
 	if dc != null:
 		var preview := FILE_SHAPE.new()
-		preview.setup(type, shape_id, shape_rotation, file_name, ext, 36.0)
+		preview.setup(type, shape_id, shape_rotation, file_name, ext, 36.0, icon_id)
 		preview.set_mode("shape")
 		dc.begin(preview, "shape")
 	else:

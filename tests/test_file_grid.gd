@@ -44,10 +44,12 @@ func _init() -> void:
 	await _test_file_grid(registry, folder_id)
 	await _test_grid_self_heal(registry, folder_id)
 	await _test_grid_move_no_phantom(registry, folder_id)
+	await _test_grid_table_roundtrip(registry)
 	await _test_grid_confirmed_reservation(registry)
 	await _test_edge_files_drop(registry)
 	await _test_rotation_preference()
 	await _test_ghost_rotation()
+	await _test_sorting_table_edges()
 	await _test_sorting_table(registry)
 	await _test_drag_controller(folder_id)
 	await _test_file_shape()
@@ -471,6 +473,65 @@ func _test_grid_confirmed_reservation(registry) -> void:
 	grid.queue_free()
 
 
+## Регрессия «фантома при первом перетаскивании файла в буфер»: после
+## move_file_to_table сетка старой папки не должна самовосстанавливать файл,
+## а после возврата со стола файл снова ровно один.
+func _test_grid_table_roundtrip(registry) -> void:
+	_set_case("FileGrid table roundtrip")
+	var folder = registry.create_folder("C", "Стол 97")
+	_ok(folder != null, "папка для регрессии создана")
+	if folder == null:
+		return
+	var folder_id := str(folder.id)
+	var grid = FG.new()
+	grid.name = "TestTableRoundtripGrid"
+	grid.size = Vector2(558, 470)
+	root.add_child(grid)
+	await process_frame
+	grid.set_folder(folder_id, "СТОЛ 97", "C: \\ СТОЛ 97")
+	await process_frame
+	var file = registry.create_file("Буфер 97", "video", folder_id)
+	_ok(file != null, "файл создан в папке")
+	if file == null:
+		root.remove_child(grid)
+		grid.queue_free()
+		return
+	var file_id := str(file.id)
+	var shape_size: int = (file.shape_cells as Array).size()
+	grid.refresh()
+	_eq(grid.file_count(), 1, "до переноса 1 файл в сетке")
+
+	# Первый drag в буфер: старая сетка не должна показать файл-фантом.
+	_ok(registry.move_file_to_table(file_id), "файл перетащен на стол")
+	grid.refresh()
+	_eq(grid.file_count(), 0, "в старой папке файла нет")
+	_ok(not grid._by_id.has(file_id), "в _by_id старой папки нет файла")
+	_eq(grid.occupied_cells(), 0, "в _cells_owner старой папки пусто")
+	_eq(str(folder.cells.get(Vector2i(0, 0), "")), "",
+		"клетка (0,0) старой папки свободна")
+	_eq(registry.table_file_count(), 1, "файл на столе")
+	_eq(registry.table_occupied_cells(), shape_size, "стол занят формой файла")
+
+	# Возврат со стола: в сетке ровно один файл и его клетки.
+	_ok(registry.move_from_table(file_id, folder_id, Vector2i(0, 0), 0),
+		"файл возвращён со стола")
+	grid.refresh()
+	var seen := 0
+	for f in grid._files:
+		if str(f.id) == file_id:
+			seen += 1
+	_eq(seen, 1, "файл ровно один раз в _files")
+	_eq(grid.file_count(), 1, "в сетке 1 файл")
+	_eq(grid.occupied_cells(), shape_size, "занятые клетки = форма файла")
+	_eq(str(grid._cells_owner.get(Vector2i(0, 0), "")), file_id,
+		"клетка origin принадлежит файлу")
+	_eq(folder.file_ids.count(file_id), 1, "file.id один раз в file_ids")
+	_eq(registry.validate().size(), 0,
+		"инварианты после roundtrip: %s" % str(registry.validate()))
+	root.remove_child(grid)
+	grid.queue_free()
+
+
 ## Крайние клетки для всех типов + ghost/drop и файл после drop: геометрия
 ## фигуры обязана оставаться внутри rect сетки (без clip по краям).
 func _test_edge_files_drop(registry) -> void:
@@ -638,6 +699,51 @@ func _test_ghost_rotation() -> void:
 	dc.queue_free()
 
 
+## Регрессия «сетка буфера обрезает фигуры у крайних клеток»: SortingTable, как
+## и FileGrid, держит сетку внутри GRID_PAD, поэтому заливка/контур (2.6) и
+## dashed-box ghost (+2.6) крайних клеток не выходят за Rect2(0,0,size).
+func _test_sorting_table_edges() -> void:
+	_set_case("SortingTable edge inside rect")
+	var table = ST.new()
+	table.name = "TestSortingTableEdges"
+	root.add_child(table)
+	await process_frame
+	table._cols = 4
+	table._rows = 6
+	for v in [Vector2(416, 548), Vector2(400, 500), Vector2(380, 520),
+			Vector2(320, 400), Vector2(900, 700)]:
+		table.size = v
+		table._recalc_layout()
+		await process_frame
+		var bounds := Rect2(Vector2.ZERO, table.size)
+		var m: Dictionary = table.grid_metrics()
+		var origin: Vector2 = m["origin"]
+		_ok(origin.x >= ST.GRID_PAD - 0.001 and origin.y >= ST.GRID_PAD - 0.001,
+			"%s: origin не ближе GRID_PAD: %s" % [v, origin])
+		for cell_pos in [Vector2i(0, 0), Vector2i(3, 0), Vector2i(0, 5),
+				Vector2i(3, 5)]:
+			var r: Rect2 = table._cell_rect(cell_pos.x, cell_pos.y)
+			var ink := FS.cell_pixel_rect(r.position, Vector2i.ZERO, table._cell,
+				ST.GAP).grow(1.5)
+			_ok(bounds.encloses(ink),
+				"%s клетка %s: заливка/контур внутри rect: %s" % [
+					v, cell_pos, ink])
+			var ghost := r.grow(2.6)
+			_ok(bounds.encloses(ghost),
+				"%s клетка %s: ghost внутри rect: %s" % [v, cell_pos, ghost])
+			var cells := FR.shape_cells("O1", 0)
+			var b: Vector2i = FR.shape_bounds(cells)
+			var step: Vector2 = table._cell + Vector2(ST.GAP, ST.GAP)
+			var box := Rect2(table._shape_pos(cell_pos), Vector2(
+				float(b.x) * step.x - ST.GAP,
+				float(b.y) * step.y - ST.GAP)).grow(2.6)
+			_ok(bounds.encloses(box),
+				"%s: bounds фигуры/ghost %s внутри rect: %s" % [
+					v, cell_pos, box])
+	root.remove_child(table)
+	table.queue_free()
+
+
 func _test_sorting_table(registry) -> void:
 	_set_case("SortingTable")
 	var table = ST.new()
@@ -651,7 +757,9 @@ func _test_sorting_table(registry) -> void:
 	_eq(table.occupied_cells(), 0, "пустой стол")
 	_eq(table.footer_text(), "24 клетки", "подвал пустого стола")
 	var m: Dictionary = table.grid_metrics()
-	_eq(m["cell"], Vector2(99, 86), "cell стола 99×86")
+	# С GRID_PAD=5 сетка 4×6 больше не влезает в 416×548 «в упор»: клетка
+	# уменьшается 99×86 → 97×84, зато крайние фигуры не режутся clip'ом.
+	_eq(m["cell"], Vector2(97, 84), "cell стола 97×84 (внутри GRID_PAD)")
 	_eq(int(m["cols"]), 4, "стол: 4 колонки")
 	_eq(int(m["rows"]), 6, "стол: 6 строк")
 

@@ -19,6 +19,7 @@ signal connect_pressed(id: String)
 
 const CARD := Vector2(400, 128)
 const ECONOMY := preload("res://scripts/core/economy.gd")
+const FILE_ICONS := preload("res://scripts/ui/file_icons.gd")
 const SLOT_MAX := 4
 ## Сетка 2×2: шаг 90×28, чип 86×26. Правый столбец (196..392) — счётчик,
 ## прогноз и строка состояния.
@@ -1038,9 +1039,11 @@ func _draw_slot(i: int, f: Font) -> void:
 			border = Theme90.ACCENT_LIGHT if hov else Color(col.r, col.g, col.b, 0.62)
 		draw_style_box(Theme90.box(fill, Color(0, 0, 0, 0), 3, 0), cell)
 		Theme90.draw_dashed_box(self, cell, border, 3.0, 1.0)
-	# Иконка файла слева; если текстуры нет — прежняя цветная полоса типа.
-	var icon_drawn := false
-	if not t.is_empty():
+	# Иконка файла слева: атлас по icon_id, затем прежняя иконка типа;
+	# если нет ничего — цветная полоса типа.
+	var icon_drawn := FILE_ICONS.draw(self, Rect2(
+		cell.position + Vector2(4, 4), Vector2(12, 12)), int(data.get("icon_id", -1)))
+	if not icon_drawn and not t.is_empty():
 		icon_drawn = Theme90.draw_file_icon(self, Rect2(
 			cell.position + Vector2(4, 4), Vector2(12, 12)), t)
 	if not icon_drawn:

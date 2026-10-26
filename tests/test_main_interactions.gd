@@ -5,7 +5,7 @@ extends SceneTree
 ##   • пакет: drag/drop в папку без соединения (ConnectButton удалён);
 ##   • запрос: attach файла, явная кнопка ОТПРАВИТЬ, модалка мини-игры,
 ##     пауза таймера запроса, завершение мини-игры;
-##   • очередь out-слота: запрос ждёт слот, таймер стоит;
+##   • UDP: передача без out-слота и без очереди, таймер заморожен при sending;
 ##   • отмена/таймаут запроса сохраняют файлы (расход только при успехе);
 ##   • отказ от запроса, переключение TCP/UDP, 5 ячеек слотов.
 ##
@@ -72,7 +72,7 @@ func _init() -> void:
 	await _test_packet_drop()
 	await _test_packet_drop_other_folder()
 	await _test_attach_and_explicit_send()
-	await _test_queue_pause_and_timeout()
+	await _test_udp_no_slot_and_timeout()
 	await _test_reject()
 	_test_protocol_toggle()
 	_test_prediction()
@@ -331,79 +331,82 @@ func _test_attach_and_explicit_send() -> void:
 	holder.clear()
 
 
-## Out-слот занят приёмом → запрос в очереди; таймер стоит; таймаут сохраняет файл.
-func _test_queue_pause_and_timeout() -> void:
-	var pid: String = _director.spawn_packet_now("text", "tcp")
-	_ok(not pid.is_empty(), "пакет для занятия слота создан")
-	if pid.is_empty():
+## v5: UDP не занимает out-слот и не встаёт в очередь. Передача стартует сразу
+## при занятом слоте; таймер запроса заморожен во время sending (D2).
+func _test_udp_no_slot_and_timeout() -> void:
+	# Блокируем единственный out-слот «чужим» держателем.
+	var blocker := int(_director.slots.reserve("out", "blocker", "BLOCKER", "request"))
+	_ok(blocker >= 0, "out-слот занят blocker")
+	if blocker < 0:
 		return
-	_ok(_director.receive_packet(pid, _folder_id), "пакет занял in-слот")
-	_eq(int(_director.slots.used_count()), 1, "in-слот занят")
+	var slots_before := int(_director.slots.used_count())
 
-	var rid: String = _director.spawn_request_now(1)
+	var rid: String = _director.spawn_request_now(1, "udp")
 	var req = _director.active_requests.get(rid)
-	_ok(req != null, "запрос для очереди создан")
+	_ok(req != null, "UDP-запрос создан")
 	if req == null:
 		return
-	_ok(_director.set_request_protocol(rid, "udp"),
-		"запрос очереди переведён на UDP")
+	_eq(str(req.protocol), "udp", "протокол udp")
 	var missing_q: Array = _director.request_missing(rid)
-	_ok(missing_q.size() >= 1, "есть required-файл для запроса в очередь")
+	_ok(missing_q.size() >= 1, "есть required-файл для UDP-запроса")
 	if missing_q.is_empty():
 		return
 	var fid := str(missing_q[0])
-	_ok(_director.attach_file(rid, fid), "файл прикреплён к запросу очереди")
+	_ok(_director.attach_file(rid, fid), "файл прикреплён")
 
 	var holder := {"game": null}
 	_director.send_game_factory = func(_id, _tier, _seed, _ctx):
 		var g := FakeGame.new()
 		holder["game"] = g
 		return g
-	# UDP-ролл в конце передачи случаен: фиксируем успех, иначе выплаты не будет.
 	_director.udp_roll_override = 0.0
 	_main._on_request_send(rid)
 	await process_frame
 	var fake = holder.get("game")
-	_ok(fake != null, "мини-игра запроса очереди создана")
+	_ok(fake != null, "UDP мини-игра запроса создана")
 	if fake != null:
 		fake.finished.emit(0.8)
 		await process_frame
 		await process_frame
-	_ok(_director.is_request_queued(rid), "запрос встал в очередь «ОЖИДАНИЕ СЛОТА»")
-	_ok(not req.sending, "в очереди запрос ещё не отправляется")
 
-	var left_before := float(req.time_left)
-	_tick(10)
-	_approx(float(req.time_left), left_before, 0.001,
-		"таймер запроса стоит, пока он в очереди")
+	_ok(bool(req.sending), "UDP отправляется сразу при занятом слоте")
+	_ok(not _director.is_request_queued(rid), "UDP не встаёт в очередь")
+	_eq(int(_director.send_queue_count()), 0, "out-очередь пуста во время UDP-отправки")
+	_ok(not bool(req.slot_reserved), "UDP не резервирует out-слот")
+	_eq(int(_director.slots.used_count()), slots_before,
+		"UDP не добавил занятый слот")
+	var blocker_slot = _director.slots.get_slot(blocker)
+	_ok(blocker_slot != null and bool(blocker_slot.occupied),
+		"blocker остаётся в слоте во время UDP-отправки")
 
-	# Загрузка пакета завершается → очередь получает слот.
-	for i in 200:
-		if not _director.active_packets.has(pid):
-			break
-		_tick(1)
-	_ok(not _director.active_packets.has(pid), "пакет освободил слот")
-	_ok(req.sending, "после освобождения слота запрос начал отправку")
-
-	# D2: после старта отправки таймер заморожен — низкий time_left не
-	# обрывает передачу, файл доходит до клиента.
+	# D2: time_left=0.01 при sending не обрывает передачу.
 	req.time_left = 0.01
 	var money_send: int = _game.money
 	_tick(1)
 	_ok(_director.active_requests.has(rid),
 		"отправка не падает по таймауту при time_left=0.01")
-	_ok(req.sending, "запрос всё ещё отправляется")
+	_ok(bool(req.sending), "запрос всё ещё отправляется")
 	_ok(_game.registry.files.has(fid), "файл не израсходован до конца передачи")
 	for i in 200:
 		if not _director.active_requests.has(rid):
 			break
 		_tick(1)
-	_ok(not _director.active_requests.has(rid), "запрос завершился успешно")
+	_ok(not _director.active_requests.has(rid), "UDP завершился успешно")
 	_ok(_game.money > money_send, "выплата за отправку начислена")
 	_ok(_game.registry.files.has(fid), "файл остался после успешной отправки")
 	var udp_live = _game.registry.files.get(fid)
 	if udp_live != null:
 		_eq(str(udp_live.location), "folder", "файл вернулся в папку после UDP")
+	_ok(not _director.is_request_queued(rid), "очередь так и осталась пустой")
+	_eq(int(_director.send_queue_count()), 0, "очередь пуста после UDP-отправки")
+	_eq(int(_director.slots.used_count()), slots_before,
+		"UDP не менял число занятых слотов")
+	var kept_blocker = _director.slots.get_slot(blocker)
+	_ok(kept_blocker != null and bool(kept_blocker.occupied),
+		"UDP не освободил чужой out-слот")
+	_ok(_director.slots.release(blocker), "blocker освобождён вручную")
+	_eq(int(_director.slots.used_count()), 0, "после blocker слотов нет")
+
 	_director.udp_roll_override = -1.0
 	_director.send_game_factory = Callable()
 	_fake_game = null

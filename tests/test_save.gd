@@ -120,7 +120,7 @@ func _test_registry_v2_roundtrip(t) -> void:
 		folder_id = str(section.folder_ids[0])
 	t.ok(not folder_id.is_empty(), "стартовая папка есть")
 
-	var text = reg.create_file("Сейв-текст", "text", folder_id)
+	var text = reg.create_file("Сейв-текст", "text", folder_id, &"folder", 7)
 	t.ok(text != null, "text создан")
 	var video = reg.create_file("Сейв-видео", "video", folder_id)
 	t.ok(video != null, "video создан")
@@ -133,6 +133,12 @@ func _test_registry_v2_roundtrip(t) -> void:
 
 	var table_file = reg.create_file("Стол", "text", "", &"table")
 	t.ok(table_file != null, "файл на столе создан")
+	if text != null:
+		t.eq(int(text.icon_id), 7, "icon_id задан при создании")
+		text.hours_lived = 3
+	if video != null:
+		t.ok(int(video.icon_id) >= 0 and int(video.icon_id) < R.FILE_ICON_COUNT,
+			"create_file: icon_id в 0..63 (%d)" % int(video.icon_id))
 
 	t.eq(reg.validate().size(), 0, "реестр валиден до save")
 	var payload := {
@@ -152,9 +158,27 @@ func _test_registry_v2_roundtrip(t) -> void:
 		if video != null:
 			t.eq(reg2.file_origin(video.id), Vector2i(1, 0), "origin видео сохранён")
 			t.eq(str(reg2.get_file(video.id).shape_id), "I4V", "shape_id видео сохранён")
+		if text != null:
+			t.eq(int(reg2.get_file(text.id).icon_id), 7, "icon_id сохранён roundtrip")
+			t.eq(int(reg2.get_file(text.id).hours_lived), 3, "hours_lived сохранён roundtrip")
 		if table_file != null:
 			t.eq(str(reg2.get_file(table_file.id).location), "table", "location table сохранён")
 		t.eq(reg2.validate().size(), 0, "registry после load валиден: %s" % str(reg2.validate()))
+
+		# Старый сейв без hours_lived: файл считается новым (0).
+		var legacy_raw: Dictionary = (raw_registry as Dictionary).duplicate(true)
+		var legacy_files = legacy_raw.get("files", {})
+		if legacy_files is Dictionary:
+			for meta in (legacy_files as Dictionary).values():
+				if meta is Dictionary:
+					(meta as Dictionary).erase("hours_lived")
+		var reg_legacy = R.new()
+		t.ok(reg_legacy.from_dict(legacy_raw), "from_dict старого сейва без hours_lived")
+		if text != null:
+			var legacy_text = reg_legacy.get_file(text.id)
+			t.ok(legacy_text != null, "старый файл восстановлен")
+			if legacy_text != null:
+				t.eq(int(legacy_text.hours_lived), 0, "старый сейв: hours_lived = 0")
 
 
 # --- v3: UDP-лот в сейве ----------------------------------------------------

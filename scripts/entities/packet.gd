@@ -27,6 +27,8 @@ var loading_folder_id: String = ""
 var is_attack: bool = false
 var attack_kind: String = ""
 var size_kb: int = 0
+## Стабильный индекс иконки (0..FILE_ICON_COUNT-1); -1 — ещё не назначен.
+var icon_id: int = -1
 
 ## Форма, которую пакет займёт в папке. Выбирается при спавне, чтобы показать
 ## превью ещё до приёма. `shape_cells` — производное (не сохраняется).
@@ -94,6 +96,7 @@ func to_dict() -> Dictionary:
 		"is_attack": is_attack,
 		"attack_kind": attack_kind,
 		"size_kb": size_kb,
+		"icon_id": icon_id,
 		"lost_left": lost_left,
 		"loading_duration": loading_duration,
 		"order": order,
@@ -119,6 +122,7 @@ static func from_dict(d: Dictionary):
 	p.is_attack = bool(d.get("is_attack", false))
 	p.attack_kind = str(d.get("attack_kind", ""))
 	p.size_kb = int(d.get("size_kb", 0))
+	p.icon_id = int(d.get("icon_id", -1))
 	p.lost_left = float(d.get("lost_left", 0.0))
 	p.loading_duration = float(d.get("loading_duration", 0.0))
 	p.order = int(d.get("order", 0))

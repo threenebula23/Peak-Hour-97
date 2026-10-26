@@ -194,26 +194,31 @@ func _test_slots_and_queue() -> void:
 	if file == null:
 		return
 	# v3: TCP отправляет через слот собственного соединения и в очередь не
-	# встаёт; очередь out-слота проверяем на UDP с детерминированным успехом.
+	# встаёт. v5: UDP тоже не занимает out-слот и не встаёт в очередь —
+	# стартует сразу даже при занятом слоте.
 	_hd.udp_roll_override = 0.0
 	var req_id := str(_hd._make_request([file], "udp", false, "", ""))
 	_ok(_hd.attach_file(req_id, str(file.id)), "файл прикреплён")
 	_ok(_hd.start_send(req_id), "мини-игра отправки открыта")
 	_ok(_hd.is_minigame_active(), "мини-игра активна")
 	_hd._on_send_minigame_finished(0.8)
-	_ok(_hd.is_request_queued(req_id), "запрос встал в очередь out-слота")
+	_ok(_hd.is_request_queued(req_id) == false,
+		"UDP не встаёт в очередь при занятом слоте")
 	var req = _hd.active_requests.get(req_id)
-	_ok(req != null and not req.sending, "в очереди запрос не отправляется")
+	_ok(req != null and bool(req.sending), "UDP отправляется сразу")
+	_ok(req != null and not bool(req.slot_reserved), "UDP не резервирует out-слот")
+	_eq(int(_hd.slots.used_count("out")), 0, "UDP не занял out-слот")
+	_eq(int(_hd.slots.used_count()), 1, "слот занят только загрузкой пакета p3")
 
 	_tick_until_packet_gone(p3, 200)
-	_ok(req != null and req.sending, "очередь выдала слот после загрузки пакета")
+	_eq(int(_hd.slots.used_count()), 0, "пакет p3 освободил слот, UDP слот не держал")
 	_tick_until_request_gone(req_id, 300)
 	_ok(not _hd.active_requests.has(req_id), "запрос завершён отправкой")
 	_ok(_game.registry.files.has(str(file.id)), "файл остался после успешной отправки")
 	var queue_kept = _game.registry.files.get(str(file.id))
 	if queue_kept != null:
 		_eq(str(queue_kept.location), "folder", "файл вернулся в папку")
-	_eq(int(_hd.slots.used_count()), 0, "UDP: out-слот освобождён после отправки")
+	_eq(int(_hd.slots.used_count()), 0, "после UDP все слоты свободны")
 	_hd.udp_roll_override = -1.0
 
 

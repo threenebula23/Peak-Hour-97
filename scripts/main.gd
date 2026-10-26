@@ -2170,7 +2170,8 @@ func _refresh_packets(data: Array) -> void:
 			_ext_for_type(str(p.get("type", ""))), str(p.get("type", "")),
 			str(p.get("protocol", "")).to_upper(), left, total, progress,
 			int(p.get("size_kb", 0)), str(p.get("state", "waiting")),
-			str(p.get("shape_id", "O1")), int(p.get("rotation", 0)))
+			str(p.get("shape_id", "O1")), int(p.get("rotation", 0)),
+			int(p.get("icon_id", -1)))
 		card.set_time(left, total)
 
 	_sync_recv_scroll(data.size())
@@ -2319,6 +2320,7 @@ func _request_slots(request: Dictionary) -> Array:
 			"name": str(file.name),
 			"ext": str(file.ext),
 			"type": str(file.type),
+			"icon_id": int(file.icon_id),
 			"folder": folder_name,
 			"attached": attached.has(fid),
 			"required": true,
@@ -2352,6 +2354,7 @@ func _request_slots(request: Dictionary) -> Array:
 			"name": str(file2.name),
 			"ext": str(file2.ext),
 			"type": str(file2.type),
+			"icon_id": int(file2.icon_id),
 			"folder": "",
 			"attached": true,
 			"required": true,

@@ -38,6 +38,10 @@ var lock_until: float = 0.0
 var cooldown_until: float = 0.0
 var size_kb: int = 0
 var created_at: float = 0.0
+## Стабильный индекс иконки (0..FILE_ICON_COUNT-1); -1 — ещё не назначен.
+var icon_id: int = -1
+## Сколько часов файл провёл на складе (растёт в конце часа).
+var hours_lived: int = 0
 
 ## Форма на сетке (v2).
 var shape_id: String = "O1"
@@ -119,6 +123,8 @@ func to_dict(include_placement: bool = true) -> Dictionary:
 		"cooldown_until": cooldown_until,
 		"size_kb": size_kb,
 		"created_at": created_at,
+		"icon_id": icon_id,
+		"hours_lived": hours_lived,
 		"location_before_lock": String(_location_before_lock),
 		"shape_id": shape_id,
 	}
@@ -145,6 +151,9 @@ static func from_dict(d: Dictionary):
 	f.cooldown_until = float(d.get("cooldown_until", 0.0))
 	f.size_kb = int(d.get("size_kb", 0))
 	f.created_at = float(d.get("created_at", 0.0))
+	f.icon_id = int(d.get("icon_id", -1))
+	# Старые сейвы без hours_lived: файл считается только что полученным.
+	f.hours_lived = maxi(0, int(d.get("hours_lived", 0)))
 	var prev := StringName(str(d.get("location_before_lock", "folder")))
 	if prev != &"registry" and prev != &"folder" and prev != &"table":
 		prev = &"folder"

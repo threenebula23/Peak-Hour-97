@@ -31,10 +31,12 @@ func run(t) -> void:
 	_test_auto_place(t)
 	_test_place_collisions(t)
 	_test_reservations(t)
+	_test_icon_id(t)
 	_test_table(t)
 	_test_resize(t)
 	_test_defrag(t)
 	_test_consume_destroy(t)
+	_test_file_expiry(t)
 	_test_save_roundtrip(t)
 	_test_v1_migration(t)
 	_test_v1_never_shrinks(t)
@@ -43,6 +45,7 @@ func run(t) -> void:
 	_test_attach_detach(t)
 	_test_move_between_folders(t)
 	_test_move_no_phantom(t)
+	_test_table_roundtrip_no_phantom(t)
 
 
 # --- setup ------------------------------------------------------------------
@@ -228,12 +231,13 @@ func _test_reservations(t) -> void:
 	t.eq(res1.get("origin", Vector2i(-1, -1)), Vector2i(0, 0), "origin резервации")
 
 	# Приём: резервация превращается в файл на тех же клетках.
-	var got = reg.confirm_reservation("pkt_1", "Принятый", "video")
+	var got = reg.confirm_reservation("pkt_1", "Принятый", "video", 42)
 	t.ok(got != null, "confirm_reservation создал файл")
 	if got != null:
 		t.eq(got.origin, Vector2i(0, 0), "файл на месте резервации")
 		t.eq(got.shape_id, "O4", "форма из резервации")
 		t.eq(str(got.location), "folder", "location folder")
+		t.eq(int(got.icon_id), 42, "icon_id из confirm_reservation")
 		t.ok(folder.file_ids.has(got.id), "файл в папке")
 		t.eq(folder.owner_at(0, 0), got.id, "клетка принадлежит файлу")
 	t.eq(reg.reservation_count(fid), 1, "после confirm осталась одна резервация")
@@ -253,6 +257,49 @@ func _test_reservations(t) -> void:
 	t.ok(not reg.reserve_packet("pkt_3", fid, "O1", 0, card.origin), "резервация на файл запрещена")
 	var auto2 := reg.auto_reserve_packet("pkt_4", fid, "O4", 0)
 	t.ok(bool(auto2.get("ok", false)), "auto_reserve учитывает файлы")
+
+
+# --- icon_id ----------------------------------------------------------------
+
+func _test_icon_id(t) -> void:
+	t.set_case("icon_id")
+	var reg = R.new()
+	reg.setup_new_run()
+	var folder = _default_folder(reg)
+	var fid := str(folder.id)
+
+	var auto = reg.create_file("Auto icon", "text", fid)
+	t.ok(auto != null, "файл со случайной иконкой создан")
+	if auto != null:
+		t.ok(int(auto.icon_id) >= 0 and int(auto.icon_id) < R.FILE_ICON_COUNT,
+			"create_file: icon_id в 0..63 (%d)" % int(auto.icon_id))
+
+	var pinned = reg.create_file("Pinned icon", "text", fid, &"folder", 17)
+	t.ok(pinned != null, "файл с заданной иконкой создан")
+	if pinned != null:
+		t.eq(int(pinned.icon_id), 17, "create_file сохранил icon_id")
+
+	t.ok(reg.reserve_packet("pkt_icon", fid, "O1", 0, Vector2i(4, 3)), "резервация для icon_id")
+	var confirmed = reg.confirm_reservation("pkt_icon", "Confirmed icon", "text", 63)
+	t.ok(confirmed != null, "confirm_reservation с icon_id")
+	if confirmed != null:
+		t.ok(int(confirmed.icon_id) >= 0 and int(confirmed.icon_id) < R.FILE_ICON_COUNT,
+			"confirm_reservation: icon_id в 0..63 (%d)" % int(confirmed.icon_id))
+
+	# Старый сейв без icon_id: стабильный индекс из имени файла.
+	var data: Dictionary = reg.to_dict()
+	for meta in (data.get("files", {}) as Dictionary).values():
+		if meta is Dictionary:
+			(meta as Dictionary).erase("icon_id")
+	var reg2 = R.new()
+	t.ok(reg2.from_dict(data), "from_dict старого сейва без icon_id")
+	var legacy = reg2.get_file(pinned.id) if pinned != null else null
+	t.ok(legacy != null, "старый файл восстановлен")
+	if legacy != null:
+		t.eq(int(legacy.icon_id), absi(hash(str(legacy.name))) % R.FILE_ICON_COUNT,
+			"старый сейв: icon_id из hash(name)")
+		t.ok(int(legacy.icon_id) >= 0 and int(legacy.icon_id) < R.FILE_ICON_COUNT,
+			"старый сейв: icon_id в 0..63")
 
 
 # --- стол -------------------------------------------------------------------
@@ -717,11 +764,124 @@ func _test_move_no_phantom(t) -> void:
 	t.eq(reg.validate().size(), 0, "инварианты: %s" % str(reg.validate()))
 
 
+## Регрессия фантома при первом перетаскивании: A → стол → A и A → B.
+## В момент grid_changed старой папки файл не должен выглядеть «лежащим» в ней
+## (иначе FileGrid self-heal вернёт его в старую сетку дублем).
+func _test_table_roundtrip_no_phantom(t) -> void:
+	t.set_case("table roundtrip no phantom")
+	var reg = R.new()
+	reg.setup_new_run()
+	var a = reg.folders.get(_folder_id_at(reg, 0), null)
+	var b = reg.folders.get(_folder_id_at(reg, 1), null)
+	if a == null or b == null:
+		t.ok(false, "нужны две папки")
+		return
+	var file = reg.create_file("Roundtrip", "video", a.id)
+	t.ok(file != null, "видео-файл создан в A")
+	if file == null:
+		return
+	var file_id := str(file.id)
+	var shape_size: int = (file.shape_cells as Array).size()
+	t.eq(a.file_ids.count(file_id), 1, "файл в file_ids A")
+	var snapshots: Array = []
+	reg.grid_changed.connect(func(changed_id: String) -> void:
+		snapshots.append({
+			"folder": str(changed_id),
+			"loc": str(file.location),
+			"file_folder": str(file.folder_id),
+		}))
+
+	# A → стол: в A не остаётся ни файла, ни клеток.
+	t.ok(reg.move_file_to_table(file_id), "перетаскивание A → стол")
+	t.eq(str(file.location), "table", "location = table")
+	t.eq(a.file_ids.count(file_id), 0, "в file_ids A нет файла")
+	t.eq(a.cells.size(), 0, "в клетках A пусто")
+	t.eq(reg.table_file_count(), 1, "на столе ровно один файл")
+	t.eq(reg.table_occupied_cells(), shape_size, "стол занят клетками файла")
+	t.eq(str(file.folder_id), str(a.id), "home folder_id сохранён для возврата")
+	var bad := 0
+	for snap in snapshots:
+		if str(snap["folder"]) == str(a.id) and str(snap["loc"]) == "folder" \
+				and str(snap["file_folder"]) == str(a.id):
+			bad += 1
+	t.eq(bad, 0, "grid_changed A не видит файл как folder (нет фантома)")
+
+	# стол → A: обратно ровно один файл и его клетки.
+	t.ok(reg.move_from_table(file_id, a.id, Vector2i(0, 0), 0), "стол → A")
+	t.eq(str(file.location), "folder", "location = folder")
+	t.eq(a.file_ids.count(file_id), 1, "file.id ровно один раз в file_ids A")
+	t.eq(a.cells.size(), shape_size, "в A все клетки файла")
+	t.eq(reg.table_file_count(), 0, "стол пуст")
+	t.eq(reg.table_occupied_cells(), 0, "клетки стола свободны")
+	t.eq(reg.validate().size(), 0, "инварианты после roundtrip: %s" % str(reg.validate()))
+
+	# A → B: в A пусто, в B ровно одно вхождение, дублей нет.
+	t.ok(reg.move_file(file_id, b.id, Vector2i(0, 0), 0), "перетаскивание A → B")
+	t.eq(a.file_ids.count(file_id), 0, "в file_ids A нет файла")
+	t.eq(a.cells.size(), 0, "клетки A освобождены")
+	t.eq(b.file_ids.count(file_id), 1, "file.id ровно один раз в file_ids B")
+	t.eq(b.cells.size(), shape_size, "в B все клетки файла")
+	t.eq(str(file.folder_id), str(b.id), "folder_id = B")
+	t.eq(reg.file_count(), 1, "файл не потерян и не размножился")
+	t.eq(reg.validate().size(), 0, "инварианты после A → B: %s" % str(reg.validate()))
+
+
 func _folder_owns_cell(folder, file_id: String) -> bool:
 	for cell in folder.cells.keys():
 		if str(folder.cells[cell]) == file_id:
 			return true
 	return false
+
+
+# --- срок жизни файлов ------------------------------------------------------
+
+func _test_file_expiry(t) -> void:
+	t.set_case("file expiry")
+	var reg = R.new()
+	reg.setup_new_run()
+	var folder = _default_folder(reg)
+	if folder == null:
+		t.ok(false, "стартовая папка есть")
+		return
+	var file = reg.create_file("Долгожитель", "text", folder.id)
+	t.ok(file != null, "файл создан")
+	if file == null:
+		return
+	var file_id := str(file.id)
+
+	# roll 0.99 > p: файл старится, но остаётся.
+	var removed := reg.age_files_between_hours(0.99)
+	t.eq(removed, 0, "roll 0.99 не удаляет файл")
+	t.eq(int(file.hours_lived), 1, "hours_lived вырос до 1")
+	removed = reg.age_files_between_hours(0.99)
+	t.eq(removed, 0, "roll 0.99 не удаляет и старый файл")
+	t.eq(int(file.hours_lived), 2, "hours_lived вырос до 2")
+
+	# roll 0 < p: файл списывается без штрафов и следов в папке.
+	removed = reg.age_files_between_hours(0.0)
+	t.eq(removed, 1, "roll 0 удаляет старый файл")
+	t.ok(not reg.files.has(file_id), "файл убран из реестра")
+	t.eq(reg.file_count(), 0, "реестр пуст")
+	t.eq(folder.file_ids.size(), 0, "файл убран из file_ids папки")
+	t.eq(folder.cells.size(), 0, "клетки папки освобождены")
+
+	# attached/required_by/moving — страховка: не старятся и не удаляются.
+	var attached = reg.create_file("Прикреплённый", "text", folder.id)
+	var required = reg.create_file("Нужный запросу", "text", folder.id)
+	var moving = reg.create_file("Переносится", "text", folder.id)
+	t.ok(attached != null and required != null and moving != null, "три защищённых файла созданы")
+	if attached == null or required == null or moving == null:
+		return
+	attached.location = &"attached"
+	attached.attached_request = "req_attached"
+	required.required_by = "req_required"
+	moving.location = R.MOVING
+	removed = reg.age_files_between_hours(0.0)
+	t.eq(removed, 0, "attached/required/moving не удаляются")
+	t.eq(int(attached.hours_lived), 0, "attached не старится")
+	t.eq(int(required.hours_lived), 0, "required_by не старится")
+	t.eq(int(moving.hours_lived), 0, "moving не старится")
+	t.eq(reg.file_count(), 3, "все три файла на месте")
 
 
 func _on_registry_changed() -> void:

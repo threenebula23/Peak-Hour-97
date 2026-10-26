@@ -625,6 +625,7 @@ func _spawn_random_packet(type_override: String = "", protocol_override: String 
 	p.shape_id = forced_shape if not forced_shape.is_empty() \
 		else REGISTRY_SCRIPT.shape_for_type(file_type, rng)
 	p.rotation = 0 if not forced_shape.is_empty() else _randi_range(0, 3)
+	p.icon_id = _randi_range(0, REGISTRY_SCRIPT.FILE_ICON_COUNT - 1)
 	p.shape_cells = REGISTRY_SCRIPT.shape_cells(p.shape_id, p.rotation)
 	if not _add_packet(p):
 		return ""
@@ -1274,8 +1275,12 @@ func _handle_udp_failure(req) -> void:
 
 
 ## Ролл UDP: true — пакет дошёл. udp_roll_override подменяет randf() для тестов.
+## Третья попытка (udp_failures >= 2) гарантированно успешна: override может
+## форсировать провал только на первых двух попытках.
 func _roll_udp_success(req) -> bool:
 	if req == null:
+		return true
+	if int(req.udp_failures) >= 2:
 		return true
 	var chance := udp_success_chance()
 	var roll := _randf()
@@ -1459,7 +1464,7 @@ func _on_send_minigame_finished(quality: float) -> void:
 
 
 ## После мини-игры: TCP использует слот уже открытого соединения; UDP
-## занимает out-слот или встаёт в очередь (M15).
+## слот не занимает и в очередь не встаёт — отправка стартует сразу.
 func _start_send_after_minigame(req_id: String) -> void:
 	var req = active_requests.get(req_id)
 	if req == null or req.sending:
@@ -1470,6 +1475,11 @@ func _start_send_after_minigame(req_id: String) -> void:
 			_emit_toast("СНАЧАЛА УСТАНОВИТЕ СОЕДИНЕНИЕ")
 			return
 		req.slot_reserved = true
+		req.set_meta("queued", false)
+		_begin_send(req_id)
+		return
+	if str(req.protocol) == "udp":
+		req.slot_reserved = false
 		req.set_meta("queued", false)
 		_begin_send(req_id)
 		return
@@ -1488,6 +1498,12 @@ func _start_send_after_minigame(req_id: String) -> void:
 func _queue_request(req_id: String) -> void:
 	var req = active_requests.get(req_id)
 	if req == null:
+		return
+	# Страховка: UDP никогда не занимает out-слот и не стоит в очереди.
+	if str(req.protocol) == "udp":
+		req.set_meta("queued", false)
+		req.slot_reserved = false
+		_begin_send(req_id)
 		return
 	req.sending = false
 	req.slot_reserved = false
@@ -1521,7 +1537,7 @@ func _begin_send(req_id: String) -> void:
 	req.send_base_sum = base_sum
 	req.send_progress = 0.0
 	req.sending = true
-	req.slot_reserved = true
+	req.slot_reserved = (str(req.protocol) == "tcp")
 	req.set_meta("queued", false)
 	_send_start_time_left[req_id] = float(req.time_left)
 	_send_start_timer_total[req_id] = float(req.timer_total)
@@ -1541,6 +1557,13 @@ func _process_send_queue() -> void:
 			_send_queue.erase(req_id)
 			continue
 		var req = active_requests[req_id]
+		# Страховка: UDP не занимает out-слот — стартует сразу.
+		if str(req.protocol) == "udp":
+			_send_queue.erase(req_id)
+			req.set_meta("queued", false)
+			req.slot_reserved = false
+			_begin_send(req_id)
+			continue
 		var slot_index: int = int(slots.reserve("out", req_id, req.client_name, "request"))
 		if slot_index < 0:
 			break
@@ -1933,7 +1956,7 @@ func _finish_loading(packet_id: String) -> void:
 	var packet = active_packets.get(packet_id)
 	if packet == null or registry == null:
 		return
-	var file = registry.confirm_reservation(packet_id, packet.file_name, packet.type)
+	var file = registry.confirm_reservation(packet_id, packet.file_name, packet.type, packet.icon_id)
 	packet.state = PACKET_SCRIPT.STATE_WAITING
 	packet.loading_folder_id = ""
 	if slots != null:

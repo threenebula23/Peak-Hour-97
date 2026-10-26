@@ -109,7 +109,7 @@ func _test_start_hour() -> void:
 	# v4: значения берём из data/balance.json → hours[0].
 	var h1: Dictionary = _hour_row(1)
 	_eq(_hd.files_budget, int(h1.get("files", -1)), "H1: базовый темп файлов из данных")
-	_eq(_hd.files_budget, 6, "H1: 6 файлов (только темп, без лимита)")
+	_eq(_hd.files_budget, 8, "H1: 8 файлов (только темп, без лимита)")
 	_eq(_hd.files_spawned, 0, "H1: файлы ещё не спавнились")
 	_eq(_hd.get("request_cap"), null, "request_cap удалён из HourDirector")
 	_ok(not h1.has("request_cap"), "H1: request_cap удалён из данных часа")
@@ -120,7 +120,7 @@ func _test_start_hour() -> void:
 	_approx(_hd.spawn_window, 90.0, 0.0001, "окно спавна 75% часа = 90 с")
 	_eq(_hd.slots.max_slots(), 1, "H1: 1 слот")
 	_eq(_hd.buffer_limit(), 6, "H1: буфер 6")
-	_approx(_hd._receive_interval(), 15.0, 0.0001, "спавн-интервал = 90 / 6 = 15")
+	_approx(_hd._receive_interval(), 11.25, 0.0001, "спавн-интервал = 90 / 8 = 11.25")
 	_approx(_hd._send_interval(), 20.0, 0.0001, "send_interval H1 = 20")
 	_eq(_hd._max_requests(), 2, "max concurrent requests H1 = 2")
 	_eq(_hd._type_pool(), ["text"], "H1: только text")
@@ -146,7 +146,7 @@ func _test_start_hour() -> void:
 
 func _test_budgets_and_weights() -> void:
 	_set_case("budgets_weights")
-	var expected_files := [6, 6, 7, 8, 9, 9, 10, 10, 10]
+	var expected_files := [8, 8, 9, 10, 11, 11, 12, 12, 12]
 	var expected_duration := [120.0, 150.0, 180.0, 210.0, 240.0, 270.0, 300.0, 330.0, 360.0]
 	for h in range(1, 10):
 		_fresh(int(h))
@@ -401,9 +401,9 @@ func _test_carry() -> void:
 
 	_game.hour = 2
 	_hd.start_hour(2)
-	_eq(_hd.files_budget, int(_hour_row(2).get("files", 6)),
+	_eq(_hd.files_budget, int(_hour_row(2).get("files", 8)),
 		"H2: базовый темп из данных, без переноса")
-	_eq(_hd.files_budget, 6, "H2: 6 базовых файлов")
+	_eq(_hd.files_budget, 8, "H2: 8 базовых файлов")
 	_eq(_hd.carry_files, 0, "H2: переноса нет")
 
 	_game.hour = 5
@@ -1178,10 +1178,10 @@ func _test_send_minigame_pause() -> void:
 # --- очередь out-слота -----------------------------------------------------
 
 func _test_out_slot_queue() -> void:
-	_set_case("out_slot_queue")
+	_set_case("udp_no_slot_queue")
 	_fresh(1)
-	# TCP больше не встаёт в очередь: он всегда отправляет через слот
-	# собственного соединения. Очередь out-слота — сценарий UDP.
+	# v5: UDP после мини-игры не занимает out-слот и не встаёт в очередь —
+	# отправка стартует сразу, даже если все слоты заняты.
 	_hd.udp_roll_override = 0.0
 	var file = _new_file("Очередь", "text", _folder_id())
 	var req_id: String = str(_hd._make_request([file], "udp", false, "", ""))
@@ -1191,25 +1191,28 @@ func _test_out_slot_queue() -> void:
 	_ok(_hd.start_send(req_id), "мини-игра открыта")
 	_hd._on_send_minigame_finished(1.0)
 	var req = _hd.active_requests[req_id]
-	_ok(_hd.is_request_queued(req_id), "нет слота → запрос в очереди")
-	_ok(not req.sending, "отправка ещё не идёт")
+	_ok(bool(req.sending), "UDP без слота: отправка стартовала сразу")
+	_ok(not _hd.is_request_queued(req_id), "UDP не встаёт в очередь")
 	_ok(not req.minigame_active, "мини-игра закрыта")
-	var frozen: float = float(req.time_left)
-	for i in range(10):
-		_hd.tick(0.1)
-	_approx(float(req.time_left), frozen, 0.0001, "таймер в очереди заморожен")
+	_ok(not bool(req.slot_reserved), "UDP не резервирует out-слот")
+	var blocker_slot = _hd.slots.get_slot(blocker)
+	_ok(blocker_slot != null and bool(blocker_slot.occupied),
+		"чужой blocker остаётся в слоте")
+	_eq(_hd.slots.used_count("out"), 1, "UDP не добавил занятый слот")
 
-	_hd.slots.release(blocker)
-	_ok(not _hd.is_request_queued(req_id), "слот освободился — запрос снят с очереди")
-	_ok(req.sending, "отправка стартовала автоматически")
 	var money_before: int = _game.money
 	for i in range(200):
 		_hd.tick(0.1)
 		if not _hd.active_requests.has(req_id):
 			break
-	_ok(not _hd.active_requests.has(req_id), "запрос завершён после очереди")
+	_ok(not _hd.active_requests.has(req_id), "UDP завершился без очереди")
 	_ok(_game.money > money_before, "выплата за отправку начислена")
-	_ok(_hd.slots.used_count("out") == 0, "UDP: out-слот освобождён после отправки")
+	var kept_blocker = _hd.slots.get_slot(blocker)
+	_ok(kept_blocker != null and bool(kept_blocker.occupied),
+		"UDP не освободил чужой out-слот")
+	_eq(_hd.slots.used_count("out"), 1, "после UDP занят только blocker")
+	_ok(_hd.slots.release(blocker), "blocker освобождён вручную")
+	_eq(_hd.slots.used_count("out"), 0, "после освобождения blocker слотов нет")
 	_hd.udp_roll_override = -1.0
 
 
@@ -1793,6 +1796,49 @@ func _test_udp_model() -> void:
 	_eq(_hd.slots.used_count(), 0, "повторный UDP освободил слот")
 	_hd.udp_roll_override = -1.0
 
+	# v5: третья попытка гарантированно успешна, даже если ролл форсит провал.
+	_set_case("udp_third_attempt_guaranteed")
+	_fresh(1)
+	var file3 = _new_file("UDP третья", "text", _folder_id())
+	if file3 == null:
+		return
+	var fid3 := str(file3.id)
+	var rid3 := str(_hd._create_request(1, "udp", [fid3], false))
+	_ok(_hd.attach_file(rid3, fid3), "UDP-файл прикреплён")
+	var req3 = _hd.active_requests.get(rid3)
+	if req3 == null:
+		return
+	_hd.udp_roll_override = 1.0
+	for attempt in [1, 2]:
+		_ok(_hd.start_send(rid3), "попытка %d: мини-игра открыта" % attempt)
+		_hd._on_send_minigame_finished(1.0)
+		_ok(bool(req3.sending), "попытка %d: отправка идёт" % attempt)
+		for i in range(200):
+			_hd.tick(0.1)
+			if not bool(req3.sending):
+				break
+		_ok(_hd.active_requests.has(rid3), "попытка %d: запрос жив" % attempt)
+		_eq(int(req3.udp_failures), attempt,
+			"попытка %d: udp_failures = %d" % [attempt, attempt])
+		_eq(int(_hd._udp_lost), attempt, "попытка %d: потеря учтена" % attempt)
+		_hd.hour_elapsed = float(req3.udp_retry_until) + 0.01
+	_eq(int(req3.udp_failures), 2, "после двух провалов udp_failures = 2")
+	var money3 := int(_game.money)
+	var sla3 := float(_game.sla)
+	_ok(_hd.start_send(rid3), "третья попытка стартует (override=1.0)")
+	_hd._on_send_minigame_finished(1.0)
+	_ok(bool(req3.sending), "третья попытка: отправка идёт")
+	for i in range(200):
+		_hd.tick(0.1)
+		if not _hd.active_requests.has(rid3):
+			break
+	_ok(not _hd.active_requests.has(rid3), "третья попытка завершила запрос успехом")
+	_ok(int(_game.money) > money3, "третья попытка выплатила деньги")
+	_approx(float(_game.sla), sla3, 0.001, "третья попытка без штрафа SLA")
+	_eq(int(_hd._udp_lost), 2, "третья попытка не добавила потерь")
+	_ok(_game.registry.files.has(fid3), "файл вернулся после третьей попытки")
+	_hd.udp_roll_override = -1.0
+
 
 # --- v5: протокол нового запроса -------------------------------------------
 
@@ -2097,8 +2143,8 @@ func _test_report() -> void:
 	_ok(not _hour_report.has("request_cap"), "отчёт без request_cap")
 	_eq(int(_hour_report.get("hour", 0)), 2, "отчёт: hour = 2")
 	_eq(int(_hour_report.get("completed", 0)), 1, "отчёт: completed = 1")
-	_eq(int(_hour_report.get("files_budget", 0)), 6, "отчёт: files_budget H2 = 6")
-	_eq(int(_hour_report.get("files_total", 0)), 6, "отчёт: files_total H2 = 6")
+	_eq(int(_hour_report.get("files_budget", 0)), 8, "отчёт: files_budget H2 = 8")
+	_eq(int(_hour_report.get("files_total", 0)), 8, "отчёт: files_total H2 = 8")
 	_approx(float(_hour_report.get("hour_duration", 0.0)), 150.0, 0.0001,
 		"отчёт: hour_duration H2 = 150")
 	_approx(float(_hour_report.get("send_interval", 0.0)), 24.0, 0.0001,

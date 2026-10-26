@@ -23,6 +23,11 @@ const DRAG_CONTROLLER = preload("res://scripts/ui/drag_controller.gd")
 const GAP := 6.0
 const CELL_MIN := 56.0
 const CELL_MAX := 110.0
+## Внутренний отступ сетки: FileShape расширяет заливку/контур на GAP/2 + 1.3 px
+## (выделение 2.6) за границу клетки, ghost рисует dashed-box +2.6 px. Без
+## запаса clip Control срезал левый/правый край фигуры в клетках (0,*) и
+## (cols-1,*). Аналог FileGrid.GRID_PAD.
+const GRID_PAD := 5.0
 const DEFAULT_COLS := 4
 const DEFAULT_ROWS := 6
 
@@ -174,11 +179,19 @@ func _on_resized() -> void:
 
 
 func _recalc_layout() -> void:
+	# Клетку считаем как раньше, но если сетка упирается в край ближе GRID_PAD,
+	# пересчитываем по уменьшенному view (как FileGrid._recalc_layout). Иначе
+	# outline/label/ghost крайних клеток попадают под clip_contents.
 	_cell = FG.cell_size_pair(size, _cols, _rows, GAP, CELL_MIN, CELL_MAX)
 	var gs := FG.grid_size_pair(_cols, _rows, _cell, GAP)
+	if gs.x + GRID_PAD * 2.0 > size.x or gs.y + GRID_PAD * 2.0 > size.y:
+		var inner := Vector2(maxf(0.0, size.x - GRID_PAD * 2.0),
+			maxf(0.0, size.y - GRID_PAD * 2.0))
+		_cell = FG.cell_size_pair(inner, _cols, _rows, GAP, CELL_MIN, CELL_MAX)
+		gs = FG.grid_size_pair(_cols, _rows, _cell, GAP)
 	_grid_origin = Vector2(
-		maxf(1.0, roundf((size.x - gs.x) * 0.5)),
-		maxf(1.0, roundf((size.y - gs.y) * 0.5)))
+		maxf(GRID_PAD, roundf((size.x - gs.x) * 0.5)),
+		maxf(GRID_PAD, roundf((size.y - gs.y) * 0.5)))
 
 
 func _cell_rect(c: int, r: int) -> Rect2:
@@ -317,7 +330,8 @@ func _get_drag_data(at_position: Vector2) -> Variant:
 		var preview := FILE_SHAPE.new()
 		preview.setup(str(file.type), str(file.shape_id), int(file.rotation),
 			str(file.name), str(file.ext),
-			clampf(minf(_cell.x, _cell.y) * 0.55, 28.0, 56.0))
+			clampf(minf(_cell.x, _cell.y) * 0.55, 28.0, 56.0),
+			int(file.icon_id))
 		preview.set_mode("shape")
 		dc.begin(preview, "shape", int(file.rotation))
 	queue_redraw()
@@ -577,6 +591,7 @@ func _draw_file(file) -> void:
 		"type": str(file.type),
 		"name": str(file.name),
 		"ext": str(file.ext),
+		"icon_id": int(file.icon_id),
 		"state": FG.file_state(file),
 		"selected": str(file.id) == _selected,
 		"hovered": str(file.id) == _hover_id,

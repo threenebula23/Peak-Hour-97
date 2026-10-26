@@ -146,7 +146,10 @@ func _heal_folder_bookkeeping(folder) -> void:
 		if file == null or str(file.folder_id) != str(folder.id):
 			continue
 		var loc := str(file.location)
-		if loc == "table" or loc == "registry":
+		# "moving" — транзиент внутри FileRegistry.move_*/place_*: старые клетки
+		# уже освобождены, новые ещё не проштампованы. Лечить такой файл нельзя:
+		# вернёт его в старую сетку как фантомный дубль при первом drag.
+		if loc == "moving" or loc == "table" or loc == "registry":
 			continue
 		var file_id := str(file.id)
 		if not _by_id.has(file_id):
@@ -775,7 +778,8 @@ func _get_drag_data(at_position: Vector2) -> Variant:
 	if dc != null:
 		var preview := FILE_SHAPE.new()
 		preview.setup(str(file.type), str(file.shape_id), int(file.rotation),
-			str(file.name), str(file.ext), clampf(_cell * 0.55, 28.0, 56.0))
+			str(file.name), str(file.ext), clampf(_cell * 0.55, 28.0, 56.0),
+			int(file.icon_id))
 		preview.set_mode("shape")
 		dc.begin(preview, "shape", int(file.rotation))
 	queue_redraw()
@@ -1064,6 +1068,7 @@ func _draw_file(file) -> void:
 		"type": str(file.type),
 		"name": str(file.name),
 		"ext": str(file.ext),
+		"icon_id": int(file.icon_id),
 		"state": state,
 		"selected": str(file.id) == _selected,
 		"hovered": str(file.id) == _hover_id,

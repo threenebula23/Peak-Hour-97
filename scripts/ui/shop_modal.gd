@@ -34,6 +34,8 @@ const CARD_H := 360.0
 const CARD_GAP := 24.0
 const CARD_Y := 88.0
 const CARD_PAD := 12.0
+const ICON_SIZE := 40.0
+const ICON_GAP := 10.0
 const FOOTER_Y := H - 52.0
 const FOOTER_H := 28.0
 const MAX_CARDS := 3
@@ -339,11 +341,13 @@ func _make_card(item: Dictionary, id: String, level: int, max_level: int,
 		button_text = "%s $" % _fmt(price)
 		affordable = true
 	var next_name := _next_level_name(item, level)
+	var effect := str(item.get("effect", ""))
 	return {
 		"id": id,
 		"title": str(item.get("name_ru", item.get("name", id))),
 		"desc": str(item.get("desc_ru", "")),
-		"effect": str(item.get("effect", "")),
+		"effect": effect,
+		"icon_path": Theme90.shop_icon_path(id, effect),
 		"level": level,
 		"max_level": max_level,
 		"price": price,
@@ -708,16 +712,27 @@ func _draw_card(index: int) -> void:
 	var y := r.position.y
 	var inner := CARD_W - CARD_PAD * 2.0
 
-	# Цветная полоска эффекта — только как маркер, без иконок-ассетов.
+	# Цветная полоска эффекта — маркер категории.
 	draw_rect(Rect2(x + 1, y + 1, CARD_W - 2, 3),
 		_effect_color(str(card.get("effect", ""))))
 
+	# Иконка лота в левом верхнем углу: заголовок сдвигается вправо, чтобы
+	# не наезжать. Нет текстуры — карточка рисуется как раньше (fallback).
+	var has_icon := Theme90.draw_shop_icon(self,
+		Rect2(x + CARD_PAD, y + 11, ICON_SIZE, ICON_SIZE),
+		str(card.get("id", "")), str(card.get("effect", "")))
+	var title_x := x + CARD_PAD
+	var title_w := inner - 30.0
+	if has_icon:
+		title_x += ICON_SIZE + ICON_GAP
+		title_w = inner - (ICON_SIZE + ICON_GAP) - 26.0
+
 	# Заголовок: максимум 2 строки.
 	var title_lines := Theme90.wrap(f, str(card.get("title", "")), Theme90.FS_HEAD,
-		inner - 30.0, 2)
+		title_w, 2)
 	for i in title_lines.size():
-		Theme90.text(self, f, Vector2(x + CARD_PAD, y + 12 + i * 18),
-			title_lines[i], Theme90.FS_HEAD, Theme90.INK, inner)
+		Theme90.text(self, f, Vector2(title_x, y + 12 + i * 18),
+			title_lines[i], Theme90.FS_HEAD, Theme90.INK, title_w)
 
 	# Практическое описание: 10 px, 2–3 строки.
 	var desc := str(card.get("desc", ""))

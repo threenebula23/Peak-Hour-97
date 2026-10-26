@@ -224,10 +224,10 @@ func _draw() -> void:
 
 func _draw_help_badge(f: Font, r: Rect2, label: String) -> void:
 	var lw := f.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, Theme90.FS_MICRO).x
-	var b := Rect2(r.position.x + PAD + lw + 6.0, 10.0, 9.0, 9.0)
+	var b := Rect2(r.position.x + PAD + lw + 6.0, 10.0, 12.0, 12.0)
 	draw_style_box(Theme90.fill_box(Color(Theme90.SHADE.r, Theme90.SHADE.g,
-		Theme90.SHADE.b, 0.13), 4), b)
-	Theme90.text_vcenter(self, f, b, "?", 9, Theme90.SHADE, -1, HORIZONTAL_ALIGNMENT_CENTER)
+		Theme90.SHADE.b, 0.13), 5), b)
+	Theme90.glyph_center(self, f, b, "?", 10, Theme90.SHADE)
 
 
 func _is_numeric(s: String) -> bool:
