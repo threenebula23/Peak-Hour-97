@@ -226,7 +226,7 @@ func _draw() -> void:
 				Theme90.ACCENT)
 		_draw_glow(r, hov, true)
 		_draw_ripple(r, true)
-		_draw_content(r, f, fg, PRESS_SHIFT * roundf(prs), dis)
+		_draw_content(r, f, fg, PRESS_SHIFT * roundf(prs), dis, hov)
 		return
 
 	var face := Theme90.PAPER_HI
@@ -293,16 +293,27 @@ func _draw() -> void:
 
 	_draw_glow(r, hov, face.get_luminance() > 0.5)
 	_draw_ripple(r, face.get_luminance() > 0.5)
-	_draw_content(r, f, fg, PRESS_SHIFT * roundf(prs), dis)
+	_draw_content(r, f, fg, PRESS_SHIFT * roundf(prs), dis, hov)
 
 
 ## Мягкая подсветка при наведении — внутри рамки, без изменения layout.
+## Два слоя: цветной ореол по кромке и светлая заливка сверху.
 func _draw_glow(r: Rect2, hov: float, light: bool) -> void:
 	if hov <= 0.01:
 		return
 	var c := Theme90.ACCENT_LIGHT if light else Theme90.WHITE
-	draw_style_box(Theme90.box(Color(c.r, c.g, c.b, (0.10 if light else 0.09) * hov),
+	var glow := c
+	if danger:
+		glow = Theme90.ERROR
+	elif accent:
+		glow = Theme90.WHITE
+	draw_style_box(Theme90.box(Theme90.alpha_of(c, (0.13 if light else 0.10) * hov),
 		Color(0, 0, 0, 0), 3, 0), r.grow(-2.0))
+	draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+		Theme90.alpha_of(glow, 0.55 * hov), 3, 1), r.grow(-1.0))
+	if hov > 0.05 and r.size.y >= 18.0:
+		draw_line(Vector2(4, 2), Vector2(r.size.x - 4, 2),
+			Color(1, 1, 1, 0.30 * hov), 1.0)
 
 
 ## Клик-рябь: кольцо из точки нажатия, гаснет за 0.22 c (draw-only).
@@ -319,7 +330,8 @@ func _draw_ripple(r: Rect2, light: bool) -> void:
 	draw_arc(_ripple_pos, rad, 0.0, TAU, 40, Color(c.r, c.g, c.b, a), 1.5, true)
 
 
-func _draw_content(r: Rect2, f: Font, fg: Color, shift_y: float, _dis: bool) -> void:
+func _draw_content(r: Rect2, f: Font, fg: Color, shift_y: float, _dis: bool,
+		hov: float = 0.0) -> void:
 	var shift := Vector2(0, shift_y)
 	var icon_w := 0.0
 	if icon != Icon.NONE:
@@ -332,7 +344,9 @@ func _draw_content(r: Rect2, f: Font, fg: Color, shift_y: float, _dis: bool) -> 
 	var x := left
 	var cy := roundf(r.get_center().y) + shift.y
 	if icon != Icon.NONE:
-		var ir := Rect2(x, cy - 6.0, 12.0, 12.0)
+		# Иконка «подпрыгивает» на hover на 1 px — draw-only, без layout.
+		var pop := clampf(hov, 0.0, 1.0)
+		var ir := Rect2(x - pop * 0.5, cy - 6.0 - pop * 0.5, 12.0 + pop, 12.0 + pop)
 		_draw_icon(ir, fg)
 		x += icon_w + 4.0
 	if not caption.is_empty():

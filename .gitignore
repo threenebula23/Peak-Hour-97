@@ -5,6 +5,11 @@
 # Сборки и артефакты экспорта
 build/
 export/
+dist/
+dist2/
+*.exe
+*.pck
+*.zip
 
 # Временные файлы
 *.tmp

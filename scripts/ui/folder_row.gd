@@ -149,6 +149,15 @@ func _draw_sel() -> float:
 	return _sel_amt
 
 
+## Цвет секции диска: стабильный оттенок по имени (C:/D:/E:), чтобы группы
+## отличались, а не сливались в один teal.
+func _section_color() -> Color:
+	var palette: Array[Color] = [Theme90.BLUE, Theme90.PURPLE, Theme90.LIME,
+		Theme90.ORANGE, Theme90.PINK]
+	var idx := absi(hash(folder_name)) % palette.size()
+	return palette[idx]
+
+
 ## Флэш «файл принят» после drop — 0.20 c.
 func _start_accept() -> void:
 	_accept_clock = 0.0
@@ -200,10 +209,12 @@ func _draw() -> void:
 		draw_rect(Rect2(2, (size.y - bar_h) * 0.5, 2, bar_h),
 			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, sel))
 	if hov > 0.02:
-		# Мягкое свечение строки при наведении (draw-only).
+		# Мягкое свечение строки при наведении (draw-only) + цветная кромка.
 		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2),
 			Color(Theme90.ACCENT_LIGHT.r, Theme90.ACCENT_LIGHT.g,
 				Theme90.ACCENT_LIGHT.b, 0.16 * hov))
+		draw_rect(Rect2(2, 4, 2.0, maxf(0.0, size.y - 8)),
+			Theme90.alpha_of(Theme90.ACCENT, 0.55 * hov))
 	if drop_active:
 		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT, 3, 1),
 			Rect2(2, 1, size.x - 4, size.y - 2))
@@ -227,7 +238,8 @@ func _draw() -> void:
 
 	# иконка папки
 	var icon_x := sx + 15.0
-	Theme90.draw_folder_icon(self, Vector2(icon_x, 7),
+	var pop := clampf(hov, 0.0, 1.0)
+	Theme90.draw_folder_icon(self, Vector2(icon_x - pop * 0.5, 7.0 - pop),
 		Theme90.ACCENT if not locked else Theme90.SHADE, expanded and not is_section)
 
 	# имя
@@ -249,25 +261,32 @@ func _draw() -> void:
 
 
 func _draw_section(r: Rect2, f: Font, hov: float) -> void:
+	var sc := _section_color()
 	if hov > 0.02:
-		draw_rect(r, Color(1, 1, 1, 0.35 * hov))
-	draw_rect(Rect2(2, size.y - 1, maxf(0.0, size.x - 4), 1), Theme90.HAIRLINE)
+		draw_rect(r, Theme90.alpha_of(sc, 0.08 * hov))
+	# Цветная полоса секции: диск читается как отдельная группа.
+	draw_rect(Rect2(2, 3, maxf(0.0, size.x - 4), 1.5),
+		Theme90.alpha_of(sc, 0.65))
+	draw_rect(Rect2(2, size.y - 1, maxf(0.0, size.x - 4), 1),
+		Theme90.alpha_of(sc, 0.22))
 	var sx := 4.0
 	if expandable:
 		Theme90.draw_chevron(self, Vector2(sx + 6, size.y * 0.5), 1 if expanded else 2,
-			Theme90.NAVY, 3.0, 1.3)
-	Theme90.draw_drive_icon(self, Vector2(sx + 16, 6), Theme90.NAVY)
-	var fg := Theme90.INK.lerp(Theme90.NAVY, _draw_sel())
+			sc, 3.0, 1.3)
+	Theme90.draw_drive_icon(self, Vector2(sx + 16, 6), sc)
+	var fg := Theme90.INK.lerp(sc.darkened(0.2), _draw_sel())
 	Theme90.text_vcenter(self, f, Rect2(sx + 32, 0, size.x - 80, size.y),
 		Theme90.fit(f, folder_name, 12, size.x - 110), 12, fg)
 	if not free_text.is_empty():
 		var tw := f.get_string_size(free_text, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
-		Theme90.text(self, f, Vector2(size.x - tw - 8, 6), free_text, 10, Theme90.SHADE)
+		Theme90.text(self, f, Vector2(size.x - tw - 8, 6), free_text, 10,
+			Theme90.alpha_of(sc.darkened(0.35), 0.9))
 
 
 func _gui_input(event: InputEvent) -> void:
 	if event is InputEventMouseButton and event.pressed:
 		if event.button_index == MOUSE_BUTTON_LEFT:
+			_start_accept()
 			var sx := 5.0 + (0.0 if is_section else depth * 12.0)
 			if expandable and Rect2(sx, 5, 12, 12).has_point(event.position):
 				expanded = not expanded

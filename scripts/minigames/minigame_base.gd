@@ -225,6 +225,15 @@ func _reduced() -> bool:
 	return not _motion_on or UiMotion.reduced
 
 
+## Акцент окна: атака — красный, отправка — бирюзовый.
+func _accent() -> Color:
+	return Theme90.ERROR if (is_attack or is_attack_id(game_id)) else Theme90.ACCENT
+
+
+func _accent_ink() -> Color:
+	return Theme90.ERROR_DEEP if (is_attack or is_attack_id(game_id)) else Theme90.NAVY_DEEP
+
+
 ## Внешний переключатель движения (Lane A / настройки).
 func set_motion_enabled(on: bool) -> void:
 	_motion_on = on
@@ -452,16 +461,21 @@ func _is_hover_rect(rect: Rect2) -> bool:
 ## Экран брифинга: полностью закрывает поле до СТАРТА (draw-only).
 func _draw_briefing() -> void:
 	var full := Rect2(Vector2.ZERO, size)
+	var accent := _accent()
 	Theme90.draw_bevel(self, full, false, Theme90.BEVEL, Theme90.PAPER)
 	var tr := Rect2(1.0, 1.0, size.x - 2.0, HEADER_H - 2.0)
-	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 4), tr)
-	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0), Theme90.HAIRLINE)
-	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0, Theme90.ACCENT)
+	draw_style_box(Theme90.top_box(Theme90.paper_tint(accent, 0.08), 4), tr)
+	draw_rect(Rect2(tr.position.x + 1.0, tr.position.y, tr.size.x - 2.0, 2.0),
+		Theme90.alpha_of(accent, 0.75))
+	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0),
+		Theme90.alpha_of(accent, 0.28))
+	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0, accent)
 	Theme90.text(self, Theme90.display(), Vector2(tr.position.x + 24.0, tr.position.y + 3.0),
 		title(), 18, Theme90.NAVY_DEEP, tr.size.x - 400.0)
 	var badge := Rect2(tr.end.x - 124.0, tr.position.y + 6.0, 116.0, 17.0)
-	draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.BORDER_SOFT, 2, 1), badge)
-	Theme90.text_vcenter(self, Theme90.ui(), badge, tier_label(), 11, Theme90.NAVY, -1,
+	draw_style_box(Theme90.box(Theme90.paper_tint(accent, 0.12),
+		Theme90.alpha_of(accent, 0.35), 2, 1), badge)
+	Theme90.text_vcenter(self, Theme90.ui(), badge, tier_label(), 11, _accent_ink(), -1,
 		HORIZONTAL_ALIGNMENT_CENTER)
 
 	var phase := clampf(_brief_phase, 0.0, 1.0)
@@ -471,14 +485,16 @@ func _draw_briefing() -> void:
 	Theme90.draw_scanlines(self, body, Color(0, 0, 0, 0.035), 3.0)
 	var sy := body.position.y + body.size.y * phase
 	draw_rect(Rect2(body.position.x, sy, body.size.x, 1.0),
-		Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.12))
+		Theme90.alpha_of(accent, 0.16))
 
 	var panel := BRIEF_PANEL
 	draw_style_box(Theme90.box(Theme90.PAPER_HI, Theme90.BORDER, 4, 1, Theme90.SHADOW), panel)
 	var glow := 0.5 + 0.5 * sin(TAU * phase)
 	var bx := panel.position.x + 8.0 + maxf(0.0, panel.size.x - 60.0) * phase
 	draw_rect(Rect2(bx, panel.position.y - 1.0, 44.0, 2.0),
-		Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.55))
+		Theme90.alpha_of(accent, 0.55))
+	draw_rect(Rect2(panel.position.x + 1.0, panel.position.y + 1.0, 2.0,
+		panel.size.y - 2.0), Theme90.alpha_of(accent, 0.30))
 
 	Theme90.text(self, Theme90.display(), Vector2(panel.position.x, panel.position.y + 10.0),
 		"КРАТКО", 18, Theme90.NAVY_DEEP, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
@@ -512,16 +528,16 @@ func _draw_briefing() -> void:
 	# Большая кнопка СТАРТ: пульс-ореол + hover/press (draw-only).
 	var rect := _brief_start_rect()
 	var pressed := _is_pressed_rect(rect)
-	var face := Theme90.ACCENT
+	var face := accent
 	if _is_hover_rect(rect):
 		face = face.lightened(0.06)
 	if pressed:
 		face = face.darkened(0.08)
 	var halo := 3.0 + 3.0 * glow
 	draw_style_box(Theme90.box(
-		Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.09 + 0.10 * glow),
+		Theme90.alpha_of(accent, 0.09 + 0.10 * glow),
 		Color(0, 0, 0, 0), 5, 0), rect.grow(halo))
-	draw_style_box(Theme90.box(face, Theme90.ACCENT.darkened(0.18), 4, 1,
+	draw_style_box(Theme90.box(face, accent.darkened(0.18), 4, 1,
 		Theme90.SHADOW if not pressed else Color(0, 0, 0, 0)), rect)
 	var shift := 1.0 if pressed else 0.0
 	Theme90.text_vcenter(self, Theme90.display(),
@@ -762,20 +778,23 @@ func _draw() -> void:
 		return
 	var font := Theme90.ui()
 	var full := Rect2(Vector2.ZERO, size)
+	var accent := _accent()
 	Theme90.draw_bevel(self, full, false, Theme90.BEVEL, Theme90.PAPER)
 
 	var tr := Rect2(1.0, 1.0, size.x - 2.0, HEADER_H - 2.0)
-	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 4), tr)
+	draw_style_box(Theme90.top_box(Theme90.paper_tint(accent, 0.07), 4), tr)
+	draw_rect(Rect2(tr.position.x + 1.0, tr.position.y, tr.size.x - 2.0, 2.0),
+		Theme90.alpha_of(accent, 0.72))
 	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0),
-		Theme90.HAIRLINE)
-	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0,
-		Theme90.ACCENT)
+		Theme90.alpha_of(accent, 0.26))
+	draw_circle(Vector2(tr.position.x + 14.0, tr.position.y + 14.0), 3.0, accent)
 	Theme90.text(self, font, Vector2(tr.position.x + 24.0, tr.position.y + 3.0),
 		title(), 18, Theme90.NAVY_DEEP, tr.size.x - 400.0)
 
 	var badge := Rect2(tr.end.x - 124.0, tr.position.y + 6.0, 116.0, 17.0)
-	draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.BORDER_SOFT, 2, 1), badge)
-	Theme90.text_vcenter(self, font, badge, tier_label(), 11, Theme90.NAVY,
+	draw_style_box(Theme90.box(Theme90.paper_tint(accent, 0.12),
+		Theme90.alpha_of(accent, 0.32), 2, 1), badge)
+	Theme90.text_vcenter(self, font, badge, tier_label(), 11, _accent_ink(),
 		-1, HORIZONTAL_ALIGNMENT_CENTER)
 
 	var ratio := _progress_ratio()
@@ -784,7 +803,7 @@ func _draw() -> void:
 		Theme90.text(self, font, Vector2(bar.position.x - 38.0, bar.position.y - 2.0),
 			"%d%%" % roundi(clampf(ratio, 0.0, 1.0) * 100.0), 10, Theme90.DARK,
 			34.0, HORIZONTAL_ALIGNMENT_RIGHT)
-		var bar_col := Theme90.SUCCESS if ratio >= 0.999 else Theme90.ACCENT
+		var bar_col := Theme90.SUCCESS if ratio >= 0.999 else accent
 		var pulse := _bar_pulse()
 		if pulse > 0.0:
 			bar_col = bar_col.lerp(Theme90.WHITE, 0.16 * pulse)
@@ -801,7 +820,7 @@ func _draw() -> void:
 	var goal := _goal_text()
 	if not goal.is_empty():
 		draw_rect(Rect2(tr.position.x + 14.0, tr.position.y + 26.0, 2.0, 12.0),
-			Theme90.ACCENT_LIGHT)
+			accent)
 		Theme90.text(self, font, Vector2(tr.position.x + 24.0, tr.position.y + 25.0),
 			Theme90.fit(font, goal, 11, tr.size.x - 48.0), 11, Theme90.DARK,
 			tr.size.x - 48.0)
@@ -830,12 +849,16 @@ func _draw_skip_button() -> void:
 	var border := Theme90.WARN.darkened(0.18) if _skip_armed else Theme90.BORDER
 	if not _skip_armed and _is_hover_rect(SKIP_RECT):
 		face = Theme90.WHITE
-		border = Theme90.ACCENT_LIGHT
+		border = _accent()
 	if pressed:
 		face = face.darkened(0.05)
 	draw_style_box(Theme90.box(face, border, 3, 1,
 		Theme90.SHADOW if not _skip_armed and not pressed else Color(0, 0, 0, 0)),
 		SKIP_RECT)
+	if _is_hover_rect(SKIP_RECT) or pressed:
+		draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+			Theme90.alpha_of(Theme90.WARN if _skip_armed else _accent(), 0.35),
+			3, 1), SKIP_RECT.grow(-1.0))
 	var label := skip_label()
 	if _skip_armed:
 		label = "ЕЩЁ КЛИК — СДАЧА" if is_attack else "ЕЩЁ КЛИК — ПРОПУСК"
@@ -852,9 +875,9 @@ func _draw_action_button(rect: Rect2, label: String, enabled: bool = true,
 	var fg := Theme90.INK
 	var border := Theme90.BORDER
 	if primary and enabled:
-		face = Theme90.ACCENT
+		face = _accent()
 		fg = Theme90.WHITE
-		border = Theme90.ACCENT.darkened(0.18)
+		border = _accent().darkened(0.18)
 	elif not enabled:
 		face = Theme90.PAPER
 		fg = Theme90.DARK
@@ -864,6 +887,10 @@ func _draw_action_button(rect: Rect2, label: String, enabled: bool = true,
 		face = face.lightened(0.06) if primary else Theme90.WHITE
 	if pressed:
 		face = face.darkened(0.08)
+	if enabled and (primary or _is_hover_rect(rect)):
+		draw_style_box(Theme90.box(Theme90.alpha_of(_accent(), 0.06),
+			Theme90.alpha_of(_accent(), 0.30 if _is_hover_rect(rect) else 0.16),
+			3, 1), rect.grow(-1.0))
 	draw_style_box(Theme90.box(face, border, 3, 1,
 		Theme90.SHADOW if enabled and not pressed else Color(0, 0, 0, 0)), rect)
 	Theme90.text_vcenter(self, Theme90.ui(),

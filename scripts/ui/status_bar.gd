@@ -48,10 +48,9 @@ func set_stress(heat: float, level: int) -> void:
 	_stress_heat = clampf(heat, 0.0, 1.0)
 	_stress_level = next_level
 	_last_sla_share = sla_share
-	var active := _sla_fill() < 0.4 or _stress_level >= 3
-	if not active:
+	if not _pulse_needed():
 		_stress_time = 0.0
-	set_process(active and not _reduced)
+	set_process(_pulse_needed() and not _reduced)
 	# Пульс сам перерисовывается в _process; здесь — только на смену состояния.
 	if changed:
 		queue_redraw()
@@ -61,8 +60,19 @@ func set_reduced(value: bool) -> void:
 	_reduced = bool(value)
 	if _reduced:
 		_stress_time = 0.0
-	set_process((_sla_fill() < 0.4 or _stress_level >= 3) and not _reduced)
+	set_process(_pulse_needed() and not _reduced)
 	queue_redraw()
+
+
+## Пульс нужен, если SLA/CRIT или переполнен канал/буфер.
+func _pulse_needed() -> bool:
+	if _sla_fill() < 0.4 or _stress_level >= 3:
+		return true
+	for s in segments:
+		var key := str(s.get("key", ""))
+		if (key == "channel" or key == "buffer") and float(s.get("fill", 0.0)) > 0.85:
+			return true
+	return false
 
 
 func _sla_fill() -> float:
@@ -172,6 +182,52 @@ func _segment_rects() -> Array[Rect2]:
 	return out
 
 
+## Насыщенный цвет сегмента: полоска-маркер, подпись и вспышка.
+func _segment_accent(key: String) -> Color:
+	match key:
+		"tcp":
+			return Theme90.BLUE
+		"channel":
+			return Theme90.ACCENT
+		"sla":
+			return Theme90.SUCCESS
+		"buffer":
+			return Theme90.ORANGE
+		"money":
+			return Theme90.GOLD
+		"hour":
+			return Theme90.PURPLE
+	return Theme90.ACCENT
+
+
+## Тёмный парный оттенок подписи: контраст на PAPER_HI ≥ 4.5:1.
+func _segment_label_color(key: String) -> Color:
+	match key:
+		"tcp":
+			return Theme90.BLUE_DEEP
+		"channel":
+			return Theme90.NAVY_DEEP
+		"sla":
+			return Theme90.SUCCESS_DEEP
+		"buffer":
+			return Theme90.ORANGE_DEEP
+		"money":
+			return Theme90.GOLD_DEEP
+		"hour":
+			return Theme90.PURPLE_DEEP
+	return Theme90.NAVY_DEEP
+
+
+## 0..1 — пульс «переполнено» для канала/буфера, 0 в покое/reduced.
+func _fill_pulse(s: Dictionary) -> float:
+	var key := str(s.get("key", ""))
+	if _reduced or (key != "channel" and key != "buffer"):
+		return 0.0
+	if float(s.get("fill", 0.0)) <= 0.85:
+		return 0.0
+	return 0.5 + 0.5 * sin(TAU * _stress_time / 0.8)
+
+
 func _draw() -> void:
 	var full := Rect2(Vector2.ZERO, size)
 	draw_rect(full, Theme90.PAPER_HI)
@@ -183,13 +239,21 @@ func _draw() -> void:
 	for i in segments.size():
 		var s := segments[i]
 		var r: Rect2 = rects[i]
+		var key := str(s.get("key", ""))
+		var accent := _segment_accent(key)
+		var pulse := _fill_pulse(s)
 		if i > 0:
 			draw_rect(Rect2(r.position.x, 9, 1, size.y - 20), Theme90.HAIRLINE)
+		# Цветной маркер сегмента: 2×9 px, пульсирует при переполнении.
+		draw_rect(Rect2(r.position.x + 8.0, 9.0, 2.0, 9.0),
+			Theme90.alpha_of(accent, 0.55 + 0.45 * pulse))
 		Theme90.text(self, f, Vector2(r.position.x + PAD, 9), str(s["label"]),
-			Theme90.FS_MICRO, Theme90.SHADE)
+			Theme90.FS_MICRO, _segment_label_color(key))
 		if str(s["key"]) == "buffer":
-			_draw_help_badge(f, r, str(s["label"]))
+			_draw_help_badge(f, r, str(s["label"]), accent, _segment_label_color(key))
 		var col := _value_color(s)
+		if pulse > 0.0 and (key == "channel" or key == "buffer"):
+			col = col.lerp(accent, 0.35 * pulse)
 		var val := str(s["value"])
 		var vf := f
 		if _is_numeric(val):
@@ -222,12 +286,12 @@ func _draw() -> void:
 		draw_rect(Rect2(0, 0, size.x, 1), Theme90.ERROR)
 
 
-func _draw_help_badge(f: Font, r: Rect2, label: String) -> void:
+func _draw_help_badge(f: Font, r: Rect2, label: String, accent: Color,
+		ink: Color) -> void:
 	var lw := f.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, Theme90.FS_MICRO).x
 	var b := Rect2(r.position.x + PAD + lw + 6.0, 10.0, 12.0, 12.0)
-	draw_style_box(Theme90.fill_box(Color(Theme90.SHADE.r, Theme90.SHADE.g,
-		Theme90.SHADE.b, 0.13), 5), b)
-	Theme90.glyph_center(self, f, b, "?", 10, Theme90.SHADE)
+	draw_style_box(Theme90.fill_box(Theme90.alpha_of(accent, 0.16), 5), b)
+	Theme90.glyph_center(self, f, b, "?", 10, ink)
 
 
 func _is_numeric(s: String) -> bool:
@@ -242,6 +306,8 @@ func _gauge_color(s: Dictionary) -> Color:
 	if bool(s.get("danger", false)):
 		return Theme90.ERROR
 	match str(s["key"]):
+		"tcp":
+			return Theme90.BLUE
 		"channel":
 			var fill := float(s.get("fill", 0.0))
 			if fill > 0.8:
@@ -256,36 +322,42 @@ func _gauge_color(s: Dictionary) -> Color:
 			if fill2 < 0.6:
 				return Theme90.WARN
 			return Theme90.SUCCESS
-		"money":
-			return Theme90.SUCCESS
-		"hour":
+		"buffer":
+			if float(s.get("fill", 0.0)) > 0.85:
+				return Theme90.ORANGE
 			return Theme90.ACCENT_LIGHT
+		"money":
+			return Theme90.GOLD
+		"hour":
+			return Theme90.PURPLE
 		_:
 			return Theme90.ACCENT
 
 
 func _value_color(s: Dictionary) -> Color:
 	if bool(s.get("danger", false)):
-		return Theme90.ERROR
+		return Theme90.ERROR_DEEP
 	match str(s["key"]):
+		"tcp":
+			return Theme90.BLUE_DEEP
 		"channel":
 			var fill := float(s.get("fill", 0.0))
 			if fill > 0.8:
-				return Theme90.ERROR
+				return Theme90.ERROR_DEEP
 			if fill > 0.6:
-				return Theme90.WARN
-			return Theme90.INK
+				return Theme90.WARN_DEEP
+			return Theme90.NAVY_DEEP
 		"sla":
 			var fill2 := float(s.get("fill", 1.0))
 			if fill2 < 0.4:
-				return Theme90.ERROR
+				return Theme90.ERROR_DEEP
 			if fill2 < 0.6:
-				return Theme90.WARN
-			return Theme90.INK
+				return Theme90.WARN_DEEP
+			return Theme90.SUCCESS_DEEP
 		"money":
-			return Theme90.SUCCESS
+			return Theme90.SUCCESS_DEEP
 		"hour":
-			return Theme90.NAVY
+			return Theme90.PURPLE_DEEP
 		_:
 			return Theme90.INK
 
@@ -306,6 +378,9 @@ func set_metric(key: String, value: String, fill: float = -1.0,
 				_buffer_hint.tooltip_text = _buffer_tooltip()
 			elif key == "channel" and _channel_hint != null:
 				_channel_hint.tooltip_text = _channel_tooltip()
+			if not _pulse_needed():
+				_stress_time = 0.0
+			set_process(_pulse_needed() and not _reduced)
 			queue_redraw()
 			return
 

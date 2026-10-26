@@ -107,7 +107,7 @@ FEIS Game Jam, 2026. Команда — 4 человека. Godot 4.7.2, GDScrip
 
 Код, тесты, баланс, документация и звук создавались с ИИ-ассистентами
 (OpenCode + субагенты). Идея, логлайн, исходная спецификация и финальная
-приёмка — человеком. Отчёт об использовании ИИ (150–500 слов): [AI_REPORT.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/AI_REPORT.md).
+приёмка — человеком. Полный отчёт: [AI_REPORT.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/AI_REPORT.md).
 
 ## Ассеты и лицензии
 
@@ -116,27 +116,27 @@ FEIS Game Jam, 2026. Команда — 4 человека. Godot 4.7.2, GDScrip
 (Denis A Serikov). UI, пиксельные иконки (`art/icons/`), маскот **БАЙТ** и
 icon.svg сделаны командой — MIT. SFX и hum.wav сгенерированы скриптом проекта
 — MIT/CC0. Код — MIT. Полный список и инструкции по воспроизведению:
-[ASSETS.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/ASSETS.md).
+[ASSETS.md](https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/ASSETS.md).
 
 ## Ссылки
 
 - Репозиторий: https://git.194-146-38-78.sslip.io/admin/Game-JAM
-- GDD: https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/docs/GDD.md
-- Решения: https://git.194-146-38-78.sslip.io/admin/Game-JAM/src/branch/main/docs/DECISIONS.md
+- GDD: https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/docs/GDD.md
+- Решения: https://git.194-146-38-78.sslip.io/admin/Game-JAM/-/blob/main/docs/DECISIONS.md
 
 ## Скриншоты
 
 ![Главное меню](screenshots/main_menu.png)
 
-1. **Главное меню.** «Главное меню: новый забег, настройки, продолжение сохранённой смены».
+1. **Главное меню.** «Главное меню: карточка по центру, падающие иконки, новый забег и обучение».
 
 ![Подготовка](screenshots/prep.png)
 
-2. **Подготовка.** «Подготовка: сетка папок, стол сортировки 4×6, SLA 60/60; магазин откроется после первого часа».
+2. **Подготовка.** «Подготовка: сетка папок, стол сортировки 4×6, термометр ЖАРА, SLA 60/60».
 
 ![Час пик](screenshots/hour.png)
 
-3. **Час пик.** «Час пик: пакеты-фигуры в приёме и запросы с таймерами, протоколами и слотами».
+3. **Час пик.** «Час пик: пакеты TCP/UDP в приёме, запросы с именами файлов, слотами и шансом UDP».
 
 ![Атаки](screenshots/attacks.png)
 
@@ -144,11 +144,11 @@ icon.svg сделаны командой — MIT. SFX и hum.wav сгенери�
 
 ![Магазин](screenshots/shop.png)
 
-5. **Магазин.** «Магазин после часа: три предложения, реролл и замок, без крестика».
+5. **Магазин.** «Магазин после часа: три предложения с иконками, реролл и замок, без крестика».
 
 ![Настройки](screenshots/settings.png)
 
-6. **Настройки.** «Настройки: звук, спокойный фон, полный экран».
+6. **Настройки.** «Настройки: звук, VHS, полный экран и «снизить эффекты»».
 
 ## Теги
 
@@ -160,8 +160,8 @@ godot game jam management simulation retro 90s pixel art singleplayer short web
 
 - [ ] Пересобрать build/web из текущего кода и загрузить в itch.io:
       HTML5, 1920×1080, без fullscreen-lock.
-- [ ] Пересобрать скриншоты под v3 (запросы с именами файлов, TCP-полоска,
-      иконки, сетка 9×6, 3 оффера) и загрузить 6 кадров из docs/screenshots/:
+- [x] Пересобрать скриншоты под текущий UI (меню-карточка, ЖАРА, TCP/UDP,
+      иконки магазина) и загрузить 6 кадров из docs/screenshots/:
       обязательные — main_menu.png, hour.png, attacks.png; дополнительно —
       prep.png, shop.png, settings.png; cover.png (630×500) — обложка страницы.
 - [ ] Сверить ссылку на репозиторий и ветку (main); при другой ветке

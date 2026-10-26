@@ -215,6 +215,11 @@ func _test_edge_layout_inside_rect() -> void:
 		var origin: Vector2 = m["origin"]
 		_ok(origin.x >= 4.0 and origin.y >= 4.0,
 			"%dx%d: origin с внутренним отступом: %s" % [dims.x, dims.y, origin])
+		var grid_size := FG.grid_size_of(dims.x, dims.y, grid._cell, FG.GAP)
+		_ok(origin.y + grid_size.y <= grid.size.y - FG.GRID_BOTTOM + 0.001,
+			"%dx%d: низ сетки не заходит в GRID_BOTTOM (%.1f <= %.1f)" % [
+				dims.x, dims.y, origin.y + grid_size.y,
+				grid.size.y - FG.GRID_BOTTOM])
 		var corners := [Vector2i(0, 0), Vector2i(dims.x - 1, 0),
 			Vector2i(0, dims.y - 1), Vector2i(dims.x - 1, dims.y - 1)]
 		for cell_pos in corners:
@@ -228,6 +233,13 @@ func _test_edge_layout_inside_rect() -> void:
 			_ok(bounds.encloses(ghost),
 				"%dx%d клетка %s: ghost внутри rect: %s" % [
 					dims.x, dims.y, cell_pos, ghost])
+			if cell_pos.y == dims.y - 1:
+				# Нижний ряд: ghost/outline не должны уходить под футер
+				# (hairline FileGrid._draw_footer на size.y-17).
+				_ok(ghost.end.y <= grid.size.y - 17.0 + 0.001,
+					"%dx%d: ghost нижней клетки %s не под футером: %.1f > %.1f" % [
+						dims.x, dims.y, cell_pos, ghost.end.y,
+						grid.size.y - 17.0])
 			var payload := {"kind": "file", "id": "edge_probe",
 				"shape_id": "O1", "rotation": 0, "from": "folder"}
 			var fit: Dictionary = grid._resolve_placement(payload, cell_pos, 0)
@@ -720,6 +732,10 @@ func _test_sorting_table_edges() -> void:
 		var origin: Vector2 = m["origin"]
 		_ok(origin.x >= ST.GRID_PAD - 0.001 and origin.y >= ST.GRID_PAD - 0.001,
 			"%s: origin не ближе GRID_PAD: %s" % [v, origin])
+		var grid_size: Vector2 = FG.grid_size_pair(4, 6, table._cell, ST.GAP)
+		_ok(origin.y + grid_size.y <= table.size.y - ST.GRID_BOTTOM + 0.001,
+			"%s: низ сетки не заходит в GRID_BOTTOM (%.1f <= %.1f)" % [
+				v, origin.y + grid_size.y, table.size.y - ST.GRID_BOTTOM])
 		for cell_pos in [Vector2i(0, 0), Vector2i(3, 0), Vector2i(0, 5),
 				Vector2i(3, 5)]:
 			var r: Rect2 = table._cell_rect(cell_pos.x, cell_pos.y)
@@ -731,6 +747,11 @@ func _test_sorting_table_edges() -> void:
 			var ghost := r.grow(2.6)
 			_ok(bounds.encloses(ghost),
 				"%s клетка %s: ghost внутри rect: %s" % [v, cell_pos, ghost])
+			if cell_pos.y == 5:
+				# Нижний ряд не должен заходить под футер стола (size.y-16).
+				_ok(ghost.end.y <= table.size.y - 16.0 + 0.001,
+					"%s: ghost нижней клетки %s не под футером: %.1f > %.1f" % [
+						v, cell_pos, ghost.end.y, table.size.y - 16.0])
 			var cells := FR.shape_cells("O1", 0)
 			var b: Vector2i = FR.shape_bounds(cells)
 			var step: Vector2 = table._cell + Vector2(ST.GAP, ST.GAP)
@@ -757,9 +778,10 @@ func _test_sorting_table(registry) -> void:
 	_eq(table.occupied_cells(), 0, "пустой стол")
 	_eq(table.footer_text(), "24 клетки", "подвал пустого стола")
 	var m: Dictionary = table.grid_metrics()
-	# С GRID_PAD=5 сетка 4×6 больше не влезает в 416×548 «в упор»: клетка
-	# уменьшается 99×86 → 97×84, зато крайние фигуры не режутся clip'ом.
-	_eq(m["cell"], Vector2(97, 84), "cell стола 97×84 (внутри GRID_PAD)")
+	# С GRID_PAD=5 + GRID_BOTTOM=20 сетка 4×6 больше не влезает в 416×548
+	# «в упор»: клетка уменьшается 99×86 → 97×82, зато крайние фигуры не
+	# режутся clip'ом, а нижний ряд/ghost не уходят под футер.
+	_eq(m["cell"], Vector2(97, 82), "cell стола 97×82 (внутри GRID_PAD/GRID_BOTTOM)")
 	_eq(int(m["cols"]), 4, "стол: 4 колонки")
 	_eq(int(m["rows"]), 6, "стол: 6 строк")
 

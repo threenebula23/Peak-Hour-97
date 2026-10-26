@@ -1,13 +1,13 @@
 class_name TutorialMascot
 extends Control
-## Маскот «БАЙТ» — дружелюбный робот-дискета 96×96, нарисованный кодом.
-## Умеет показывать облачко с текстом и номер шага туториала.
+## Маскот «БАЙТ» — оранжевый кот в фиолетовой кепке и очках.
+## Картинка: art/mascot/tutor_cat.png (64×64, nearest-neighbor).
 ##
-##   mascot.show_message("Привет! Я БАЙТ. Начнём со смены?", 4.0)
-##   mascot.set_step(1)
+##   mascot.show_tutorial("ПРИЁМ", "Пакеты приходят сюда…", 1, 9)
+##   mascot.set_progress(3, 9)
 ##   mascot.hide_message()
 ##
-## Контрол не блокирует мышь. Высота подстраивается под облачко; робот
+## Контрол не блокирует мышь. Высота подстраивается под облачко; кот
 ## прижат к нижнему левому углу, поэтому в игре его удобно ставить у края.
 
 signal message_finished
@@ -15,12 +15,24 @@ signal message_finished
 const ROBOT := 96.0
 const GAP := 10.0
 const BUBBLE_W := 244.0
+const CAT_PATH := "res://art/mascot/tutor_cat.png"
+
+## Базовые отступы облачка.
+const PAD_TOP := 12.0
+const PAD_TOP_STEP := 25.0
+const TEXT_LINE := 14.0
+const BOTTOM_PAD := 10.0
+const PROGRESS_H := 3.0
 
 var is_visible := false
 var step := 0
+## Заголовок карточки (для интро). Пусто — облачко без заголовка.
+var title := ""
 var bubble_width := BUBBLE_W
-## Масштаб только робота (облачко остаётся читаемым). 1.0 — базовые 96 px.
+## Масштаб только кота (облачко остаётся читаемым). 1.0 — базовые 96 px.
 var robot_scale := 1.0
+var progress_current := 0
+var progress_total := 0
 
 var _text := ""
 var _lines := PackedStringArray()
@@ -29,15 +41,22 @@ var _timer := 0.0
 var _t := 0.0
 var _appear := 0.0
 var _blink_t := 0.0
+var _cat: Texture2D = null
 
 
 func _ready() -> void:
 	mouse_filter = Control.MOUSE_FILTER_IGNORE
 	focus_mode = Control.FOCUS_NONE
-	custom_minimum_size = _robot_size()
-	size = _robot_size()
+	texture_filter = CanvasItem.TEXTURE_FILTER_NEAREST
+	_cat = load(CAT_PATH) as Texture2D
+	_reset_size()
 	visible = false
 	set_process(false)
+
+
+func _reset_size() -> void:
+	custom_minimum_size = _robot_size()
+	size = _robot_size()
 
 
 func _robot_size() -> Vector2:
@@ -45,19 +64,28 @@ func _robot_size() -> Vector2:
 	return Vector2(s, s)
 
 
-## Уменьшить/увеличить только робота, не трогая кегль облачка.
+## Уменьшить/увеличить только кота, не трогая кегль облачка.
 func set_robot_scale(value: float) -> void:
 	robot_scale = clampf(value, 0.5, 2.0)
-	custom_minimum_size = _robot_size()
+	_reset_size()
 	if not _text.is_empty():
 		_relayout()
-	else:
-		size = _robot_size()
 	queue_redraw()
 
 
 ## Показать облачко. seconds > 0 — спрятать автоматически.
 func show_message(text: String, seconds: float = -1.0) -> void:
+	title = ""
+	_show(text, seconds)
+
+
+## Показать карточку с заголовком и телом (интро-шаг).
+func show_tutorial(heading: String, text: String, seconds: float = -1.0) -> void:
+	title = heading
+	_show(text, seconds)
+
+
+func _show(text: String, seconds: float) -> void:
 	_text = text
 	is_visible = true
 	visible = true
@@ -69,17 +97,26 @@ func show_message(text: String, seconds: float = -1.0) -> void:
 	queue_redraw()
 
 
+## Прогресс обучения: 0/0 — скрыть полосу. current нумеруется с 1.
+func set_progress(current: int, total: int) -> void:
+	progress_total = maxi(0, total)
+	progress_current = clampi(current, 0, progress_total) if progress_total > 0 else 0
+	if is_visible and not _text.is_empty():
+		_relayout()
+	queue_redraw()
+
+
 ## Спрятать маскота целиком вместе с облачком.
 func hide_message() -> void:
 	is_visible = false
 	visible = false
 	_text = ""
+	title = ""
 	_lines = PackedStringArray()
 	_auto_hide = -1.0
 	_timer = 0.0
 	_appear = 0.0
-	size = _robot_size()
-	custom_minimum_size = size
+	_reset_size()
 	set_process(false)
 	queue_redraw()
 
@@ -94,7 +131,8 @@ func set_step(index: int) -> void:
 
 func _relayout() -> void:
 	var f := Theme90.ui()
-	_lines = Theme90.wrap(f, _text, 12, bubble_width - 26.0, 4)
+	var inner := bubble_width - 26.0
+	_lines = Theme90.wrap(f, _text, 12, inner, 8)
 	var bh := _bubble_height()
 	var rs := _robot_size()
 	var total := maxf(rs.y, bh)
@@ -105,8 +143,13 @@ func _relayout() -> void:
 func _bubble_height() -> float:
 	if _text.is_empty():
 		return 0.0
-	var pad_top := 25.0 if step > 0 else 12.0
-	return maxf(56.0, pad_top + _lines.size() * 14.0 + 12.0)
+	var pad := PAD_TOP_STEP if step > 0 else PAD_TOP
+	var h := pad + _lines.size() * TEXT_LINE + BOTTOM_PAD
+	if not title.is_empty():
+		h += 17.0
+	if progress_total > 0:
+		h += 7.0
+	return maxf(58.0, h)
 
 
 func _process(delta: float) -> void:
@@ -126,83 +169,116 @@ func _process(delta: float) -> void:
 
 
 func _draw() -> void:
-	var bob := sin(_t * 2.1) * 1.1
+	var bob := 0.0
+	if not UiMotion.reduced:
+		bob = sin(_t * 2.1) * 1.4
 	var rs := _robot_size()
 	var ry := size.y - rs.y + bob
-	_draw_robot(ry)
+	_draw_cat(ry)
 	if not _text.is_empty() and _appear > 0.0:
 		_draw_bubble(ry)
 
 
-func _draw_robot(ry: float) -> void:
-	var x := 0.0
-	var y := roundf(ry)
-	var outline := Color(Theme90.NAVY.r, Theme90.NAVY.g, Theme90.NAVY.b, 0.55)
-	var rs := robot_scale
-	draw_set_transform(Vector2(0, y - y * rs), 0.0, Vector2(rs, rs))
+# --------------------------------------------------------------------------
+# Кот
+# --------------------------------------------------------------------------
 
-	# тень
-	draw_style_box(Theme90.fill_box(Color(0, 0, 0, 0.07), 5),
-		Rect2(x + 17, y + 87, 62, 7))
+func _draw_cat(ry: float) -> void:
+	var s := _robot_size().x
+	var appear := clampf(_appear * 1.15, 0.0, 1.0)
+	var bob_scale := 1.0
+	if not UiMotion.reduced:
+		bob_scale = 1.0 + sin(_t * 1.35) * 0.012
+	var entry := lerpf(0.86, 1.0, ease(appear, 0.35))
+	var draw_size := s * bob_scale * entry
+	var cx := s * 0.5
+	var bottom := ry + s
+	var rect := Rect2(cx - draw_size * 0.5, bottom - draw_size, draw_size, draw_size)
 
-	# антенна
-	draw_line(Vector2(x + 48, y + 15), Vector2(x + 48, y + 7), outline, 1.4)
-	draw_circle(Vector2(x + 48, y + 5), 3.0, Theme90.ACCENT)
+	# Мягкая тень под котом.
+	var shadow_w := draw_size * 0.52
+	draw_style_box(Theme90.fill_box(Color(0, 0, 0, 0.10), 4),
+		Rect2(cx - shadow_w * 0.5, bottom - 5.0, shadow_w, 5.0))
 
-	# корпус
-	draw_style_box(Theme90.box(Theme90.PAPER_HI, outline, 11, 1, Theme90.SHADOW),
-		Rect2(x + 12, y + 14, 72, 72))
-
-	# щель дискеты
-	draw_style_box(Theme90.fill_box(Theme90.NAVY_DEEP, 2),
-		Rect2(x + 36, y + 18, 24, 7))
-	draw_rect(Rect2(x + 49, y + 19, 2, 5), Color(1, 1, 1, 0.35))
-
-	# экран-лицо
-	draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.BORDER_SOFT, 7, 1),
-		Rect2(x + 24, y + 31, 48, 30))
-	# глаза с редким морганием
-	var blink := _blink_t > 3.22 and _blink_t < 3.34
-	if blink:
-		draw_rect(Rect2(x + 39, y + 47, 5, 1.4), Theme90.NAVY)
-		draw_rect(Rect2(x + 53, y + 47, 5, 1.4), Theme90.NAVY)
+	if _cat != null:
+		draw_texture_rect(_cat, rect, false, Color(1, 1, 1, appear))
+		_draw_blink(rect, appear)
 	else:
-		draw_style_box(Theme90.fill_box(Theme90.NAVY, 2),
-			Rect2(x + 39, y + 42, 5, 7))
-		draw_style_box(Theme90.fill_box(Theme90.NAVY, 2),
-			Rect2(x + 53, y + 42, 5, 7))
-		draw_circle(Vector2(x + 40.5, y + 44), 1.0, Color(1, 1, 1, 0.8))
-		draw_circle(Vector2(x + 54.5, y + 44), 1.0, Color(1, 1, 1, 0.8))
-	# улыбка
-	draw_arc(Vector2(x + 48, y + 51), 6.0, 0.20 * PI, 0.80 * PI, 10, Theme90.NAVY, 1.8)
-	# щёки
-	draw_circle(Vector2(x + 31, y + 55), 2.4, Color(Theme90.ERROR.r, Theme90.ERROR.g,
-		Theme90.ERROR.b, 0.18))
-	draw_circle(Vector2(x + 65, y + 55), 2.4, Color(Theme90.ERROR.r, Theme90.ERROR.g,
-		Theme90.ERROR.b, 0.18))
+		_draw_cat_fallback(rect, appear)
 
-	# подпись на корпусе
-	var f := Theme90.ui()
+	# Подпись-чип «БАЙТ» на груди.
 	var label := "БАЙТ"
-	var lw := f.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
-	Theme90.text(self, f, Vector2(x + 48 - lw * 0.5, y + 66), label, 9, Theme90.NAVY)
-	if step > 0 and _text.is_empty():
-		draw_circle(Vector2(x + 72, y + 76), 6.0, Theme90.ACCENT)
+	var f := Theme90.ui()
+	var fs := 8
+	var tw := f.get_string_size(label, HORIZONTAL_ALIGNMENT_LEFT, -1, fs).x
+	var chip := Rect2(cx - tw * 0.5 - 5.0, bottom - 19.0, tw + 10.0, 12.0)
+	draw_style_box(Theme90.box(Color(1, 1, 1, 0.92 * appear),
+		Color(Theme90.BORDER.r, Theme90.BORDER.g, Theme90.BORDER.b, 0.9 * appear),
+		3, 1), chip)
+	Theme90.text(self, f, Vector2(chip.position.x + 5.0, chip.position.y + 1.0),
+		label, fs, Color(Theme90.NAVY.r, Theme90.NAVY.g, Theme90.NAVY.b, appear))
+
+	# Номер шага без облачка — бейдж в углу.
+	if step > 0 and _text.is_empty() and appear > 0.5:
+		var badge := Rect2(rect.end.x - 15.0, rect.position.y + 2.0, 14.0, 14.0)
+		draw_circle(badge.get_center(), 7.0, Theme90.ACCENT)
 		var sn := str(step)
 		var sw := f.get_string_size(sn, HORIZONTAL_ALIGNMENT_LEFT, -1, 9).x
-		Theme90.text(self, f, Vector2(x + 72 - sw * 0.5, y + 71), sn, 9, Theme90.WHITE)
-
-	# руки и ноги
-	draw_style_box(Theme90.box(Theme90.ACCENT_LIGHT, Color(0, 0, 0, 0), 4, 0),
-		Rect2(x + 3, y + 42, 9, 22))
-	draw_style_box(Theme90.box(Theme90.ACCENT_LIGHT, Color(0, 0, 0, 0), 4, 0),
-		Rect2(x + 84, y + 42, 9, 22))
-	draw_style_box(Theme90.fill_box(Theme90.NAVY, 3), Rect2(x + 23, y + 86, 18, 7))
-	draw_style_box(Theme90.fill_box(Theme90.NAVY, 3), Rect2(x + 55, y + 86, 18, 7))
-	draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+		Theme90.text(self, f, Vector2(badge.get_center().x - sw * 0.5,
+			badge.position.y + 1.0), sn, 9, Theme90.WHITE)
 
 
-func _draw_bubble(ry: float) -> void:
+## Короткое моргание: две полоски поверх глаз (изображение остаётся целым).
+func _draw_blink(rect: Rect2, alpha: float) -> void:
+	if UiMotion.reduced:
+		return
+	if _blink_t < 3.22 or _blink_t > 3.34:
+		return
+	var lid := Color(0.36, 0.20, 0.09, 0.92 * alpha)
+	var w := rect.size.x * 0.145
+	var h := maxf(1.5, rect.size.y * 0.035)
+	var y := rect.position.y + rect.size.y * 0.355
+	draw_rect(Rect2(rect.position.x + rect.size.x * 0.255, y, w, h), lid)
+	draw_rect(Rect2(rect.position.x + rect.size.x * 0.60, y, w, h), lid)
+
+
+## Аварийный запас, если PNG не импортирован: оранжевый кот-силуэт.
+func _draw_cat_fallback(rect: Rect2, alpha: float) -> void:
+	var coat := Color(0.93, 0.55, 0.17, alpha)
+	var ink := Color(0.25, 0.16, 0.10, alpha)
+	var cap := Color(0.48, 0.32, 0.78, alpha)
+	draw_style_box(Theme90.box(coat, ink, 10, 2), Rect2(rect.position.x + rect.size.x * 0.08,
+		rect.position.y + rect.size.y * 0.20, rect.size.x * 0.84, rect.size.y * 0.74))
+	# уши
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(rect.position.x + rect.size.x * 0.08, rect.position.y + rect.size.y * 0.28),
+		Vector2(rect.position.x + rect.size.x * 0.18, rect.position.y + rect.size.y * 0.04),
+		Vector2(rect.position.x + rect.size.x * 0.34, rect.position.y + rect.size.y * 0.22)]), coat)
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(rect.position.x + rect.size.x * 0.92, rect.position.y + rect.size.y * 0.28),
+		Vector2(rect.position.x + rect.size.x * 0.82, rect.position.y + rect.size.y * 0.04),
+		Vector2(rect.position.x + rect.size.x * 0.66, rect.position.y + rect.size.y * 0.22)]), coat)
+	# кепка
+	draw_rect(Rect2(rect.position.x + rect.size.x * 0.22, rect.position.y + rect.size.y * 0.12,
+		rect.size.x * 0.56, rect.size.y * 0.12), cap)
+	# очки
+	draw_style_box(Theme90.box(Color(0.98, 0.98, 0.95, alpha), cap, 3, 2),
+		Rect2(rect.position.x + rect.size.x * 0.22, rect.position.y + rect.size.y * 0.32,
+			rect.size.x * 0.25, rect.size.y * 0.15))
+	draw_style_box(Theme90.box(Color(0.98, 0.98, 0.95, alpha), cap, 3, 2),
+		Rect2(rect.position.x + rect.size.x * 0.53, rect.position.y + rect.size.y * 0.32,
+			rect.size.x * 0.25, rect.size.y * 0.15))
+	draw_circle(Vector2(rect.position.x + rect.size.x * 0.34, rect.position.y + rect.size.y * 0.39),
+		rect.size.x * 0.035, ink)
+	draw_circle(Vector2(rect.position.x + rect.size.x * 0.65, rect.position.y + rect.size.y * 0.39),
+		rect.size.x * 0.035, ink)
+
+
+# --------------------------------------------------------------------------
+# Облачко
+# --------------------------------------------------------------------------
+
+func _draw_bubble(_ry: float) -> void:
 	var a := _appear
 	var bh := _bubble_height()
 	var bx := _robot_size().x + GAP
@@ -210,7 +286,7 @@ func _draw_bubble(ry: float) -> void:
 	var rect := Rect2(bx, by, bubble_width, bh)
 	var f := Theme90.ui()
 
-	# хвостик к роботу
+	# Хвостик к коту.
 	var tail_y := by + bh * 0.5
 	draw_colored_polygon(PackedVector2Array([
 		Vector2(bx + 2, tail_y - 7), Vector2(bx - 8, tail_y), Vector2(bx + 2, tail_y + 7)]),
@@ -224,15 +300,36 @@ func _draw_bubble(ry: float) -> void:
 		Color(Theme90.BORDER.r, Theme90.BORDER.g, Theme90.BORDER.b, a), 8, 1,
 		Color(0, 0, 0, 0.08 * a)), rect)
 
-	var ty := by + (25.0 if step > 0 else 12.0)
+	var top := PAD_TOP_STEP if step > 0 else PAD_TOP
 	if step > 0:
-		var chip := Rect2(bx + 12, by + 8, 40, 14)
+		var chip_w := 64.0 if progress_total > 0 else 40.0
+		var chip := Rect2(bx + 12, by + 8, chip_w, 14)
 		draw_style_box(Theme90.box(Color(Theme90.ACCENT_PALE.r, Theme90.ACCENT_PALE.g,
 			Theme90.ACCENT_PALE.b, a), Color(0, 0, 0, 0), 3, 0), chip)
-		Theme90.text(self, f, Vector2(chip.position.x + 7, chip.position.y + 2),
-			"ШАГ %d" % step, 9, Theme90.NAVY, -1, HORIZONTAL_ALIGNMENT_LEFT)
+		var chip_text := "ШАГ %d" % step
+		if progress_total > 0:
+			chip_text = "ШАГ %d / %d" % [step, progress_total]
+		Theme90.text(self, f, Vector2(chip.position.x + 6, chip.position.y + 1),
+			chip_text, 9, Theme90.NAVY, -1, HORIZONTAL_ALIGNMENT_LEFT)
+		if progress_total > 0:
+			var pc := clampi(progress_current, 1, progress_total)
+			var pw := float(pc) / float(progress_total)
+			var track := Rect2(bx + 12, by + bh - 8, bubble_width - 24, PROGRESS_H)
+			draw_style_box(Theme90.box(Color(Theme90.ACCENT_PALE.r, Theme90.ACCENT_PALE.g,
+				Theme90.ACCENT_PALE.b, a), Color(0, 0, 0, 0), 2, 0), track)
+			if pw > 0.0:
+				var fill := Rect2(track.position, Vector2(maxf(2.0, track.size.x * pw),
+					track.size.y))
+				draw_style_box(Theme90.box(Color(Theme90.ACCENT.r, Theme90.ACCENT.g,
+					Theme90.ACCENT.b, a), Color(0, 0, 0, 0), 2, 0), fill)
 
+	var ty := by + top
 	var ink := Color(Theme90.INK.r, Theme90.INK.g, Theme90.INK.b, a)
+	if not title.is_empty():
+		var navy := Color(Theme90.NAVY.r, Theme90.NAVY.g, Theme90.NAVY.b, a)
+		Theme90.text(self, f, Vector2(bx + 13, ty), title, 11, navy,
+			bubble_width - 26.0)
+		ty += 17.0
 	for i in _lines.size():
-		Theme90.text(self, f, Vector2(bx + 13, ty + i * 14), _lines[i], 12, ink,
+		Theme90.text(self, f, Vector2(bx + 13, ty + i * TEXT_LINE), _lines[i], 12, ink,
 			bubble_width - 26.0)

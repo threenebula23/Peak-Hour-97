@@ -78,6 +78,9 @@ func _init() -> void:
 	_test_file_consumption()
 	_test_send_timer_freeze()
 	_test_timeout_preserves_files()
+	_test_overtime()
+	_test_overtime_complete_request()
+	_test_overtime_no_requests()
 	_test_hour_end_during_minigame()
 	_test_connection_flow()
 	_test_tcp_model_edges()
@@ -1356,6 +1359,136 @@ func _test_timeout_preserves_files() -> void:
 	_eq(_hd.slots.used_count(), 0, "таймаут освободил слот соединения")
 
 
+# --- overtime: время вышло, но запросы ещё активны -------------------------
+
+## Время дошло до 0 с активным запросом: час НЕ завершается, новые файлы и
+## запросы не спавнятся, загрузка пакета/таймеры продолжаются. После
+## отклонения последнего запроса — hour_finished.
+func _test_overtime() -> void:
+	_set_case("overtime_with_request")
+	_fresh(1)
+	_hd.active_request_limit = 0
+	var pending_file = _new_file("Overtime ожидание", "text", _folder_id())
+	_ok(pending_file != null, "файл для запроса создан")
+	if pending_file == null:
+		return
+	var req_id: String = str(_hd._make_request([pending_file], "udp", false, "", ""))
+	_ok(not req_id.is_empty(), "активный UDP-запрос создан")
+	if req_id.is_empty():
+		return
+	var req = _hd.active_requests[req_id]
+	req.time_left = 999.0
+
+	# Свободный файл: пул запроса непуст, starvation guard «готов» сработать.
+	var spare = _new_file("Overtime резерв", "text", _folder_id())
+	_ok(spare != null, "свободный файл для пула запросов создан")
+
+	# Пакет в загрузке: в overtime приём должен доехать до файла.
+	var folder_id := _folder_id()
+	var packet_id := str(_hd.spawn_packet_now("text"))
+	_ok(not packet_id.is_empty(), "пакет заспавнен до overtime")
+	_ok(_hd.receive_packet(packet_id, folder_id), "пакет загружается")
+	var files_before := int(_game.registry.files.size())
+
+	_hd.time_left = 0.05
+	_hd.spawn_window = 99999.0
+	_hd.active_request_limit = 10
+	_hd.tick(0.1)
+	_ok(_hd.is_overtime(), "time_left→0: overtime выставлен")
+	_ok(_hd.running, "час не завершён с активным запросом")
+	_eq(_hour_events, 0, "hour_finished не эмитится")
+	_approx(_hd.time_left, 0.0, 0.0001, "в overtime time_left = 0")
+	_eq(_hd.next_request_hint(), "ЧАС ЗАВЕРШЁН · ЗАВЕРШИТЕ ЗАПРОСЫ",
+		"overtime: подсказка про завершение запросов")
+	_ok(_has_toast("ЧАС ЗАВЕРШЁН · ЗАВЕРШИТЕ ЗАПРОСЫ"), "overtime: тост")
+
+	# Спавн «готов» сработать (окно открыто, аккумуляторы полны), но overtime
+	# не даёт создавать ни файлы, ни запросы.
+	_hd._next_spawn_at = _hd.hour_elapsed
+	_hd.spawn_recv_accum = 0.0
+	_hd.spawn_send_accum = 100.0
+	_hd._last_request_attempt_t = -9999.0
+	var spawned_files := int(_hd.files_spawned)
+	var spawned_requests := int(_hd.requests_spawned)
+	var elapsed_before := float(_hd.hour_elapsed)
+	for i in range(40):
+		req.time_left = 999.0
+		_hd.tick(0.1)
+	_ok(_hd.is_overtime() and _hd.running, "overtime продолжается")
+	_ok(_hd.hour_elapsed > elapsed_before, "таймеры часа идут дальше")
+	_eq(int(_hd.files_spawned), spawned_files, "overtime: новые файлы не спавнятся")
+	_eq(int(_hd.requests_spawned), spawned_requests,
+		"overtime: новые запросы не спавнятся")
+	_eq(_hd.next_request_hint(), "ЧАС ЗАВЕРШЁН · ЗАВЕРШИТЕ ЗАПРОСЫ",
+		"overtime: подсказка не меняется")
+	_ok(not _hd.active_packets.has(packet_id), "overtime: загрузка пакета продолжилась")
+	_eq(_game.registry.files.size(), files_before + 1, "overtime: файл догрузился")
+
+	# Отклонение закрывает последний запрос → час финиширует.
+	_ok(_hd.reject_request(req_id), "overtime: запрос можно отклонить")
+	_ok(_hd.active_requests.is_empty(), "после отклонения запросов нет")
+	_hd.tick(0.1)
+	_ok(not _hd.running, "после пустых запросов час завершён")
+	_eq(_hour_events, 1, "hour_finished ровно один раз")
+	_ok(bool(_hour_report.get("overtime", false)), "отчёт: overtime = true")
+
+
+## Успешная отправка, стартовавшая до конца времени, доигрывается в overtime
+## и завершает час без штрафа за недоделанный запрос.
+func _test_overtime_complete_request() -> void:
+	_set_case("overtime_complete_request")
+	_fresh(1)
+	_hd.active_request_limit = 0
+	var file = _new_file("Overtime отправка", "text", _folder_id())
+	_ok(file != null, "файл для запроса создан")
+	if file == null:
+		return
+	var file_id := str(file.id)
+	var req_id: String = str(_hd._make_request([file], "udp", false, "", ""))
+	_ok(not req_id.is_empty(), "UDP-запрос создан")
+	if req_id.is_empty():
+		return
+	_ok(_hd.attach_file(req_id, file_id), "файл прикреплён")
+	_hd.udp_roll_override = 0.0
+	_ok(_hd.start_send(req_id), "мини-игра отправки открыта")
+	_hd._on_send_minigame_finished(1.0)
+	var req = _hd.active_requests.get(req_id)
+	_ok(req != null and bool(req.sending), "отправка идёт")
+	if req == null:
+		return
+	req.send_duration = 2.0
+	req.send_progress = 0.0
+	_hd.time_left = 0.05
+	_hd.tick(0.1)
+	_ok(_hd.is_overtime(), "overtime начался во время передачи")
+	_ok(_hd.running, "час ждёт завершения отправки")
+	var sla_before := float(_game.sla)
+	for i in range(60):
+		_hd.tick(0.1)
+		if not _hd.running:
+			break
+	_ok(not _hd.running, "отправка завершила час")
+	_eq(_hour_events, 1, "hour_finished ровно один раз")
+	_eq(int(_hour_report.get("completed", 0)), 1, "запрос засчитан отправленным")
+	_eq(int(_hour_report.get("requests_left", -1)), 0, "в отчёте нет брошенных запросов")
+	_ok(float(_game.sla) >= sla_before - 0.001,
+		"overtime не штрафует доигранный запрос")
+
+
+## Без активных запросов час завершается сразу в тике, когда вышло время.
+func _test_overtime_no_requests() -> void:
+	_set_case("overtime_no_requests")
+	_fresh(1)
+	_eq(_hd.active_requests.size(), 0, "активных запросов нет")
+	_hd.time_left = 0.05
+	_hour_events = 0
+	_hd.tick(0.1)
+	_ok(not _hd.running, "без запросов час завершается сразу")
+	_eq(_hour_events, 1, "hour_finished ровно один раз")
+	_ok(_hd.is_overtime(), "overtime зафиксирован")
+	_ok(bool(_hour_report.get("overtime", false)), "отчёт: overtime = true")
+
+
 # --- конец часа во время мини-игры (B5b) -----------------------------------
 
 func _test_hour_end_during_minigame() -> void:
@@ -1376,13 +1509,26 @@ func _test_hour_end_during_minigame() -> void:
 		_hd.tick(0.1)
 		if not _hd.running:
 			break
-	_ok(not _hd.running, "час завершился при открытой мини-игре")
+	# v4: время вышло, но запрос активен — час уходит в overtime и ждёт игрока.
+	# Мини-игра при этом не закрывается принудительно, пока запрос жив.
+	_ok(_hd.running, "час не завершился при открытой мини-игре")
+	_ok(_hd.is_overtime(), "time_left=0 → overtime")
+	_eq(_hour_events, 0, "hour_finished не эмитится в overtime")
+	_ok(_hd.is_minigame_active(), "мини-игра остаётся открытой в overtime")
+	_ok(_hd.active_requests.has(req_id), "запрос ещё активен в overtime")
+	_eq(_game.money, money_before, "в overtime выплаты ещё нет")
+	# Отклонение возможно только после закрытия мини-игры; force-close снимает
+	# последний запрос → час финиширует.
+	_hd.force_close_send_minigame()
+	_eq(_minigame_cancels, 1, "minigame_cancelled эмитится при закрытии")
+	_ok(_hd.reject_request(req_id), "запрос отклонён в overtime")
+	_hd.tick(0.1)
+	_ok(not _hd.running, "после пустых запросов час завершился")
 	_eq(_hour_events, 1, "hour_finished эмитится один раз")
-	_eq(_minigame_cancels, 1, "minigame_cancelled эмитится")
 	_ok(_hd._minigame == null, "мини-игра принудительно закрыта")
 	_ok(not _hd.active_requests.has(req_id), "запрос не отправлен и снят")
 	_ok(_game.registry.files.has(file_id), "файл не израсходован")
-	_eq(_game.money, money_before, "выплаты нет")
+	_eq(_game.money, money_before - 5, "выплаты нет, только штраф за отказ")
 	_ok(_hd.active_connections.is_empty(), "конец часа закрыл TCP-соединения")
 	_eq(_hd.slots.used_count(), 0, "конец часа освободил все слоты")
 	_ok(_hour_report.has("files_carry"), "отчёт содержит files_carry")

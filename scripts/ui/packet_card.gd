@@ -360,13 +360,24 @@ func _draw() -> void:
 	var r := Rect2(Vector2.ZERO, size)
 	var f := Theme90.ui()
 	var hov := _draw_hover()
-	var off := _shake_offset()
-	if off.x != 0.0:
+	var accent := Theme90.ACCENT if protocol == "TCP" else Theme90.WARN
+	var type_col := FileCard.type_color(type)
+	var off := _shake_offset() + Vector2(0.0, -1.5 * hov)
+	if off != Vector2.ZERO:
 		draw_set_transform(off, 0.0, Vector2.ONE)
 	var face := Theme90.PAPER_HI.lerp(Theme90.WHITE, hov)
-	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
-	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.11), hov)
+	face = face.lerp(Theme90.paper_tint(type_col, 1.0), 0.025 + 0.03 * hov)
+	var border := Theme90.BORDER.lerp(accent, hov)
+	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.13), hov)
 	draw_style_box(Theme90.box(face, border, 4, 1, shadow), r)
+	# Цветные кромки: протокол сверху, тип файла слева.
+	draw_rect(Rect2(6, 1.2, maxf(0.0, size.x - 12.0), 2.0),
+		Theme90.alpha_of(accent, 0.62 + 0.25 * hov))
+	draw_rect(Rect2(1.0, 6.0, 2.0, maxf(0.0, size.y - 12.0)),
+		Theme90.alpha_of(type_col, 0.70))
+	if hov > 0.02:
+		draw_style_box(Theme90.box(Theme90.alpha_of(type_col, 0.05 * hov),
+			Color(0, 0, 0, 0), 4, 0), r.grow(-2.0))
 	# «Пакет принят»: короткая вспышка у левой кромки (draw-only).
 	var recv := _recv_alpha()
 	if recv > 0.01:
@@ -378,8 +389,11 @@ func _draw() -> void:
 
 	# Иконка из атласа (по icon_id) 14×14 сразу слева от имени файла;
 	# старые пакеты без icon_id — прежняя иконка типа.
-	if not FILE_ICONS.draw(self, Rect2(40, 2, 14, 14), icon_id) and not type.is_empty():
-		Theme90.draw_file_icon(self, Rect2(40, 2, 14, 14), type)
+	var icon_side := 14.0 + 1.4 * hov
+	var icon_rect := Rect2(40 - (icon_side - 14.0) * 0.5, 2 - (icon_side - 14.0) * 0.5,
+		icon_side, icon_side)
+	if not FILE_ICONS.draw(self, icon_rect, icon_id) and not type.is_empty():
+		Theme90.draw_file_icon(self, icon_rect, type)
 
 	Theme90.text(self, f, Vector2(57, 2), Theme90.fit(f, _display_name(), 13, 151), 13,
 		Theme90.INK, 151)
@@ -427,7 +441,7 @@ func _draw() -> void:
 		var half := inner.size * 0.5 * _loss_sweep
 		draw_line(c - half, c + half, lc, 2.0)
 		draw_line(c + Vector2(half.x, -half.y), c + Vector2(-half.x, half.y), lc, 2.0)
-	if off.x != 0.0:
+	if off != Vector2.ZERO:
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 

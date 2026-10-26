@@ -65,14 +65,36 @@ func _layout() -> void:
 
 func _icon_color() -> Color:
 	match icon_kind:
-		"outbox":
-			return Theme90.WARN
-		"files":
+		"inbox":
 			return Theme90.ACCENT
+		"outbox":
+			return Theme90.ORANGE
+		"files":
+			return Theme90.BLUE
 		"tree":
-			return Theme90.SUCCESS
+			return Theme90.LIME
+		"app":
+			return Theme90.PURPLE
 		_:
 			return Theme90.NAVY
+
+
+## Тёмный парный цвет для текста заголовка: на светлой подложке даёт
+## контраст ≥ 4.5:1 и не «съедает» цветную полосу шапки.
+func _title_ink() -> Color:
+	match icon_kind:
+		"inbox":
+			return Theme90.NAVY_DEEP
+		"outbox":
+			return Theme90.ORANGE_DEEP
+		"files":
+			return Theme90.BLUE_DEEP
+		"tree":
+			return Theme90.LIME_DEEP
+		"app":
+			return Theme90.PURPLE_DEEP
+		_:
+			return Theme90.NAVY_DEEP
 
 
 func _draw() -> void:
@@ -89,10 +111,17 @@ func _draw() -> void:
 
 func _draw_title() -> void:
 	var tr := Rect2(1.0, 1.0, maxf(0.0, size.x - 2.0), TITLE_H)
-	draw_style_box(Theme90.top_box(Theme90.PAPER_HI, 4), tr)
-	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0), Theme90.HAIRLINE)
+	var accent := _icon_color()
+	# Цветная шапка: лёгкая подложка + верхняя полоса + акцентная кромка.
+	draw_style_box(Theme90.top_box(Theme90.paper_tint(accent, 0.10), 4), tr)
+	draw_rect(Rect2(tr.position.x + 1.0, tr.position.y, tr.size.x - 2.0, 2.0),
+		Theme90.alpha_of(accent, 0.78))
+	draw_rect(Rect2(tr.position.x, tr.position.y + 2.0, 2.0, tr.size.y - 2.0),
+		Theme90.alpha_of(accent, 0.38))
+	draw_rect(Rect2(tr.position.x + 1.0, tr.end.y, tr.size.x - 2.0, 1.0),
+		Theme90.alpha_of(accent, 0.30))
 
-	var icon_color := _icon_color()
+	var icon_color := accent
 	_draw_icon(Rect2(tr.position.x + 7.0, tr.position.y + 3.0, 14.0, 14.0), icon_color)
 
 	# закрытие — одна аккуратная точка-крестик, только если разрешено
@@ -111,7 +140,7 @@ func _draw_title() -> void:
 		var tsz := 14 if title_logo else title_size
 		var th := tf.get_height(tsz)
 		Theme90.text(self, tf, Vector2(tx, tr.position.y + roundf((TITLE_H - th) * 0.5)),
-			title, tsz, Theme90.NAVY_DEEP)
+			title, tsz, _title_ink())
 		tx += tf.get_string_size(title, HORIZONTAL_ALIGNMENT_LEFT, -1, tsz).x + 12.0
 
 	if not title_hint.is_empty():

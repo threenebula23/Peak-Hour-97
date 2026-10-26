@@ -28,6 +28,7 @@ extends SceneTree
 ##   --tier=N          сложность мини-игры, 1..4 (по умолчанию 2)
 ##   --seed=N          сид мини-игры (по умолчанию 12345)
 ##   --shop            свернуть офферы для часа 2 и открыть ShopModal
+##   --settings        открыть модалку настроек поверх главного меню
 ##   --tutorial        запустить забег и показать маскота-туториал
 ##   --sla=N           выставить SLA (dev, для скриншотов «ЖАРЫ»)
 ##   --stress=STATE    calm|warm|hot|critical|attack — force_heat оверлея
@@ -80,6 +81,7 @@ var _minigame := ""
 var _tier := 2
 var _seed := 12345
 var _shop := false
+var _settings := false
 var _tutorial := false
 ## [start, end] в логических координатах; пустой массив — drag не нужен.
 var _drag: Array[Vector2] = []
@@ -138,6 +140,8 @@ func _initialize() -> void:
 			_seed = int(a.substr(7))
 		elif a == "--shop":
 			_shop = true
+		elif a == "--settings":
+			_settings = true
 		elif a == "--tutorial":
 			_tutorial = true
 		elif a.begins_with("--hover="):
@@ -185,6 +189,7 @@ func _initialize() -> void:
 	if not _stress.is_empty() and not ["calm", "warm", "hot", "critical", "attack"].has(_stress):
 		_fail("--stress: неизвестное состояние '%s'" % _stress)
 		return
+	_force_capture_window()
 	if _probe:
 		root.add_child(Probe.new())
 		_setup_done = true
@@ -213,9 +218,15 @@ func _after_ready() -> void:
 	# и --spawn сами включают его, чтобы команды из документации работали.
 	var need_run: bool = _run or _hour or _shop or _tutorial \
 		or not _minigame.is_empty() or not _spawn.is_empty()
+	# Главное меню: intro 0.42 с + падающие иконки. Без забега ждём,
+	# чтобы кадр не поймал карточку на полупрозрачном въезде.
+	if not need_run:
+		await create_timer(0.65).timeout
 	if need_run:
 		if not _invoke_main("_start_new_run", [], "start_new_run"):
 			return
+		if not _tutorial:
+			_mark_tutorial_done()
 		await _frames(4)
 
 	# --folder имеет приоритет; иначе после --run открываем первую папку,
@@ -256,6 +267,18 @@ func _after_ready() -> void:
 		if not _open_shop():
 			return
 		await _frames(3)
+
+	if _settings:
+		if not _invoke_main("_open_settings"):
+			return
+		# Wayland часто врёт FULLSCREEN для окна 1920×1080 — в кадре itch
+		# галочка должна отражать настройку, а не драйвер.
+		var settings_modal = _main.get("settings_modal")
+		if settings_modal != null and settings_modal.has_method("set_fullscreen"):
+			settings_modal.call("set_fullscreen", false)
+		# SettingsModal._fade_modal ~0.16 с — ждём, пока окно полностью проявится.
+		await create_timer(0.25).timeout
+		await _frames(4)
 
 	if _tutorial:
 		if not _show_tutorial():
@@ -302,6 +325,9 @@ func _after_ready() -> void:
 
 	if not _drag.is_empty():
 		await _do_drag()
+
+	if not _tutorial:
+		_quiet_overlays()
 
 	_setup_done = true
 
@@ -507,8 +533,10 @@ func _spawn_cards() -> bool:
 				_fail("HourDirector.spawn_packet_now() отсутствует")
 				return false
 			var spawned := 0
-			for i in 3:
-				if not str(director.call("spawn_packet_now")).is_empty():
+			# Смесь типов и протоколов, чтобы в кадре были TCP/UDP и разные фигуры.
+			var packet_specs := [["text", "tcp"], ["sound", "udp"], ["photo", "tcp"]]
+			for spec in packet_specs:
+				if not str(director.call("spawn_packet_now", spec[0], spec[1])).is_empty():
 					spawned += 1
 			if spawned == 0:
 				_fail("HourDirector не смог создать ни одного пакета")
@@ -518,10 +546,12 @@ func _spawn_cards() -> bool:
 				_fail("HourDirector.spawn_request_now() отсутствует")
 				return false
 			var spawned_req := 0
-			for i in 2:
-				var req_id := str(director.call("spawn_request_now"))
+			for proto in ["tcp", "udp"]:
+				var req_id := str(director.call("spawn_request_now", 0, proto))
 				if req_id.is_empty():
 					# Страховка: один файл на запрос, если обычный ролл не прошёл.
+					req_id = str(director.call("spawn_request_now", 1, proto))
+				if req_id.is_empty():
 					req_id = str(director.call("spawn_request_now", 1))
 				if not req_id.is_empty():
 					spawned_req += 1
@@ -689,6 +719,49 @@ func _game_money() -> int:
 	return int(node.get("money"))
 
 
+## Скриншоты itch — всегда 1920×1080 в окне, даже если project.godot
+## просит fullscreen.
+func _force_capture_window() -> void:
+	if DisplayServer.get_name() == "headless":
+		return
+	DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_WINDOWED)
+	DisplayServer.window_set_size(Vector2i(1920, 1080))
+
+
+func _game_stats() -> Dictionary:
+	var node := root.get_node_or_null("Game")
+	if node == null:
+		return {}
+	var stats = node.get("stats")
+	return stats if stats is Dictionary else {}
+
+
+## Чтобы авто-туториал первого часа не перекрыл кадр пакетов и запросов.
+func _mark_tutorial_done() -> void:
+	var stats := _game_stats()
+	if stats.is_empty():
+		return
+	stats["tutorial_done"] = true
+	var node := root.get_node_or_null("Game")
+	if node != null:
+		node.set("stats", stats)
+
+
+## Прячем тосты «ЧАС НАЧАЛСЯ» и бабл БАЙТа — они не для страницы itch.
+func _quiet_overlays() -> void:
+	if _main == null:
+		return
+	var mascot = _main.get("mascot")
+	if mascot != null and mascot.has_method("hide_message"):
+		mascot.call("hide_message")
+	var toast = _main.get("toast_layer")
+	if toast != null:
+		toast.visible = false
+		for child in toast.get_children():
+			if is_instance_valid(child):
+				child.queue_free()
+
+
 func _fail(message: String) -> void:
 	printerr("dev_capture: ERROR: ", message)
 	push_error("dev_capture: " + message)
@@ -698,7 +771,7 @@ func _fail(message: String) -> void:
 func _print_help() -> void:
 	print("dev_capture.gd — снимок экрана PEAK HOUR 97")
 	print("  --run --hour --seconds=N --spawn=packet,request")
-	print("  --minigame=ID --tier=N --seed=N --shop --tutorial")
+	print("  --minigame=ID --tier=N --seed=N --shop --settings --tutorial")
 	print("  --folder=ID --hover=x,y --press=x,y --drag=x1,y1,x2,y2 --hold")
 	print("  --sla=N --stress=calm|warm|hot|critical|attack --reduce")
 	print("  --menu --filemenu --toast --probe --out=PATH --wait=N")
