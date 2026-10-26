@@ -41,6 +41,7 @@ func _init() -> void:
 		_finish()
 		return
 	await _test_file_grid(registry, folder_id)
+	await _test_grid_confirmed_reservation(registry)
 	await _test_rotation_preference()
 	await _test_ghost_rotation()
 	await _test_sorting_table(registry)
@@ -267,6 +268,59 @@ func _test_file_grid(registry, folder_id: String) -> void:
 		grid.set_service_filter(true)
 		_eq(sf.size(), 1, "service_filter_changed эмитится")
 		_ok(bool(sf[0]), "service_filter_changed(true)")
+	root.remove_child(grid)
+	grid.queue_free()
+
+
+## Баг A на уровне сетки: после приёма пакета (reservation → файл) FileGrid
+## обязан показать файл в _files/_by_id/_cells_owner, а не только в registry.
+func _test_grid_confirmed_reservation(registry) -> void:
+	_set_case("FileGrid confirmed reservation")
+	var section = registry.sections.get("C", null)
+	if section == null or section.folder_ids.size() < 2:
+		_ok(false, "нужна вторая папка для проверки приёма")
+		return
+	var folder_id := str(section.folder_ids[1])
+	var grid = FG.new()
+	grid.name = "TestConfirmedGrid"
+	grid.size = Vector2(558, 470)
+	root.add_child(grid)
+	await process_frame
+	grid.set_folder(folder_id, "ВХОДЯЩИЕ", "C: \\ ВХОДЯЩИЕ")
+	await process_frame
+	_eq(grid.file_count(), 0, "папка приёма пуста")
+
+	var res: Dictionary = registry.auto_reserve_packet("pkt_grid_reg", folder_id, "O4", 0)
+	_ok(bool(res.get("ok", false)), "резервация пакета создана")
+	_ok(registry.confirm_reservation("pkt_grid_reg", "Сетка 97", "video") != null,
+		"резервация подтверждена в файл")
+	await process_frame
+	var folder = registry.get_folder(folder_id)
+	var got = registry.find_by_name("Сетка 97")
+	_ok(got != null, "файл в registry")
+	if got == null:
+		root.remove_child(grid)
+		grid.queue_free()
+		return
+	_eq(grid.file_count(), 1, "файл сразу в _files сетки")
+	_ok(grid._by_id.has(str(got.id)), "файл в _by_id сетки")
+	_eq(str(grid._cells_owner.get(Vector2i(got.origin), "")), str(got.id),
+		"клетка origin принадлежит файлу в _cells_owner")
+	_eq(grid.stats()["occupied"], folder.cells.size(),
+		"занятые клетки сетки = cells папки")
+
+	# Второй пакет с другой формой/поворотом — сетка обновляется, ничего не теряется.
+	var res2: Dictionary = registry.auto_reserve_packet("pkt_grid_reg_2", folder_id, "I4V", 0)
+	_ok(bool(res2.get("ok", false)), "вторая резервация создана")
+	_ok(registry.confirm_reservation("pkt_grid_reg_2", "Сетка 98", "video") != null,
+		"вторая резервация подтверждена")
+	await process_frame
+	var got2 = registry.find_by_name("Сетка 98")
+	_ok(got2 != null and grid._by_id.has(str(got2.id)),
+		"второй принятый файл виден в сетке")
+	_eq(grid.file_count(), 2, "в сетке оба принятых файла")
+	_eq(registry.validate().size(), 0,
+		"инварианты после приёма: %s" % str(registry.validate()))
 	root.remove_child(grid)
 	grid.queue_free()
 

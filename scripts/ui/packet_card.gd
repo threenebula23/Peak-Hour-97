@@ -27,6 +27,9 @@ const ERROR_SHAKE_DUR := 0.16
 const LOSS_DESAT_DUR := 0.10
 const LOSS_SWEEP_DUR := 0.20
 const LOSS_FADE_DUR := 0.28
+## Приём: короткая вспышка слева; таймер <20 % слегка «дрожит».
+const RECV_PULSE_DUR := 0.30
+const WOBBLE_PX := 1.5
 
 var id := ""
 var file_name := ""
@@ -60,6 +63,7 @@ var _motion_on := true
 ## play_loss: -1 — не запущен, иначе секунды с начала.
 var _loss_clock := -1.0
 var _loss_sweep := 0.0
+var _recv_clock := -1.0
 
 
 func _ready() -> void:
@@ -73,6 +77,7 @@ func _ready() -> void:
 	set_process(true)
 	_update_tooltip()
 	enter(0)
+	_recv_clock = 0.0
 
 
 ## Совместимая сигнатура: первые 9 аргументов как в v1, затем состояние и
@@ -179,6 +184,20 @@ func _alert_alpha() -> float:
 	return 0.72 + 0.28 * (0.5 + 0.5 * sin(_pulse / ALERT_PULSE * TAU))
 
 
+## 0..1 — вспышка «пакет принят» по левой кромке.
+func _recv_alpha() -> float:
+	if _recv_clock < 0.0 or _reduced():
+		return 0.0
+	return clampf(1.0 - _recv_clock / RECV_PULSE_DUR, 0.0, 1.0)
+
+
+## Draw-only дрожь таймера в последних 20 %.
+func _timer_wobble() -> float:
+	if _reduced() or _loss_clock >= 0.0 or time_total <= 0.0 or ratio() >= 0.2:
+		return 0.0
+	return sin(_pulse / ALERT_PULSE * TAU * 2.0) * WOBBLE_PX
+
+
 func _draw_hover() -> float:
 	if _reduced():
 		return 1.0 if hovered else 0.0
@@ -282,6 +301,12 @@ func _animate(delta: float) -> bool:
 		_err_shake = maxf(0.0, _err_shake - delta)
 		changed = true
 
+	if _recv_clock >= 0.0:
+		_recv_clock += delta
+		if _recv_clock >= RECV_PULSE_DUR:
+			_recv_clock = -1.0
+		changed = true
+
 	if _loss_clock >= 0.0:
 		_animate_loss(delta)
 		changed = true
@@ -334,6 +359,12 @@ func _draw() -> void:
 	var border := Theme90.BORDER.lerp(Theme90.ACCENT_LIGHT, hov)
 	var shadow := Theme90.SHADOW.lerp(Color(0, 0, 0, 0.11), hov)
 	draw_style_box(Theme90.box(face, border, 4, 1, shadow), r)
+	# «Пакет принят»: короткая вспышка у левой кромки (draw-only).
+	var recv := _recv_alpha()
+	if recv > 0.01:
+		draw_rect(Rect2(1, 2, 2, maxf(0.0, size.y - 4)),
+			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.75 * recv))
+		draw_rect(r, Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.05 * recv))
 
 	_draw_shape_preview(Rect2(4, 10, 30, 30))
 
@@ -351,8 +382,9 @@ func _draw() -> void:
 		Theme90.NAVY if protocol == "TCP" else Theme90.WARN, -1,
 		HORIZONTAL_ALIGNMENT_CENTER)
 
-	# таймер
-	var tr := Rect2(40, 20, 140, 5)
+	# таймер (в последних 20 % слегка «дрожит» — draw-only сдвиг координат)
+	var wob := _timer_wobble()
+	var tr := Rect2(40 + wob, 20, 140, 5)
 	var col := timer_color()
 	if not _blink_on:
 		col = Theme90.ERROR.lerp(Theme90.FACE, 0.45)
@@ -362,10 +394,10 @@ func _draw() -> void:
 	Theme90.draw_meter(self, tr, _meter if _meter_ready else ratio(), mcol, Theme90.PAPER_LO)
 	var tcol := timer_color()
 	tcol.a *= pulse
-	var w := Theme90.num_line(self, Vector2(186, 17), str(int(ceilf(time_left))), 8,
+	var w := Theme90.num_line(self, Vector2(186 + wob, 17), str(int(ceilf(time_left))), 8,
 		tcol, " с", 10)
-	Theme90.text(self, f, Vector2(186 + w + 3, 19), "·", 10, Theme90.SHADE)
-	Theme90.num_line(self, Vector2(186 + w + 8, 17), str(size_kb), 8,
+	Theme90.text(self, f, Vector2(186 + wob + w + 3, 19), "·", 10, Theme90.SHADE)
+	Theme90.num_line(self, Vector2(186 + wob + w + 8, 17), str(size_kb), 8,
 		Theme90.SHADE, " КБ", 10)
 
 	# состояние + сколько клеток займёт

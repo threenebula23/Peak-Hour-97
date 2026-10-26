@@ -19,6 +19,9 @@ const ENTER_OFFSET := 2.0
 const HOVER_DUR := 0.10
 const SELECT_DUR := 0.12
 const BADGE_POP_DUR := 0.14
+## Hover-подъём и отскок выделения — только отрисовка.
+const HOVER_LIFT := 1.0
+const SEL_BOUNCE_DUR := 0.18
 
 var id := ""
 var file_name := ""
@@ -28,6 +31,8 @@ var type := "text"
 var state := "stored"
 var selected := false:
 	set(v):
+		if v and not selected:
+			_sel_clock = 0.0
 		selected = v
 		set_process(true)
 		queue_redraw()
@@ -44,6 +49,7 @@ var _hover_amt := 0.0
 var _sel_amt := 0.0
 var _enter_elapsed := ENTER_DUR
 var _badge_clock := -1.0
+var _sel_clock := -1.0
 var _motion_on := true
 
 
@@ -108,8 +114,12 @@ func _process(delta: float) -> void:
 		_badge_clock += delta
 		if _badge_clock >= BADGE_POP_DUR:
 			_badge_clock = -1.0
+	if _sel_clock >= 0.0:
+		_sel_clock += delta
+		if _sel_clock >= SEL_BOUNCE_DUR:
+			_sel_clock = -1.0
 	queue_redraw()
-	if _enter_elapsed >= ENTER_DUR and _badge_clock < 0.0 \
+	if _enter_elapsed >= ENTER_DUR and _badge_clock < 0.0 and _sel_clock < 0.0 \
 			and is_equal_approx(_hover_amt, hov) and is_equal_approx(_sel_amt, sel):
 		set_process(false)
 
@@ -119,6 +129,22 @@ func _badge_pop() -> float:
 	if _badge_clock < 0.0:
 		return 0.0
 	return sin(PI * clampf(_badge_clock / BADGE_POP_DUR, 0.0, 1.0))
+
+
+## 0..1 → 0 отскок выделения (полоска слева и подъём).
+func _sel_bounce() -> float:
+	if _sel_clock < 0.0:
+		return 0.0
+	return sin(PI * clampf(_sel_clock / SEL_BOUNCE_DUR, 0.0, 1.0))
+
+
+## Draw-only подъём: hover 1 px, выделение — короткий отскок.
+func _lift_offset() -> float:
+	if _reduced():
+		return 0.0
+	var off := HOVER_LIFT * _draw_hover()
+	off += 1.5 * _sel_bounce()
+	return off
 
 
 func _draw_hover() -> float:
@@ -223,13 +249,20 @@ func _draw() -> void:
 			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.8), sel)
 		shadow = shadow.lerp(Color(0, 0, 0, 0.12), sel)
 
-	var off := _enter_offset()
-	if off > 0.0:
+	var off := _enter_offset() - _lift_offset()
+	if off != 0.0:
 		draw_set_transform(Vector2(0, off), 0.0, Vector2.ONE)
 
 	draw_style_box(Theme90.box(bg, border, 4, 1, shadow), r)
+	# Мягкое свечение внутри рамки при наведении/выделении (draw-only).
+	var glow := maxf(hov, sel)
+	if glow > 0.02:
+		var gc := Theme90.ACCENT_LIGHT if sel < 0.5 else Theme90.ACCENT
+		draw_style_box(Theme90.box(Color(gc.r, gc.g, gc.b, 0.10 * glow),
+			Color(0, 0, 0, 0), 4, 0), r.grow(-2.0))
 	if sel > 0.01:
-		draw_rect(Rect2(1.5, 12, 2.5, size.y - 24),
+		var bar_h := size.y - 24.0 + 4.0 * _sel_bounce()
+		draw_rect(Rect2(1.5, (size.y - bar_h) * 0.5, 2.5, bar_h),
 			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, sel))
 
 	if locked:
@@ -275,7 +308,7 @@ func _draw() -> void:
 		draw_rect(Rect2(10, 34, size.x - 20, 1),
 			Color(Theme90.HAIRLINE.r, Theme90.HAIRLINE.g, Theme90.HAIRLINE.b,
 				Theme90.HAIRLINE.a * hov))
-	if off > 0.0:
+	if off != 0.0:
 		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
 
 

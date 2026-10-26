@@ -21,6 +21,19 @@ const ACTION_RECT := Rect2(466.0, 320.0, 156.0, 28.0)
 const SKIP_RECT := Rect2(18.0, 320.0, 148.0, 28.0)
 const CONTINUE_RECT := Rect2(245.0, 252.0, 150.0, 32.0)
 
+# --- Motion (Lane B) -------------------------------------------------------
+## Вход окна, штамп результата, отказ-тряска, искры победы, пульс прогресса.
+## Анимации базы идут на Tween + tween_method: наследники переопределяют
+## _process и _draw, поэтому кадровый цикл здесь не годится.
+const MOTION_ENTER_DUR := 0.16
+const MOTION_ENTER_SCALE := 0.985
+const MOTION_STAMP_DUR := 0.25
+const MOTION_SHAKE_DUR := 0.28
+const MOTION_SHAKE_PX := 3.0
+const MOTION_SPARK_DUR := 0.9
+const MOTION_SPARK_COUNT := 18
+const MOTION_BAR_PULSE := 1.1
+
 const SEND_IDS: Array[String] = [
 	"dots", "sound", "text", "video", "photo", "maze",
 ]
@@ -79,6 +92,16 @@ var _result_detail: String = ""
 var defer_finish_signal: bool = false
 var _pending_finish: bool = false
 
+var _motion_on := true
+var _enter_pending := false
+var _bar_phase := 0.0
+## 0..1 прогресс штампа/тряски/искр; 1 — эффект закончен.
+var _fx_stamp := 1.0
+var _fx_shake := 1.0
+var _fx_spark := 1.0
+var _pulse_tween: Tween = null
+var _fx_tween: Tween = null
+
 
 func _init() -> void:
 	process_mode = Node.PROCESS_MODE_ALWAYS
@@ -100,6 +123,9 @@ func _ready() -> void:
 	var viewport := get_viewport()
 	if viewport != null and not viewport.size_changed.is_connected(_center_on_screen):
 		viewport.size_changed.connect(_center_on_screen)
+	# HourDirector зовёт start() до add_child — вход запускаем здесь.
+	if running:
+		_arm_motion()
 
 
 ## Совместимая сигнатура со старым main/hour_director:
@@ -139,6 +165,8 @@ func start(type_or_id: String, p_difficulty: float = 1.0, p_seed: int = 0,
 	set_process_input(true)
 	_center_on_screen()
 	queue_redraw()
+	_enter_pending = true
+	_arm_motion()
 
 
 ## Сброс состояния при повторном start() на том же узле.
@@ -148,6 +176,164 @@ func _emitent_reset() -> void:
 	_skip_armed = false
 	_result_detail = ""
 	_pending_finish = false
+	_kill_pulse()
+	_kill_fx()
+	_bar_phase = 0.0
+	_fx_stamp = 1.0
+	_fx_shake = 1.0
+	_fx_spark = 1.0
+	_enter_pending = false
+	modulate = Color(1, 1, 1, 1)
+	scale = Vector2.ONE
+
+
+# --- motion (Lane B) -------------------------------------------------------
+
+func _reduced() -> bool:
+	return not _motion_on or UiMotion.reduced
+
+
+## Внешний переключатель движения (Lane A / настройки).
+func set_motion_enabled(on: bool) -> void:
+	_motion_on = on
+	if _reduced():
+		_kill_pulse()
+		_kill_fx()
+		_bar_phase = 0.0
+		_fx_stamp = 1.0
+		_fx_shake = 1.0
+		_fx_spark = 1.0
+		_enter_pending = false
+		modulate = Color(1, 1, 1, 1)
+		scale = Vector2.ONE
+	elif running:
+		_arm_bar_pulse()
+	queue_redraw()
+
+
+## Включить отложенный вход и пульс прогресса (только внутри дерева).
+func _arm_motion() -> void:
+	if not is_inside_tree():
+		return
+	if _enter_pending and not _finished:
+		_enter_pending = false
+		_play_enter()
+	_arm_bar_pulse()
+
+
+## Вход окна: fade + лёгкий scale 0.16 c. position/размер не меняются.
+func _play_enter() -> void:
+	if _reduced():
+		modulate = Color(1, 1, 1, 1)
+		scale = Vector2.ONE
+		return
+	if _fx_tween != null and _fx_tween.is_valid():
+		_fx_tween.kill()
+	pivot_offset = size * 0.5
+	modulate = Color(1, 1, 1, 0)
+	scale = Vector2(MOTION_ENTER_SCALE, MOTION_ENTER_SCALE)
+	_fx_tween = create_tween().set_parallel(true)
+	_fx_tween.tween_property(self, "modulate:a", 1.0, MOTION_ENTER_DUR) \
+		.set_trans(UiMotion.EASE_OUT_POS_TRANS).set_ease(UiMotion.EASE_OUT_POS_EASE)
+	_fx_tween.tween_property(self, "scale", Vector2.ONE, MOTION_ENTER_DUR) \
+		.set_trans(UiMotion.EASE_OUT_SCALE_TRANS).set_ease(UiMotion.EASE_OUT_SCALE_EASE)
+
+
+func _kill_pulse() -> void:
+	if _pulse_tween != null and _pulse_tween.is_valid():
+		_pulse_tween.kill()
+	_pulse_tween = null
+
+
+func _kill_fx() -> void:
+	if _fx_tween != null and _fx_tween.is_valid():
+		_fx_tween.kill()
+	_fx_tween = null
+
+
+## Пульс полосы прогресса: одна зацикленная tween-дорожка на окно.
+func _arm_bar_pulse() -> void:
+	if _finished or _reduced() or not is_inside_tree():
+		return
+	if _progress_ratio() < 0.0:
+		return
+	if _pulse_tween != null and _pulse_tween.is_valid():
+		return
+	_bar_phase = 0.0
+	_pulse_tween = create_tween()
+	_pulse_tween.tween_method(_set_bar_phase, 0.0, 1.0, MOTION_BAR_PULSE)
+	_pulse_tween.set_loops()
+
+
+func _set_bar_phase(v: float) -> void:
+	_bar_phase = v
+	queue_redraw()
+
+
+## Штамп результата: масштаб 30→36→30, цветная вспышка, тряска при провале,
+## искры при победе. Всё draw-only, layout не трогаем.
+func _play_result_fx() -> void:
+	# Вход мог не доиграть (мгновенный пропуск) — вернуть нейтраль.
+	modulate = Color(1, 1, 1, 1)
+	scale = Vector2.ONE
+	if _reduced() or not is_inside_tree():
+		_fx_stamp = 1.0
+		_fx_shake = 1.0
+		_fx_spark = 1.0
+		return
+	var good := quality_value >= 0.45
+	_kill_fx()
+	_fx_stamp = 0.0
+	_fx_shake = 1.0
+	_fx_spark = 1.0
+	_fx_tween = create_tween().set_parallel(true)
+	_fx_tween.tween_method(_set_fx_stamp, 0.0, 1.0, MOTION_STAMP_DUR)
+	if good:
+		_fx_spark = 0.0
+		_fx_tween.tween_method(_set_fx_spark, 0.0, 1.0, MOTION_SPARK_DUR)
+	else:
+		_fx_shake = 0.0
+		_fx_tween.tween_method(_set_fx_shake, 0.0, 1.0, MOTION_SHAKE_DUR)
+
+
+func _set_fx_stamp(v: float) -> void:
+	_fx_stamp = v
+	queue_redraw()
+
+
+func _set_fx_shake(v: float) -> void:
+	_fx_shake = v
+	queue_redraw()
+
+
+func _set_fx_spark(v: float) -> void:
+	_fx_spark = v
+	queue_redraw()
+
+
+## 30 → 36 → 30 px за 0.25 c (плавный pop без блюра мелкого текста).
+func _stamp_scale() -> float:
+	if _reduced() or _fx_stamp >= 1.0:
+		return 1.0
+	return 1.0 + 0.20 * sin(PI * _fx_stamp)
+
+
+## Draw-only тряска экрана результата при провале.
+func _shake_dx() -> float:
+	if _reduced() or _fx_shake >= 1.0:
+		return 0.0
+	return sin(_fx_shake * PI * 3.0) * MOTION_SHAKE_PX * (1.0 - _fx_shake)
+
+
+## 0..1 яркость полосы прогресса (0 — покой/reduced).
+func _bar_pulse() -> float:
+	if _reduced() or _pulse_tween == null:
+		return 0.0
+	return 0.5 - 0.5 * cos(TAU * _bar_phase)
+
+
+func _spark_noise(index: int) -> float:
+	return fposmod(sin(float(index) * 12.9898) * 43758.5453, 1.0)
 
 
 ## Переопределяется наследником: генерация поля/состояния.
@@ -232,6 +418,8 @@ func _finish(q: float) -> void:
 	_skip_armed = false
 	if _result_detail.is_empty():
 		_result_detail = _default_result_detail()
+	_kill_pulse()
+	_play_result_fx()
 	_play_sfx(&"minigame_win" if quality_value >= 0.45 else &"minigame_fail")
 	if defer_finish_signal:
 		# Экран результата уже нарисован; сигнал ждёт «ПРОДОЛЖИТЬ».
@@ -374,7 +562,19 @@ func _draw() -> void:
 		Theme90.text(self, font, Vector2(bar.position.x - 38.0, bar.position.y - 2.0),
 			"%d%%" % roundi(clampf(ratio, 0.0, 1.0) * 100.0), 10, Theme90.DARK,
 			34.0, HORIZONTAL_ALIGNMENT_RIGHT)
-		_draw_bar(bar, ratio, Theme90.SUCCESS if ratio >= 0.999 else Theme90.ACCENT)
+		var bar_col := Theme90.SUCCESS if ratio >= 0.999 else Theme90.ACCENT
+		var pulse := _bar_pulse()
+		if pulse > 0.0:
+			bar_col = bar_col.lerp(Theme90.WHITE, 0.16 * pulse)
+		_draw_bar(bar, ratio, bar_col)
+		if pulse > 0.0:
+			# Бегущий блик по заполненной части — draw-only.
+			var inner := bar.grow(-1.0)
+			var fill_w := inner.size.x * clampf(ratio, 0.0, 1.0)
+			if fill_w >= 3.0:
+				var x := inner.position.x + 1.0 + maxf(0.0, fill_w - 3.0) * _bar_phase
+				draw_rect(Rect2(x, inner.position.y, 2.0, inner.size.y),
+					Color(1, 1, 1, 0.22 * pulse))
 
 	var goal := _goal_text()
 	if not goal.is_empty():
@@ -477,7 +677,16 @@ func _result_panel_rect() -> Rect2:
 func _draw_result_overlay() -> void:
 	draw_rect(Rect2(Vector2.ZERO, size), Color(0.08, 0.10, 0.10, 0.58))
 	var panel := _result_panel_rect()
+	var dx := _shake_dx()
+	if dx != 0.0:
+		draw_set_transform(Vector2(dx, 0.0), 0.0, Vector2.ONE)
 	_draw_modal_panel(panel)
+	# Цветная вспышка рамки в момент штампа результата.
+	var flash := 1.0 - _fx_stamp
+	if flash > 0.01:
+		var fc := Theme90.SUCCESS if quality_value >= 0.45 else Theme90.ERROR
+		draw_style_box(Theme90.box(Color(0, 0, 0, 0),
+			Color(fc.r, fc.g, fc.b, 0.70 * flash), 4, 2), panel.grow(-2.0))
 	Theme90.text(self, Theme90.display(), Vector2(panel.position.x, panel.position.y + 10.0),
 		"РЕЗУЛЬТАТ", 18, Theme90.NAVY_DEEP, panel.size.x,
 		HORIZONTAL_ALIGNMENT_CENTER)
@@ -485,8 +694,11 @@ func _draw_result_overlay() -> void:
 		Theme90.fit(Theme90.ui(), title(), 12, panel.size.x - 36.0), 12, Theme90.NAVY,
 		panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 	var q_text := "%d%%" % roundi(quality_value * 100.0)
-	Theme90.text(self, Theme90.logo(), Vector2(panel.position.x, panel.position.y + 46.0),
-		q_text, 30, Theme90.INK, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	# Штамп: кегль 30→36→30 за 0.25 c; позиция подписи не «прыгает».
+	var fs := maxi(20, roundi(30.0 * _stamp_scale()))
+	Theme90.text(self, Theme90.logo(),
+		Vector2(panel.position.x, panel.position.y + 46.0 - (float(fs) - 30.0) * 0.55),
+		q_text, fs, Theme90.INK, panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
 	var qcol := Theme90.SUCCESS if quality_value >= 0.75 else (
 		Theme90.WARN if quality_value >= 0.45 else Theme90.ERROR)
 	_draw_bar(Rect2(panel.position.x + 26.0, panel.position.y + 86.0,
@@ -502,8 +714,30 @@ func _draw_result_overlay() -> void:
 	Theme90.text(self, Theme90.ui(), Vector2(panel.position.x,
 		panel.position.y + 154.0), "Esc — продолжить", 10, Theme90.DARK,
 		panel.size.x, HORIZONTAL_ALIGNMENT_CENTER)
+	_draw_sparks(panel)
 	var cont := _result_continue_rect()
 	_draw_action_button(cont, "ПРОДОЛЖИТЬ", true, true, 13)
+	if dx != 0.0:
+		draw_set_transform(Vector2.ZERO, 0.0, Vector2.ONE)
+
+
+## Искры победы: детерминированные точки, падают и гаснут за 0.9 c.
+func _draw_sparks(panel: Rect2) -> void:
+	if _fx_spark >= 1.0 or _reduced():
+		return
+	var p := clampf(_fx_spark, 0.0, 1.0)
+	var palette: Array[Color] = [Theme90.SUCCESS, Theme90.ACCENT_LIGHT,
+		Theme90.WARN, Theme90.ACCENT]
+	for i in MOTION_SPARK_COUNT:
+		var u := fposmod(float(i) * 0.6180339887, 1.0)
+		var drift := (_spark_noise(i) - 0.5) * 46.0 * p
+		var x := panel.position.x + 22.0 + u * (panel.size.x - 44.0) + drift
+		var y := panel.position.y + 12.0 + p * (panel.size.y - 60.0) \
+			* (0.6 + 0.4 * _spark_noise(i + 11))
+		var sz := 2.0 + 2.0 * _spark_noise(i + 5)
+		var c: Color = palette[i % palette.size()]
+		c.a = (1.0 - p) * 0.9
+		draw_rect(Rect2(roundf(x), roundf(y), sz, sz), c)
 
 
 # --- служебное -------------------------------------------------------------

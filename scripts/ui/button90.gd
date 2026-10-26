@@ -47,12 +47,16 @@ const PRESS_OUT := 0.08
 const FOCUS_DUR := 0.12
 ## Насколько сдвигается содержимое в нажатом состоянии, px.
 const PRESS_SHIFT := 1.0
+## Клик-рябь: draw-only кольцо из точки нажатия.
+const RIPPLE_DUR := 0.22
 
 var _hover_amt := 0.0
 var _press_amt := 0.0
 var _focus_amt := 0.0
 ## Локальный выключатель движения (Lane A / настройки). UiMotion.reduced тоже.
 var _motion_on := true
+var _ripple_t := 1.0
+var _ripple_pos := Vector2.ZERO
 
 
 func _ready() -> void:
@@ -61,12 +65,23 @@ func _ready() -> void:
 	mouse_entered.connect(_touch)
 	mouse_exited.connect(_touch)
 	button_down.connect(_touch)
+	button_down.connect(_start_ripple)
 	button_up.connect(_touch)
 	focus_entered.connect(_touch)
 	focus_exited.connect(_touch)
 	resized.connect(queue_redraw)
 	if not pressed.is_connected(_play_click):
 		pressed.connect(_play_click)
+
+
+## Клик-рябь из точки нажатия (0.22 c, только отрисовка).
+func _start_ripple() -> void:
+	if _reduced():
+		return
+	_ripple_pos = get_local_mouse_position()
+	_ripple_t = 0.0
+	queue_redraw()
+	set_process(true)
 
 
 ## Разбудить плавные состояния. Дальше _process сам остановится на цели.
@@ -80,6 +95,7 @@ func set_motion_enabled(on: bool) -> void:
 	_motion_on = on
 	if _reduced():
 		_snap()
+		_ripple_t = 1.0
 	queue_redraw()
 
 
@@ -110,8 +126,9 @@ func _snap() -> void:
 func _process(delta: float) -> void:
 	var t := _targets()
 	if _reduced():
-		if not _at(t):
+		if not _at(t) or _ripple_t < 1.0:
 			_snap()
+			_ripple_t = 1.0
 			queue_redraw()
 		set_process(false)
 		return
@@ -125,10 +142,13 @@ func _process(delta: float) -> void:
 	if not is_equal_approx(_focus_amt, t.z):
 		_focus_amt = move_toward(_focus_amt, t.z, delta / FOCUS_DUR)
 		changed = true
+	if _ripple_t < 1.0:
+		_ripple_t = minf(1.0, _ripple_t + delta / RIPPLE_DUR)
+		changed = true
 	if changed:
 		queue_redraw()
 	# Цель достигнута — не крутим _process зря.
-	if _at(t):
+	if _at(t) and _ripple_t >= 1.0:
 		_hover_amt = t.x
 		_press_amt = t.y
 		_focus_amt = t.z
@@ -146,7 +166,7 @@ func _amts() -> Vector3:
 	if _reduced():
 		return _targets()
 	var t := _targets()
-	if not is_processing() and not _at(t):
+	if not is_processing() and (not _at(t) or _ripple_t < 1.0):
 		set_process(true)
 	return Vector3(_hover_amt, _press_amt, _focus_amt)
 
@@ -204,6 +224,8 @@ func _draw() -> void:
 		if is_active:
 			draw_rect(Rect2(r.position.x + 5, r.end.y - 2, maxf(0.0, r.size.x - 10), 2),
 				Theme90.ACCENT)
+		_draw_glow(r, hov, true)
+		_draw_ripple(r, true)
 		_draw_content(r, f, fg, PRESS_SHIFT * roundf(prs), dis)
 		return
 
@@ -269,7 +291,32 @@ func _draw() -> void:
 			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.75 * foc), 3, 1),
 			r.grow(-2.0))
 
+	_draw_glow(r, hov, face.get_luminance() > 0.5)
+	_draw_ripple(r, face.get_luminance() > 0.5)
 	_draw_content(r, f, fg, PRESS_SHIFT * roundf(prs), dis)
+
+
+## Мягкая подсветка при наведении — внутри рамки, без изменения layout.
+func _draw_glow(r: Rect2, hov: float, light: bool) -> void:
+	if hov <= 0.01:
+		return
+	var c := Theme90.ACCENT_LIGHT if light else Theme90.WHITE
+	draw_style_box(Theme90.box(Color(c.r, c.g, c.b, (0.10 if light else 0.09) * hov),
+		Color(0, 0, 0, 0), 3, 0), r.grow(-2.0))
+
+
+## Клик-рябь: кольцо из точки нажатия, гаснет за 0.22 c (draw-only).
+func _draw_ripple(r: Rect2, light: bool) -> void:
+	if _ripple_t >= 1.0 or _reduced():
+		return
+	var p := clampf(_ripple_t, 0.0, 1.0)
+	var a := (1.0 - p) * 0.32
+	if a <= 0.01:
+		return
+	var max_r := maxf(2.0, minf(r.size.x, r.size.y) * 0.62)
+	var rad := lerpf(2.0, max_r, p)
+	var c := Theme90.ACCENT if light else Theme90.WHITE
+	draw_arc(_ripple_pos, rad, 0.0, TAU, 40, Color(c.r, c.g, c.b, a), 1.5, true)
 
 
 func _draw_content(r: Rect2, f: Font, fg: Color, shift_y: float, _dis: bool) -> void:

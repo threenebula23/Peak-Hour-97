@@ -9,6 +9,7 @@ extends SceneTree
 
 const HD := preload("res://scripts/core/hour_director.gd")
 const AD := preload("res://scripts/systems/attack_director.gd")
+const R := preload("res://scripts/core/file_registry.gd")
 
 var _checks: int = 0
 var _fails: int = 0
@@ -55,6 +56,7 @@ func _init() -> void:
 	_test_carry()
 	_test_receive()
 	_test_receive_cancel_and_no_space()
+	_test_receive_geometry()
 	_test_request_caps()
 	_test_rate_no_cap_h9()
 	_test_starvation_guard()
@@ -392,6 +394,106 @@ func _test_receive_cancel_and_no_space() -> void:
 	_eq(_game.registry.reservation_count(folder_id), 0, "слот-отказ не резервирует клетки")
 	_hd.slots.release_by_entity("blocker")
 	_hd._remove_packet(packet3)
+
+
+# --- приём: геометрия файла ------------------------------------------------
+
+## Баг A (регрессия): после загрузки файл обязан быть и в registry, и в
+## folder.file_ids, и владеть теми же клетками folder.cells — для всех типов
+## и поворотов, включая повторный приём и save/load.
+func _test_receive_geometry() -> void:
+	_set_case("receive_geometry")
+	for type_id in ["text", "sound", "photo", "video"]:
+		for rot in range(4):
+			_fresh(1)
+			_hd.spawn_window = -1.0
+			var folder_id := _folder_id()
+			var pid := str(_hd.spawn_packet_now(str(type_id)))
+			if pid.is_empty():
+				_fail("%s rot%d: пакет не заспавнен" % [type_id, rot])
+				continue
+			var packet = _hd.active_packets[pid]
+			if not _hd.receive_packet(pid, folder_id, Vector2i(-1, -1), rot):
+				_fail("%s rot%d: приём отклонён" % [type_id, rot])
+				continue
+			for i in range(400):
+				_hd.tick(0.1)
+				if not _hd.active_packets.has(pid):
+					break
+			var file = _game.registry.find_by_name(str(packet.file_name))
+			_ok(file != null, "%s rot%d: файл в registry" % [type_id, rot])
+			if file == null:
+				continue
+			var folder = _game.registry.get_folder(folder_id)
+			_ok(folder.file_ids.has(str(file.id)),
+				"%s rot%d: файл в folder.file_ids" % [type_id, rot])
+			_ok(_game.registry.get_folder_files(folder_id).has(file),
+				"%s rot%d: get_folder_files содержит файл" % [type_id, rot])
+			var want := R.shape_cells(str(file.shape_id), int(file.rotation)).size()
+			var owned := _owned_cells(folder, str(file.id))
+			_eq(owned, want, "%s rot%d: клетки папки принадлежат файлу" % [type_id, rot])
+			_eq(str(file.folder_id), folder_id, "%s rot%d: folder_id" % [type_id, rot])
+			_eq(str(file.location), "folder", "%s rot%d: location" % [type_id, rot])
+			_ok(int(file.rotation) >= 0 and int(file.rotation) <= 3,
+				"%s rot%d: rotation 0..3" % [type_id, rot])
+			_ok(not (file.shape_cells as Array).is_empty(),
+				"%s rot%d: shape_cells заполнены" % [type_id, rot])
+			_eq(_game.registry.validate().size(), 0,
+				"%s rot%d: инварианты: %s" % [type_id, rot,
+					str(_game.registry.validate())])
+
+			# Сохранение/загрузка: файл остаётся в папке на своих клетках.
+			var snapshot: Dictionary = _game.registry.to_dict()
+			var reg2 = R.new()
+			_ok(reg2.from_dict(snapshot), "%s rot%d: from_dict" % [type_id, rot])
+			var loaded = reg2.get_file(str(file.id))
+			_ok(loaded != null, "%s rot%d: файл после load" % [type_id, rot])
+			if loaded != null:
+				_eq(str(loaded.folder_id), folder_id, "%s rot%d: folder_id после load" % [type_id, rot])
+				_eq(str(loaded.location), "folder", "%s rot%d: location после load" % [type_id, rot])
+				_ok(reg2.get_folder(folder_id).file_ids.has(str(file.id)),
+					"%s rot%d: folder.file_ids после load" % [type_id, rot])
+				_eq(_owned_cells(reg2.get_folder(folder_id), str(file.id)), want,
+					"%s rot%d: клетки после load" % [type_id, rot])
+			_eq(reg2.validate().size(), 0,
+				"%s rot%d: инварианты после load: %s" % [type_id, rot, str(reg2.validate())])
+
+	# Несколько пакетов подряд в одну папку — все файлы на месте.
+	_fresh(1)
+	_hd.spawn_window = -1.0
+	var folder_id2 := _folder_id()
+	var types := ["text", "sound", "photo"]
+	var accepted := 0
+	for i in range(types.size()):
+		var pid2 := str(_hd.spawn_packet_now(str(types[i])))
+		if pid2.is_empty():
+			continue
+		var p2 = _hd.active_packets[pid2]
+		if not _hd.receive_packet(pid2, folder_id2):
+			continue
+		for j in range(400):
+			_hd.tick(0.1)
+			if not _hd.active_packets.has(pid2):
+				break
+		if _game.registry.find_by_name(str(p2.file_name)) != null:
+			accepted += 1
+	var folder2 = _game.registry.get_folder(folder_id2)
+	_eq(accepted, types.size(), "несколько пакетов приняты")
+	_eq(folder2.file_ids.size(), accepted, "все принятые файлы в папке")
+	_eq(_game.registry.get_folder_files(folder_id2).size(), accepted,
+		"get_folder_files возвращает все")
+	_eq(_game.registry.validate().size(), 0,
+		"инварианты после серии приёмов: %s" % str(_game.registry.validate()))
+
+
+func _owned_cells(folder, file_id: String) -> int:
+	var n := 0
+	if folder == null:
+		return 0
+	for cell in folder.cells.keys():
+		if str(folder.cells[cell]) == file_id:
+			n += 1
+	return n
 
 
 # --- запросы ---------------------------------------------------------------

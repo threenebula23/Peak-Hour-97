@@ -63,8 +63,12 @@ func toast(text: String, kind: String = "info") -> void:
 	else:
 		var tw := create_tween().set_parallel(true)
 		tw.tween_property(item, "position", target, ENTER_DUR) \
-			.set_trans(UiMotion.EASE_OUT_POS_TRANS).set_ease(UiMotion.EASE_OUT_POS_EASE)
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 		tw.tween_property(item, "modulate:a", 1.0, ENTER_DUR)
+		# Точка-статус «выпрыгивает» при появлении (draw-only).
+		var dot := create_tween()
+		dot.tween_property(item, "pop_scale", 1.0, 0.22).from(0.55) \
+			.set_trans(Tween.TRANS_BACK).set_ease(Tween.EASE_OUT)
 	var life := create_tween()
 	life.tween_interval(LIFE_DUR)
 	life.tween_property(item, "modulate:a", 0.0, EXIT_DUR)
@@ -121,6 +125,8 @@ class ToastItem:
 	extends Control
 	var txt := ""
 	var kind := "info"
+	## Pop точки-статуса и стрелки при входе (1.0 — покой).
+	var pop_scale := 1.0
 
 	func _init(p_text: String, p_kind: String) -> void:
 		txt = p_text
@@ -142,9 +148,16 @@ class ToastItem:
 		var r := Rect2(Vector2.ZERO, size)
 		var col := _kind_color()
 		Theme90.draw_bevel(self, r, false, 1.0, Theme90.PAPER_HI)
-		# цветная точка-статус вместо тяжёлой иконки
-		draw_circle(Vector2(15, size.y * 0.5), 4.0, Color(col.r, col.g, col.b, 0.18))
-		draw_circle(Vector2(15, size.y * 0.5), 2.4, col)
+		# цветная точка-статус вместо тяжёлой иконки; при входе чуть крупнее
+		var ps := clampf(pop_scale, 0.0, 1.6)
+		draw_circle(Vector2(15, size.y * 0.5), 4.0 * ps,
+			Color(col.r, col.g, col.b, 0.18))
+		draw_circle(Vector2(15, size.y * 0.5), 2.4 * ps, col)
+		# Стрелка-«далее» справа появляется вместе с точкой.
+		var ap := clampf((pop_scale - 0.55) / 0.45, 0.0, 1.0)
+		if ap > 0.01:
+			Theme90.draw_chevron(self, Vector2(size.x - 12, size.y * 0.5), 2,
+				Color(col.r, col.g, col.b, 0.55 * ap), 3.0, 1.2)
 		var f := Theme90.ui()
 		Theme90.text_vcenter(self, f, Rect2(28, 0, size.x - 38, size.y),
 			Theme90.fit(f, txt, 12, size.x - 44), 12, Theme90.INK)

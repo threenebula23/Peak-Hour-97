@@ -20,6 +20,8 @@ const HOVER_DUR := 0.10
 const SELECT_DUR := 0.12
 const WAVE_DUR := 0.8
 const ACCEPT_DUR := 0.20
+## Отскок полоски выделения.
+const SEL_BOUNCE_DUR := 0.18
 
 var folder_id := ""
 var folder_name := ""
@@ -46,6 +48,8 @@ var expanded := true:
 		queue_redraw()
 var selected := false:
 	set(v):
+		if v and not selected:
+			_sel_clock = 0.0
 		selected = v
 		set_process(true)
 		queue_redraw()
@@ -67,6 +71,7 @@ var _hover_amt := 0.0
 var _sel_amt := 0.0
 var _wave := 0.0
 var _accept_clock := -1.0
+var _sel_clock := -1.0
 var _motion_on := true
 
 
@@ -115,10 +120,21 @@ func _process(delta: float) -> void:
 		_accept_clock += delta
 		if _accept_clock >= ACCEPT_DUR:
 			_accept_clock = -1.0
+	if _sel_clock >= 0.0:
+		_sel_clock += delta
+		if _sel_clock >= SEL_BOUNCE_DUR:
+			_sel_clock = -1.0
 	queue_redraw()
-	if not drop_active and _accept_clock < 0.0 \
+	if not drop_active and _accept_clock < 0.0 and _sel_clock < 0.0 \
 			and is_equal_approx(_hover_amt, hov) and is_equal_approx(_sel_amt, sel):
 		set_process(false)
+
+
+## 0..1 → 0 отскок полоски выделения.
+func _sel_bounce() -> float:
+	if _sel_clock < 0.0:
+		return 0.0
+	return sin(PI * clampf(_sel_clock / SEL_BOUNCE_DUR, 0.0, 1.0))
 
 
 func _draw_hover() -> float:
@@ -180,8 +196,14 @@ func _draw() -> void:
 		draw_style_box(Theme90.box(
 			Color(Theme90.ACCENT_PALE.r, Theme90.ACCENT_PALE.g, Theme90.ACCENT_PALE.b, sel),
 			Color(0, 0, 0, 0), 3, 0), Rect2(2, 1, size.x - 4, size.y - 2))
-		draw_rect(Rect2(2, 5, 2, size.y - 10),
+		var bar_h := size.y - 10.0 + 4.0 * _sel_bounce()
+		draw_rect(Rect2(2, (size.y - bar_h) * 0.5, 2, bar_h),
 			Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, sel))
+	if hov > 0.02:
+		# Мягкое свечение строки при наведении (draw-only).
+		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2),
+			Color(Theme90.ACCENT_LIGHT.r, Theme90.ACCENT_LIGHT.g,
+				Theme90.ACCENT_LIGHT.b, 0.16 * hov))
 	if drop_active:
 		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT, 3, 1),
 			Rect2(2, 1, size.x - 4, size.y - 2))
@@ -189,8 +211,8 @@ func _draw() -> void:
 		draw_style_box(Theme90.box(Theme90.ACCENT_PALE, Theme90.ACCENT_LIGHT, 3, 1),
 			Rect2(2, 1, size.x - 4, size.y - 2))
 		draw_rect(Rect2(2, 5, 2, size.y - 10), Theme90.ACCENT_LIGHT)
-	elif hov > 0.02:
-		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2), Color(1, 1, 1, 0.45 * hov))
+	elif hov > 0.02 and sel < 0.5:
+		draw_rect(Rect2(2, 1, size.x - 4, size.y - 2), Color(1, 1, 1, 0.30 * hov))
 
 	var fg := Theme90.INK.lerp(Theme90.NAVY, sel)
 	var sub := Theme90.SHADE.lerp(Theme90.ACCENT, sel)

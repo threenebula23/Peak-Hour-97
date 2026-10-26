@@ -25,6 +25,8 @@ const METER_TAU := 0.12
 const LINK_PULSE := 0.5
 const DROP_FLASH_DUR := 0.18
 const ERROR_FLASH_DUR := 0.22
+## Пульс прогресс-полосы активной передачи.
+const PROGRESS_PULSE := 0.9
 
 var id := ""
 var file_name := ""
@@ -65,6 +67,7 @@ var _flash_clock := -1.0
 var _meter := 0.0
 var _meter_ready := false
 var _link_phase := 0.0
+var _pulse_phase := 0.0
 var _drop_clock := -1.0
 var _error_clock := -1.0
 var _motion_on := true
@@ -151,6 +154,9 @@ func _proc_needed() -> bool:
 		return true
 	if not is_equal_approx(_meter, progress):
 		return true
+	# Пульс прогресса активной передачи.
+	if _progress_pulsing():
+		return true
 	# Пульс точек связи живёт только у TCP-слота и молчит в reduced.
 	return kind == "tcp_connection" and not _reduced()
 
@@ -192,6 +198,8 @@ func _process(delta: float) -> void:
 				_meter = progress
 	if kind == "tcp_connection" and not _reduced():
 		_link_phase = fmod(_link_phase + delta, LINK_PULSE)
+	if _progress_pulsing():
+		_pulse_phase = fmod(_pulse_phase + delta, PROGRESS_PULSE)
 	queue_redraw()
 	if not _proc_needed():
 		set_process(false)
@@ -208,6 +216,38 @@ func _enter_flash() -> float:
 	if _flash_clock < 0.0:
 		return 0.0
 	return clampf(1.0 - _flash_clock / BORDER_FLASH_DUR, 0.0, 1.0)
+
+
+## Полоса прогресса «дышит», пока идёт передача (0 в покое/reduced).
+func _progress_pulsing() -> bool:
+	if _reduced() or progress <= 0.0 or progress >= 1.0:
+		return false
+	if kind == "tcp_connection":
+		return sending
+	return state == "active"
+
+
+func _progress_pulse() -> float:
+	if not _progress_pulsing():
+		return 0.0
+	return 0.5 - 0.5 * cos(TAU * _pulse_phase)
+
+
+## Прогресс-полоса с пульсом и бегущим бликом (draw-only).
+func _draw_progress(rect: Rect2, ratio: float, col: Color) -> void:
+	var pulse := _progress_pulse()
+	var c := col
+	if pulse > 0.0:
+		c = c.lerp(Theme90.WHITE, 0.18 * pulse)
+	Theme90.draw_meter(self, rect, ratio, c)
+	if pulse <= 0.0:
+		return
+	var inner := rect.grow(-1.0)
+	var w := inner.size.x * clampf(ratio, 0.0, 1.0)
+	if w >= 3.0:
+		var x := inner.position.x + maxf(0.0, w - 3.0) * _pulse_phase
+		draw_rect(Rect2(x, inner.position.y, 2.0, inner.size.y),
+			Color(1, 1, 1, 0.22 * pulse))
 
 
 func _draw_link(center: Vector2, col: Color) -> void:
@@ -274,7 +314,7 @@ func _draw() -> void:
 		var ww := f.get_string_size(word, HORIZONTAL_ALIGNMENT_LEFT, -1, 10).x
 		Theme90.text(self, f, Vector2(34 + ww + 6, 20), "%d%%" % int(roundf(progress * 100.0)),
 			10, accent)
-		Theme90.draw_meter(self, Rect2(34, 33, 160, 4),
+		_draw_progress(Rect2(34, 33, 160, 4),
 			_meter if _meter_ready else progress, accent)
 		_draw_flashes(r)
 		return
@@ -352,7 +392,7 @@ func _draw_connection(r: Rect2, f: Font) -> void:
 			# Правый край — 230: в колонку с кнопкой ОТКЛЮЧИТЬ, 6 px до рамки.
 			Theme90.text(self, f, Vector2(134, 20), Theme90.fit(f, detail, 10, 96), 10,
 				Theme90.SHADE, 96, HORIZONTAL_ALIGNMENT_RIGHT)
-		Theme90.draw_meter(self, Rect2(34, 33, 160, 4),
+		_draw_progress(Rect2(34, 33, 160, 4),
 			_meter if _meter_ready else progress, Theme90.ACCENT)
 		return
 

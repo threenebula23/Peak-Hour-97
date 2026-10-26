@@ -51,6 +51,9 @@ const ERROR_SHAKE_DUR := 0.16
 const ERROR_BORDER_DUR := 0.22
 const METER_TAU := 0.15
 const ALERT_PULSE := 0.9
+## Отказ/открепление: карточка сжимается и гаснет.
+const REJECT_DUR := 0.16
+const DETACH_FLASH_DUR := 0.22
 
 ## Имена игр — только запасной вариант, если Data.minigame_def недоступен.
 const FALLBACK_NAMES := {
@@ -112,6 +115,9 @@ var _err_shake := 0.0
 var _err_flash := 0.0
 var _attach_clock := -1.0
 var _attach_slot := -1
+var _detach_clock := -1.0
+var _detach_slot := -1
+var _reject_clock := -1.0
 var _meter := 0.0
 var _meter_ready := false
 var _pulse := 0.0
@@ -137,7 +143,9 @@ func _ready() -> void:
 			send_pressed.emit(id))
 	_reject_btn = _make_button("ОТКЛОНИТЬ", Vector2(104, 104), Vector2(90, 18), false)
 	_reject_btn.danger = true
-	_reject_btn.pressed.connect(func() -> void: reject_pressed.emit(id))
+	_reject_btn.pressed.connect(func() -> void:
+		play_reject()
+		reject_pressed.emit(id))
 	# TCP: отдельная кнопка установки соединения (справа снизу). Для UDP скрыта.
 	# 100×18 при 10 px: «ПОДКЛЮЧИТЬСЯ» = 82 px, остаются поля по 9 px.
 	_connect_btn = _make_button("ПОДКЛЮЧИТЬСЯ", Vector2(292, 104), Vector2(100, 18), true)
@@ -206,6 +214,23 @@ func flash_attach(index: int = -1) -> void:
 	queue_redraw()
 
 
+## Открепили файл: чип коротко вспыхивает красным (0.22 c).
+func flash_detach(index: int = -1) -> void:
+	_detach_slot = index
+	_detach_clock = 0.0
+	set_process(true)
+	queue_redraw()
+
+
+## Отклонение запроса: сжатие на 6 % и угасание за 0.16 c.
+func play_reject() -> void:
+	if _reject_clock >= 0.0:
+		return
+	_reject_clock = 0.0
+	pivot_offset = size * 0.5
+	set_process(true)
+
+
 ## Внешний переключатель движения (Lane A / настройки).
 func set_motion_enabled(on: bool) -> void:
 	_motion_on = on
@@ -271,6 +296,8 @@ func _sync_attach_flash() -> void:
 		for i in cur.size():
 			if bool(cur[i]) and not bool(_prev_attached[i]):
 				flash_attach(i)
+			elif bool(_prev_attached[i]) and not bool(cur[i]):
+				flash_detach(i)
 	_prev_attached = cur
 
 
@@ -571,6 +598,22 @@ func _animate(delta: float) -> bool:
 		_attach_clock += delta
 		if _attach_clock >= ATTACH_FLASH_DUR:
 			_attach_clock = -1.0
+		changed = true
+
+	if _detach_clock >= 0.0:
+		_detach_clock += delta
+		if _detach_clock >= DETACH_FLASH_DUR:
+			_detach_clock = -1.0
+		changed = true
+
+	if _reject_clock >= 0.0:
+		_reject_clock = minf(REJECT_DUR, _reject_clock + delta)
+		var rp := clampf(_reject_clock / REJECT_DUR, 0.0, 1.0)
+		modulate.a = 1.0 - rp
+		if _reduced():
+			scale = Vector2.ONE
+		else:
+			scale = Vector2(1.0 - 0.06 * rp, 1.0 - 0.06 * rp)
 		changed = true
 
 	var mt := _meter_target()
@@ -1037,6 +1080,12 @@ func _draw_slot(i: int, f: Font) -> void:
 				Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.12 * fa),
 				Color(Theme90.ACCENT.r, Theme90.ACCENT.g, Theme90.ACCENT.b, 0.9 * fa), 3, 2),
 				cell.grow(-1.0))
+	if _detach_clock >= 0.0 and _detach_slot == i:
+		var da := clampf(1.0 - _detach_clock / DETACH_FLASH_DUR, 0.0, 1.0)
+		if da > 0.01:
+			Theme90.draw_dashed_box(self, cell.grow(1),
+				Color(Theme90.ERROR.r, Theme90.ERROR.g, Theme90.ERROR.b, 0.85 * da),
+				2.5, 1.4)
 	if _drop_slot == i:
 		Theme90.draw_dashed_box(self, cell.grow(1), Theme90.ACCENT, 2.5, 1.4)
 

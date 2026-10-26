@@ -118,14 +118,14 @@ func _process(delta: float) -> void:
 		var shown := _display_temp()
 		if shown != _shown_temp:
 			_shown_temp = shown
-			_refresh_tooltip()
+			_refresh_tooltip_throttled()
 		queue_redraw()
 	elif diff != 0.0:
 		_disp = _heat
 		var shown2 := _display_temp()
 		if shown2 != _shown_temp:
 			_shown_temp = shown2
-			_refresh_tooltip()
+			_refresh_tooltip_throttled()
 		queue_redraw()
 	elif _level >= 3:
 		# Пульс критического подчёркивания.
@@ -191,21 +191,22 @@ func _refresh_tooltip() -> void:
 	var sla_pct := int(roundf(float(_breakdown.get("sla_ratio", 0.0)) * 100.0))
 	var req_active := int(_breakdown.get("req_active", 0))
 	var req_limit := maxi(1, int(_breakdown.get("req_limit", 1)))
+	var recv_active := int(_breakdown.get("recv_active",
+		_breakdown.get("buffer_used", 0)))
+	var recv_limit := maxi(1, int(_breakdown.get("recv_limit",
+		_breakdown.get("buffer_max", 1))))
 	var attacks := int(_breakdown.get("attacks", 0))
 	var tier := int(_breakdown.get("attack_tier", 0))
 	var channel := int(roundf(float(_breakdown.get("channel", 0.0))))
 	var channel_cap := maxi(1, int(roundf(float(_breakdown.get("channel_capacity", 10.0)))))
-	var buffer_used := int(_breakdown.get("buffer_used", 0))
-	var buffer_max := maxi(1, int(_breakdown.get("buffer_max", 0)))
 	var queued := int(_breakdown.get("queued", 0))
 	var sending := int(_breakdown.get("sending", 0))
 	var urgent := int(_breakdown.get("urgent", 0))
 	var lines := PackedStringArray([
 		title,
 		"SLA %d/%d · %d%%" % [sla, sla_cap, sla_pct],
-		"Запросы %d/%d · срочных %d" % [req_active, req_limit, urgent],
-		"Атаки %d · тир %d" % [attacks, tier],
-		"Канал %d/%d · буфер %d/%d" % [channel, channel_cap, buffer_used, buffer_max],
-		"Очередь %d · отправка %d" % [queued, sending],
+		"Отправка %d/%d · срочных %d" % [req_active, req_limit, urgent],
+		"Приём %d/%d · атаки %d (тир %d)" % [recv_active, recv_limit, attacks, tier],
+		"Канал %d/%d · очередь %d · отправка %d" % [channel, channel_cap, queued, sending],
 	])
 	tooltip_text = "\n".join(lines)

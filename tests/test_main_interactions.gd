@@ -70,6 +70,7 @@ func _init() -> void:
 		_eq(_main.slot_cells[4].state, "locked", "слот 5 закрыт (максимум 5)")
 
 	await _test_packet_drop()
+	await _test_packet_drop_other_folder()
 	await _test_attach_and_explicit_send()
 	await _test_queue_pause_and_timeout()
 	await _test_reject()
@@ -121,6 +122,50 @@ func _test_packet_drop() -> void:
 	_ok(int(_director.buffer_used()) < buffer_before,
 		"буфер уменьшился (%d → %d)" % [buffer_before, int(_director.buffer_used())])
 	_eq(int(_director.slots.used_count()), 0, "in-слот освобождён")
+
+
+## Баг A: drop пакета на строку НЕ открытой папки. Файл обязан оказаться в
+## registry, в folder.file_ids и сразу рисоваться в сетке — значит main должен
+## переключить открытую папку на цель.
+func _test_packet_drop_other_folder() -> void:
+	var other_id := _folder_id_at(1)
+	if other_id.is_empty():
+		_fail("нет второй папки для cross-folder drop")
+		return
+	var first_id := _first_folder_id()
+	_main._on_folder_selected(first_id)
+	await process_frame
+	_eq(str(_main.grid.folder_id), first_id, "открыта первая папка")
+
+	var pid: String = _director.spawn_packet_now("text", "tcp")
+	_ok(not pid.is_empty(), "пакет для cross-folder drop заспавнен")
+	if pid.is_empty():
+		return
+	var packet = _director.active_packets.get(pid)
+	var name := str(packet.file_name)
+	_main._refresh_hour()
+	await process_frame
+
+	_main._on_drop_to_folder(other_id, {"kind": "packet", "id": pid})
+	_eq(str(_director.active_packets[pid].state), "loading",
+		"cross-folder drop начал загрузку")
+	_tick(60)
+	_ok(not _director.active_packets.has(pid), "cross-folder пакет загружен")
+
+	var file = _game.registry.find_by_name(name)
+	_ok(file != null, "файл есть в registry")
+	if file == null:
+		return
+	_eq(str(file.folder_id), other_id, "файл в выбранной папке")
+	_ok(_game.registry.get_folder(other_id).file_ids.has(str(file.id)),
+		"файл в folder.file_ids")
+	_eq(str(_main.grid.folder_id), other_id,
+		"сетка переключилась на папку приёма (файл не «исчезает»)")
+	_ok(_main.grid._by_id.has(str(file.id)),
+		"принятый файл сразу отрисован в сетке")
+	_eq(_main.grid.file_count(), _game.registry.get_folder_files(other_id).size(),
+		"счётчик файлов сетки = файлы папки")
+	_eq(str(_main.tree._selected), other_id, "строка дерева выделяет папку приёма")
 
 
 ## TCP: attach только после соединения. ОТПРАВИТЬ открывает мини-игру,
@@ -380,12 +425,28 @@ func _test_reject() -> void:
 		_ok(_director.attach_file(rid, fid), "required-файл прикреплён перед отказом")
 	var money_before := int(_game.money)
 	var sla_before := float(_game.sla)
+	# Обеспечиваем срабатывание «ЖАРЫ» (sla_drop > 0.5): именно на этом пути
+	# карточка уходит из массива, но раньше оставалась orphan-ребёнком.
+	_main._last_sla = sla_before
 	_main._on_request_reject(rid)
 	_ok(not _director.active_requests.has(rid), "отклонённый запрос исчез")
 	_eq(int(_game.money), money_before - 5, "отказ: −5 $")
 	_approx(float(_game.sla), sla_before - 5.0, 0.001, "отказ: −5 SLA")
 	if not fid.is_empty():
 		_ok(_game.registry.files.has(fid), "файл не израсходован при отказе")
+
+	# Баг B: карточка не должна висеть в send_window.content после reject.
+	await process_frame
+	await process_frame
+	var orphans := 0
+	for child in _main.send_window.content.get_children():
+		if child is RequestCard and str(child.get("id")) == rid:
+			orphans += 1
+	_eq(orphans, 0, "после reject в списке нет orphan-карточки")
+	_ok(not _main._card_ids(_main.requests).has(rid),
+		"отклонённого запроса нет в массиве requests")
+	_eq(_main.requests.size(), _request_card_children(),
+		"карточек в списке столько же, сколько в массиве")
 
 
 func _test_protocol_toggle() -> void:
@@ -495,11 +556,27 @@ func _available_file() -> String:
 
 
 func _first_folder_id() -> String:
+	return _folder_id_at(0)
+
+
+## Сколько именно карточек запросов в списке (SendScroll — не карточка).
+func _request_card_children() -> int:
+	var n := 0
+	for child in _main.send_window.content.get_children():
+		if child is RequestCard:
+			n += 1
+	return n
+
+
+func _folder_id_at(index: int) -> String:
 	if _game == null or _game.registry == null:
 		return ""
 	for section in _game.registry.sections.values():
-		if not section.folder_ids.is_empty():
-			return str(section.folder_ids[0])
+		if index >= 0 and index < section.folder_ids.size():
+			return str(section.folder_ids[index])
+		index -= section.folder_ids.size()
+		if index < 0:
+			break
 	return ""
 
 

@@ -26,7 +26,7 @@ const TILT_TAU := 0.12
 ## Скорость мыши (px/s), при которой наклон максимальный.
 const TILT_MAX_SPEED := 1400.0
 const POP_DUR := 0.10
-const POP_SCALE := 1.035
+const POP_SCALE := 1.04
 const DRAG_ALPHA := 0.92
 const FLINCH_DUR := 0.16
 const FLINCH_PX := 3.0
@@ -295,8 +295,9 @@ func _apply_transform() -> void:
 	if not is_instance_valid(_preview):
 		return
 	_preview.pivot_offset = _preview.custom_minimum_size * 0.5
-	var pop := sin(PI * _pop_t)
-	var rpop := sin(PI * _rot_pop_t)
+	# Лёгкая «пружина»: основная волна + малый обратный горб, мягко гаснет.
+	var pop := sin(PI * _pop_t) + 0.22 * sin(TAU * _pop_t)
+	var rpop := sin(PI * _rot_pop_t) + 0.35 * sin(TAU * _rot_pop_t)
 	var s := 1.0 + (POP_SCALE - 1.0) * pop + (POP_SCALE - 1.0) * rpop
 	_preview.scale = Vector2(s, s)
 	_preview.rotation = _tilt if not _reduced() else 0.0

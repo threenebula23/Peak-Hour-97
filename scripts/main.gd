@@ -137,6 +137,9 @@ var _last_sla := -1.0
 ## Исходные позиции панелей на время событийного сдвига (≤140 мс).
 var _kick_origin: Dictionary = {}
 var _kick_tweens: Dictionary = {}
+## Карточки, которые сейчас доигрывают loss-анимацию (instance_id -> true).
+## Их нельзя считать orphan-детьми при rebuild, пока идёт fade.
+var _loss_cards: Dictionary = {}
 ## Твины фазовых фейдов, чтобы не наслаивать.
 var _phase_tweens: Dictionary = {}
 ## Исходные позиции панелей для фазового сдвига 6→0 (не двигаем layout навсегда).
@@ -2101,6 +2104,26 @@ func _refresh_packets(data: Array) -> void:
 		_sync_recv_scroll(data.size())
 
 
+## Rebuild списка запросов не должен оставлять в дереве карточек, которых уже
+## нет в `requests` (reject/timeout/успешная отправка). Карточки, доигрывающие
+## fade (_loss_cards), не трогаем: их освободит tween.
+func _prune_request_orphans() -> void:
+	if send_window == null or send_window.content == null:
+		return
+	var known: Dictionary = {}
+	for c in requests:
+		if c != null and is_instance_valid(c):
+			known[c.get_instance_id()] = true
+	for child in send_window.content.get_children():
+		if not (child is RequestCard):
+			continue
+		var cid := child.get_instance_id()
+		if known.has(cid) or _loss_cards.has(cid):
+			continue
+		send_window.content.remove_child(child)
+		child.queue_free()
+
+
 func _refresh_requests(data: Array) -> void:
 	if not data.is_empty():
 		_remove_requests_empty()
@@ -2114,6 +2137,7 @@ func _refresh_requests(data: Array) -> void:
 			send_window.content.remove_child(c)
 			c.queue_free()
 		requests.clear()
+		_prune_request_orphans()
 		for i in data.size():
 			var card := RequestCard.new()
 			card.name = "Request_%s" % str(data[i].get("id", ""))
@@ -2664,8 +2688,9 @@ func _check_sla_drop(kind: String = "", id: String = "") -> void:
 
 
 ## Безопасный крючок для Lane B: play_loss()/flash_error(), если реализованы.
-## Карточка остаётся ребёнком для анимации, но убирается из массива main.*,
-## иначе rebuild-циклы увидят freed instance через ~0.58 c.
+## Карточка убирается из массива main.* сразу (rebuild не увидит freed instance),
+## а из дерева — либо сама (PacketCard.play_loss), либо через короткий fade
+## в _fade_out_card (RequestCard.flash_error не self-free).
 func _mark_card_loss(kind: String, id: String) -> void:
 	if kind == "packet":
 		for i in range(packets.size() - 1, -1, -1):
@@ -2691,11 +2716,41 @@ func _mark_card_loss(kind: String, id: String) -> void:
 		return
 
 
+## PacketCard.play_loss() самоосвобождает ноду (Lane B) — его не трогаем.
+## RequestCard.flash_error() только рисует тряску, поэтому такую карточку
+## снимаем из дерева сами: иначе после reject она навсегда остаётся
+## orphan-ребёнком send_window.content (в массиве её уже нет).
 func _play_card_loss(c) -> void:
 	if c.has_method("play_loss"):
 		c.call("play_loss")
-	elif c.has_method("flash_error"):
+		return
+	if c.has_method("flash_error"):
 		c.call("flash_error")
+	_fade_out_card(c)
+
+
+## Короткий fade в main (без правок RequestCard) → remove_child + queue_free.
+## В headless/«снизить эффекты» — сразу.
+func _fade_out_card(c) -> void:
+	if c == null or not is_instance_valid(c):
+		return
+	_loss_cards[c.get_instance_id()] = true
+	if not _motion_enabled():
+		_dispose_card(c)
+		return
+	c.mouse_filter = Control.MOUSE_FILTER_IGNORE
+	var tw := create_tween()
+	tw.tween_property(c, "modulate:a", 0.0, 0.16)
+	tw.tween_callback(_dispose_card.bind(c))
+
+
+func _dispose_card(c) -> void:
+	if c == null or not is_instance_valid(c):
+		return
+	_loss_cards.erase(c.get_instance_id())
+	if c.get_parent() != null:
+		c.get_parent().remove_child(c)
+	c.queue_free()
 
 
 ## Событийный сдвиг панелей: целые пиксели, ≤2 px, 140 мс, без изменения layout.
@@ -3544,6 +3599,22 @@ func _on_folder_selected(folder_id: String) -> void:
 	_show_folder(folder_id, str(meta["name"]), str(meta["section"]), d)
 
 
+## Показать папку, в которую реально попал файл/пакет: переключает строку
+## дерева и сетку. Нужен после drop на НЕ открытую папку (иначе объект есть
+## в registry, но не виден на экране).
+func _focus_folder(folder_id: String) -> void:
+	if controller == null or folder_id.is_empty():
+		return
+	var d: Dictionary = controller.prep_data()
+	var meta := _folder_meta(d, folder_id)
+	if meta.is_empty():
+		return
+	if tree != null:
+		tree.select_folder(folder_id)
+	_show_folder(folder_id, str(meta["name"]), str(meta["section"]), d)
+	_refresh_tree_counts(d)
+
+
 func _on_file_selected(id: String) -> void:
 	_selected_file = id
 	var file = Game.registry.get_file(id) if Game.registry != null else null
@@ -3742,6 +3813,10 @@ func _on_tree_packet_drop(folder_id: String, payload: Dictionary) -> void:
 	if controller.hour_director.receive_packet(packet_id, folder_id):
 		_toast("ПАКЕТ ПРИНЯТ В «%s»" % _folder_name(folder_id), "success")
 		_tutorial_notify("packet")
+		# Drop мог прийти на строку НЕ открытой папки: переключаем сетку на
+		# цель, иначе файл после загрузки «исчезает» из вида (он в registry,
+		# но нарисован в другой папке).
+		_focus_folder(folder_id)
 	else:
 		_toast("ПАКЕТ НЕ ПРИНЯТ · НЕТ МЕСТА ИЛИ СЛОТА", "warn")
 	_refresh_hour()
@@ -3782,6 +3857,9 @@ func _on_tree_file_drop(folder_id: String, payload: Dictionary) -> void:
 		ok = bool(Game.registry.move_file(file_id, folder_id))
 	if ok:
 		controller.save()
+		# Та же причина, что и у пакетов: drop на строку неоткрытой папки
+		# раньше оставлял файл вне текущей сетки.
+		_focus_folder(folder_id)
 		if controller.phase == GAME_CONTROLLER.PHASE_PREP:
 			var d: Dictionary = controller.prep_data()
 			_refresh_tree_counts(d)

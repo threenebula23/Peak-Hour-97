@@ -240,7 +240,6 @@ func _evaluate(collect_breakdown: bool = false) -> float:
 	var attacks := maxf(0.0, _num("attacks", 0.0))
 	var attack_tier := maxf(0.0, _num("attack_tier", 0.0))
 	var channel_ratio := UiMotion.clamp01(_num("channel_ratio", 0.0))
-	var buffer_ratio := UiMotion.clamp01(_num("buffer_ratio", 0.0))
 	var urgent := maxf(0.0, _num("urgent", 0.0))
 	var sending := maxf(0.0, _num("sending", 0.0))
 	var queued := maxf(0.0, _num("queued", 0.0))
@@ -248,27 +247,33 @@ func _evaluate(collect_breakdown: bool = false) -> float:
 	var hour_progress := UiMotion.clamp01(_num("hour_progress", 0.0))
 
 	var p_sla := pow(1.0 - r_sla, 1.6)
-	var p_req := UiMotion.clamp01((req_active / req_limit - 0.5) / 0.5)
+	# Прямая зависимость: каждый активный запрос/пакет греет, без порогов 0.5/0.6.
+	var p_req := UiMotion.clamp01(req_active / req_limit)
+	var p_recv := UiMotion.clamp01(_num("buffer_used", 0.0) \
+		/ maxf(1.0, _num("buffer_max", 1.0)))
 	var p_atk := UiMotion.clamp01(attacks / 2.0) \
 		* (0.75 + 0.25 * UiMotion.clamp01(attack_tier / 4.0))
 	var p_ch := UiMotion.clamp01((channel_ratio - 0.60) / 0.60)
-	var p_buf := UiMotion.clamp01((buffer_ratio - 0.60) / 0.40)
 	var p_urg := UiMotion.clamp01(urgent / req_limit)
 	var p_send := UiMotion.clamp01(sending / slots_max)
-	var p_q := UiMotion.clamp01(queued / slots_max)
+	var p_queue := UiMotion.clamp01(queued / slots_max)
 	var p_hour := pow(hour_progress, 1.6)
 
+	# Мягкое ИЛИ: SLA как есть; отправка 0.40, приём 0.25, атаки 0.20,
+	# канал 0.15, срочность/отправка/очередь по 0.10.
 	var base := 1.0 \
 		- (1.0 - p_sla) \
-		* (1.0 - 0.55 * p_req) \
-		* (1.0 - 0.45 * p_atk) \
-		* (1.0 - 0.30 * p_ch) \
-		* (1.0 - 0.18 * p_buf) \
-		* (1.0 - 0.12 * p_urg) \
-		* (1.0 - 0.12 * p_send) \
-		* (1.0 - 0.10 * p_q)
+		* (1.0 - 0.40 * p_req) \
+		* (1.0 - 0.25 * p_recv) \
+		* (1.0 - 0.20 * p_atk) \
+		* (1.0 - 0.15 * p_ch) \
+		* (1.0 - 0.10 * p_urg) \
+		* (1.0 - 0.10 * p_send) \
+		* (1.0 - 0.10 * p_queue)
 
-	var target := UiMotion.clamp01(base + 0.06 * p_hour
+	# Прогресс часа не должен «нагревать» пустой узел: idle = 36 °C.
+	var hour_bonus := 0.06 * p_hour if base > 0.001 else 0.0
+	var target := UiMotion.clamp01(base + hour_bonus
 		+ 0.20 * _impulse - 0.10 * _relief)
 	if r_sla < 0.40:
 		target = maxf(target, 0.60 + 0.22 * (0.40 - r_sla) / 0.20)
@@ -283,14 +288,15 @@ func _evaluate(collect_breakdown: bool = false) -> float:
 			"sla_ratio": r_sla,
 			"req_active": int(roundf(req_active)),
 			"req_limit": int(roundf(req_limit)),
+			"recv_active": int(roundf(_num("buffer_used", 0.0))),
+			"recv_limit": int(roundf(_num("buffer_max", 0.0))),
+			"buffer_used": int(roundf(_num("buffer_used", 0.0))),
+			"buffer_max": int(roundf(_num("buffer_max", 0.0))),
 			"attacks": int(roundf(attacks)),
 			"attack_tier": int(roundf(attack_tier)),
 			"channel": _num("channel", 0.0),
 			"channel_capacity": _num("channel_capacity", 10.0),
 			"channel_ratio": channel_ratio,
-			"buffer_used": int(roundf(_num("buffer_used", 0.0))),
-			"buffer_max": int(roundf(_num("buffer_max", 0.0))),
-			"buffer_ratio": buffer_ratio,
 			"urgent": int(roundf(urgent)),
 			"sending": int(roundf(sending)),
 			"queued": int(roundf(queued)),
@@ -298,12 +304,15 @@ func _evaluate(collect_breakdown: bool = false) -> float:
 			"hour_progress": hour_progress,
 			"p_sla": p_sla,
 			"p_req": p_req,
+			"p_recv": p_recv,
+			"p_buf": p_recv,
 			"p_atk": p_atk,
 			"p_ch": p_ch,
-			"p_buf": p_buf,
 			"p_urg": p_urg,
 			"p_send": p_send,
-			"p_q": p_q,
+			"p_sending": p_send,
+			"p_queue": p_queue,
+			"p_q": p_queue,
 			"p_hour": p_hour,
 			"base": base,
 			"target": target,
