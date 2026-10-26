@@ -280,23 +280,19 @@ static func shape_def(shape_id: String) -> Dictionary:
 
 
 ## Клетки формы после поворота по часовой стрелке (0..3), нормализованы в 0.
-## Формы фиксированы на весь забег: кэшируем результат (Array только читается).
-static var _shape_cells_cache: Dictionary = {}
-
-
+## Статический кэш убран: он переживал смену Data/перезагрузку сцены и мог
+## отдавать пустые/чужие клетки (регрессия «ЗАЙМЁТ 0 КЛЕТОК»). Вычисляем
+## каждый вызов — shapes маленькие, цена незначительна.
 static func shape_cells(shape_id: String, rotation: int = 0) -> Array:
 	var rot := posmod(int(rotation), 4)
-	var key := str(shape_id).hash() * 4 + rot
-	var cached = _shape_cells_cache.get(key, null)
-	if cached is Array:
-		return cached
 	var def = shape_def(shape_id)
 	var cells: Array = []
 	for p in def.get("cells", []):
 		cells.append(_vec(p))
 	for _i in range(rot):
 		cells = _rotate_cw(cells)
-	_shape_cells_cache[key] = cells
+	if cells.is_empty():
+		return [Vector2i.ZERO]
 	return cells
 
 
@@ -1046,6 +1042,9 @@ func attach_file(file_id: String, request_id: String, now: float = -1.0) -> bool
 	file.attached_request = request_id
 	file.location = &"attached"
 	file_changed.emit(file)
+	# Смена location не меняет клетки, но FileGrid должен перечитать состояние
+	# файла (attached-бейдж/подпись), иначе UI живёт со старым снимком.
+	_emit_grid(folders.get(file.folder_id))
 	registry_changed.emit()
 	return true
 
@@ -1064,6 +1063,9 @@ func detach_file(file_id: String) -> bool:
 			file.location = &"registry"
 			file.folder_id = ""
 	file_changed.emit(file)
+	# После detach файл снова должен быть виден в своей папке: старый grid
+	# мог быть отрисован, пока файл числился attached/в другой папке.
+	_emit_grid(folders.get(file.folder_id))
 	registry_changed.emit()
 	return true
 
@@ -1795,6 +1797,8 @@ func _make_file(clean: String, type: String, shape: String):
 	file.created_at = FILE_ITEM_SCRIPT.now_unix()
 	file.shape_id = shape if not shape.is_empty() else "O1"
 	file.shape_cells = shape_cells(file.shape_id, 0)
+	if file.shape_cells.is_empty():
+		file.shape_cells = [Vector2i.ZERO]
 	file.rotation = 0
 	file.origin = Vector2i.ZERO
 	return file
@@ -1808,26 +1812,51 @@ func _ensure_shape(file) -> void:
 
 
 func _put_in_folder(file, folder, origin: Vector2i, rotation: int) -> void:
-	file.shape_cells = shape_cells(file.shape_id, rotation)
-	file.origin = origin
+	var safe := _safe_folder_placement(folder, file.shape_id, origin, rotation)
+	file.shape_cells = safe.get("cells", [Vector2i.ZERO])
+	file.origin = safe.get("origin", Vector2i.ZERO)
 	file.rotation = posmod(int(rotation), 4)
 	file.folder_id = folder.id
 	if not folder.file_ids.has(file.id):
 		folder.file_ids.append(file.id)
-	_stamp_file(folder, file, origin, rotation)
+	_stamp_file(folder, file, file.origin, rotation)
 
 
 func _stamp_file(folder, file, origin: Vector2i, rotation: int) -> void:
-	file.shape_cells = shape_cells(file.shape_id, rotation)
-	file.origin = origin
+	var safe := _safe_folder_placement(folder, file.shape_id, origin, rotation)
+	var cells: Array = safe.get("cells", [Vector2i.ZERO])
+	var safe_origin: Vector2i = safe.get("origin", Vector2i.ZERO)
+	file.shape_cells = cells
+	file.origin = safe_origin
 	file.rotation = posmod(int(rotation), 4)
 	file.folder_id = folder.id
-	for cell in file.shape_cells:
-		folder.cells[origin + cell] = file.id
+	for cell in cells:
+		folder.cells[safe_origin + cell] = file.id
+
+
+## Безопасное размещение: origin зажимается в границы папки; пустая форма или
+## форма, не влезающая с этим origin, деградирует до одной клетки [0,0].
+func _safe_folder_placement(folder, shape_id: String, origin: Vector2i,
+		rotation: int) -> Dictionary:
+	var cells := shape_cells(shape_id, rotation)
+	if cells.is_empty():
+		cells = [Vector2i.ZERO]
+	var safe_origin := Vector2i(
+		clampi(origin.x, 0, maxi(0, int(folder.cols) - 1)),
+		clampi(origin.y, 0, maxi(0, int(folder.rows) - 1)))
+	for cell in cells:
+		var v := _vec(cell)
+		var c := safe_origin.x + v.x
+		var r := safe_origin.y + v.y
+		if c < 0 or r < 0 or c >= int(folder.cols) or r >= int(folder.rows):
+			return {"origin": Vector2i.ZERO, "cells": [Vector2i.ZERO]}
+	return {"origin": safe_origin, "cells": cells}
 
 
 func _stamp_table(file, origin: Vector2i, rotation: int) -> void:
 	file.shape_cells = shape_cells(file.shape_id, rotation)
+	if file.shape_cells.is_empty():
+		file.shape_cells = [Vector2i.ZERO]
 	file.origin = origin
 	file.rotation = posmod(int(rotation), 4)
 	# home folder_id сохраняется для auto_return_table()

@@ -3684,8 +3684,31 @@ func _on_request_reject(id: String) -> void:
 		return
 	if controller.hour_director.reject_request(id):
 		_refresh_hour()
+		_purge_rejected_card(id)
 	elif str(controller.hour_director.last_toast_text).is_empty():
 		_toast("ЗАПРОС НЕ НАЙДЕН", "warn")
+
+
+## Кнопочный reject: карточку убираем из дерева и из `requests` сразу, не полагаясь
+## на rebuild/fade. Fade-путь _mark_card_loss (timeout/director) не затрагиваем.
+func _purge_rejected_card(id: String) -> void:
+	if send_window == null or send_window.content == null:
+		return
+	for child in send_window.content.get_children():
+		if not (child is RequestCard):
+			continue
+		if str(child.get("id")) != str(id):
+			continue
+		_loss_cards.erase(child.get_instance_id())
+		send_window.content.remove_child(child)
+		child.queue_free()
+	for i in range(requests.size() - 1, -1, -1):
+		var c = requests[i]
+		if c == null or not is_instance_valid(c):
+			requests.remove_at(i)
+		elif str(c.get("id")) == str(id):
+			requests.remove_at(i)
+	_prune_request_orphans()
 
 
 func _on_request_detach(request_id: String, slot_index: int) -> void:
@@ -3708,6 +3731,10 @@ func _on_request_detach(request_id: String, slot_index: int) -> void:
 	if controller.hour_director.detach_file(request_id, file_id):
 		_toast("ФАЙЛ ОТСОЕДИНЁН ОТ ЗАПРОСА", "info")
 		_refresh_hour()
+		# Файл после detach снова лежит в папке — гарантируем, что сетка
+		# перечитала registry сразу, не дожидаясь следующего refresh_hour.
+		if grid != null and is_instance_valid(grid) and grid.has_method("refresh"):
+			grid.refresh()
 	else:
 		_toast("НЕ УДАЛОСЬ ОТСОЕДИНИТЬ", "warn")
 

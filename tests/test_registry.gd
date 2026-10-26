@@ -40,6 +40,8 @@ func run(t) -> void:
 	_test_v1_never_shrinks(t)
 	_test_validate_catches_corruption(t)
 	_test_signals(t)
+	_test_attach_detach(t)
+	_test_move_between_folders(t)
 
 
 # --- setup ------------------------------------------------------------------
@@ -591,6 +593,74 @@ func _test_signals(t) -> void:
 
 func _on_grid_changed(_folder_id) -> void:
 	_grid_hits += 1
+
+
+## attach → detach не должен терять файл в bookkeeping папки, и оба перехода
+## обязаны эмитить grid_changed (иначе FileGrid показывает устаревший снимок).
+func _test_attach_detach(t) -> void:
+	t.set_case("attach/detach placement")
+	var reg = R.new()
+	reg.setup_new_run()
+	var folder = _default_folder(reg)
+	var file = reg.create_file("AttachDetach", "text", folder.id)
+	t.ok(file != null, "файл создан")
+	if file == null:
+		return
+	var cells_before: int = folder.cells.size()
+	_grid_hits = 0
+	reg.grid_changed.connect(_on_grid_changed)
+	t.ok(reg.attach_file(str(file.id), "req_ad"), "attach_file успешен")
+	t.ok(_grid_hits >= 1, "grid_changed при attach")
+	t.eq(str(file.location), "attached", "location = attached")
+	t.ok(folder.file_ids.has(str(file.id)), "attach оставляет файл в file_ids")
+	t.ok(reg.detach_file(str(file.id)), "detach_file успешен")
+	t.ok(_grid_hits >= 2, "grid_changed при detach")
+	t.eq(str(file.location), "folder", "location снова folder")
+	t.ok(folder.file_ids.has(str(file.id)), "после detach файл в file_ids")
+	t.eq(folder.cells.size(), cells_before, "клетки файла не потеряны")
+	t.ok(_folder_owns_cell(folder, str(file.id)), "клетка снова принадлежит файлу")
+	t.eq(reg.validate().size(), 0,
+		"инварианты после attach/detach: %s" % str(reg.validate()))
+
+
+## A → B: клетки A освобождены, клетки B заняты, grid_changed для обеих папок.
+func _test_move_between_folders(t) -> void:
+	t.set_case("move A→B")
+	var reg = R.new()
+	reg.setup_new_run()
+	var section = reg.sections.get("C", null)
+	if section == null or section.folder_ids.size() < 2:
+		t.ok(false, "нужны две папки")
+		return
+	var a = reg.folders.get(str(section.folder_ids[0]))
+	var b = reg.folders.get(str(section.folder_ids[1]))
+	var file = reg.create_file("MoveAB", "text", a.id)
+	t.ok(file != null, "файл создан в A")
+	if file == null:
+		return
+	var shape_size: int = (file.shape_cells as Array).size()
+	t.eq(a.cells.size(), shape_size, "A занята клетками файла")
+	_grid_hits = 0
+	reg.grid_changed.connect(_on_grid_changed)
+	t.ok(reg.move_file(str(file.id), b.id, Vector2i(0, 0), 0), "move_file A→B")
+	t.ok(_grid_hits >= 2, "grid_changed и для старой, и для новой папки")
+	t.eq(a.cells.size(), 0, "клетки A освобождены")
+	t.eq(a.file_ids.find(str(file.id)), -1, "файла нет в file_ids A")
+	t.ok(b.file_ids.has(str(file.id)), "файл в file_ids B")
+	t.eq(b.cells.size(), (file.shape_cells as Array).size(),
+		"B занята клетками файла")
+	t.eq(str(b.cells.get(Vector2i(0, 0), "")), str(file.id),
+		"origin в B принадлежит файлу")
+	t.eq(str(file.folder_id), str(b.id), "folder_id = B")
+	t.eq(reg.validate().size(), 0,
+		"инварианты после move: %s" % str(reg.validate()))
+
+
+func _folder_owns_cell(folder, file_id: String) -> bool:
+	for cell in folder.cells.keys():
+		if str(folder.cells[cell]) == file_id:
+			return true
+	return false
 
 
 func _on_registry_changed() -> void:

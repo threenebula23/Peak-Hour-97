@@ -107,6 +107,9 @@ func refresh() -> void:
 			for file in _registry.get_folder_files(folder_id):
 				_files.append(file)
 				_by_id[str(file.id)] = file
+			# Self-heal: файл с folder_id папки мог выпасть из file_ids/cells
+			# (detach, старый сейв, гонка сигналов) — возвращаем его в сетку.
+			_heal_folder_bookkeeping(_folder)
 			for key in _folder.cells.keys():
 				_cells_owner[Vector2i(key)] = str(_folder.cells[key])
 			if _registry.has_method("folder_reservations"):
@@ -123,6 +126,92 @@ func refresh() -> void:
 		selection_changed.emit("")
 	_recalc_layout()
 	queue_redraw()
+
+
+## Self-heal bookkeeping папки: если файл в registry помнит folder_id, но его
+## нет в folder.file_ids/cells, сетка всё равно обязана его показать.
+## Чиним file_ids и клетки (first-fit), не эмитим сигналы — мы уже в refresh.
+func _heal_folder_bookkeeping(folder) -> void:
+	if folder == null or _registry == null:
+		return
+	var all_files = _registry.get("files")
+	if not (all_files is Dictionary):
+		return
+	for file in all_files.values():
+		if file == null or str(file.folder_id) != str(folder.id):
+			continue
+		var loc := str(file.location)
+		if loc == "table" or loc == "registry":
+			continue
+		var file_id := str(file.id)
+		if not _by_id.has(file_id):
+			_files.append(file)
+			_by_id[file_id] = file
+		_heal_file_placement(folder, file)
+
+
+func _heal_file_placement(folder, file) -> void:
+	var file_id := str(file.id)
+	var cells := _cells_of(file)
+	var origin: Vector2i = file.origin
+	if not _placement_is_valid(folder, cells, origin, file_id):
+		var shape_id := str(file.shape_id)
+		if shape_id.is_empty():
+			shape_id = "O1"
+		var rot := int(file.rotation)
+		var fit: Dictionary = {}
+		if _registry.has_method("_find_fit"):
+			fit = _registry.call("_find_fit", folder, shape_id, rot)
+		if fit is Dictionary and not fit.is_empty():
+			origin = Vector2i(fit.get("origin", Vector2i.ZERO))
+			rot = int(fit.get("rotation", rot))
+			cells = _registry.call("shape_cells", shape_id, rot)
+		else:
+			# Места нет/размещение битое — хотя бы (0,0), чтобы файл был виден.
+			origin = Vector2i.ZERO
+			cells = [Vector2i.ZERO]
+			rot = 0
+		file.origin = origin
+		file.rotation = posmod(rot, 4)
+		file.shape_cells = cells
+	for cell in cells:
+		folder.cells[origin + _cell_of(cell)] = file_id
+	if not folder.file_ids.has(file_id):
+		folder.file_ids.append(file_id)
+
+
+func _placement_is_valid(folder, cells: Array, origin: Vector2i, file_id: String) -> bool:
+	for cell in cells:
+		var c: Vector2i = origin + _cell_of(cell)
+		if c.x < 0 or c.y < 0 or c.x >= int(folder.cols) or c.y >= int(folder.rows):
+			return false
+		var owner := str(folder.cells.get(c, ""))
+		if not owner.is_empty() and owner != file_id:
+			return false
+	return true
+
+
+func _cells_of(file) -> Array:
+	var cells: Array = file.shape_cells
+	if cells.is_empty():
+		var shape_id := str(file.shape_id)
+		if shape_id.is_empty():
+			shape_id = "O1"
+		if _registry != null and _registry.has_method("shape_cells"):
+			cells = _registry.call("shape_cells", shape_id, int(file.rotation))
+	if cells.is_empty():
+		cells = [Vector2i.ZERO]
+	return cells
+
+
+func _cell_of(value) -> Vector2i:
+	if value is Vector2i:
+		return value
+	if value is Vector2:
+		return Vector2i(value)
+	if value is Array and value.size() >= 2:
+		return Vector2i(int(value[0]), int(value[1]))
+	return Vector2i.ZERO
 
 
 func set_filter(text: String) -> void:
@@ -937,7 +1026,14 @@ func _draw_file(file) -> void:
 	if not _filter.is_empty() and not _matches_filter(file):
 		return
 	var cells := FR.shape_cells(str(file.shape_id), int(file.rotation))
-	FILE_SHAPE.paint(self, _shape_pos(Vector2i(file.origin)), cells, _cell, {
+	if cells.is_empty():
+		cells = [Vector2i.ZERO]
+	var origin := Vector2i(file.origin)
+	if origin.x < 0 or origin.y < 0 or origin.x >= _cols or origin.y >= _rows:
+		origin = Vector2i(
+			clampi(origin.x, 0, maxi(0, _cols - 1)),
+			clampi(origin.y, 0, maxi(0, _rows - 1)))
+	FILE_SHAPE.paint(self, _shape_pos(origin), cells, _cell, {
 		"type": str(file.type),
 		"name": str(file.name),
 		"ext": str(file.ext),

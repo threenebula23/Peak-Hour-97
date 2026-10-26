@@ -41,6 +41,7 @@ func _init() -> void:
 		_finish()
 		return
 	await _test_file_grid(registry, folder_id)
+	await _test_grid_self_heal(registry, folder_id)
 	await _test_grid_confirmed_reservation(registry)
 	await _test_rotation_preference()
 	await _test_ghost_rotation()
@@ -268,6 +269,47 @@ func _test_file_grid(registry, folder_id: String) -> void:
 		grid.set_service_filter(true)
 		_eq(sf.size(), 1, "service_filter_changed эмитится")
 		_ok(bool(sf[0]), "service_filter_changed(true)")
+	root.remove_child(grid)
+	grid.queue_free()
+
+
+## Self-heal: файл с folder_id папки, но выпавший из file_ids/cells, всё равно
+## должен появиться в FileGrid после refresh (и получить валидную клетку).
+func _test_grid_self_heal(registry, folder_id: String) -> void:
+	_set_case("FileGrid self-heal")
+	var grid = FG.new()
+	grid.name = "TestSelfHealGrid"
+	grid.size = Vector2(558, 470)
+	root.add_child(grid)
+	await process_frame
+	grid.set_folder(folder_id, "РАЗНОЕ", "C: \\ РАЗНОЕ")
+	await process_frame
+	var file = registry.create_file("Self-heal 97", "text", folder_id)
+	_ok(file != null, "файл создан")
+	if file == null:
+		root.remove_child(grid)
+		grid.queue_free()
+		return
+	var folder = registry.get_folder(folder_id)
+	# Ломаем bookkeeping: файл помнит folder_id, но папка о нём «забыла».
+	folder.file_ids.erase(str(file.id))
+	for cell in folder.cells.keys():
+		if str(folder.cells[cell]) == str(file.id):
+			folder.cells.erase(cell)
+	file.origin = Vector2i(99, 99)
+	grid.refresh()
+	_ok(grid._by_id.has(str(file.id)), "потерянный файл снова в _by_id")
+	_ok(grid._files.has(file), "потерянный файл снова в _files")
+	_ok(folder.file_ids.has(str(file.id)), "file_ids восстановлен")
+	_ok(file.origin.x >= 0 and file.origin.y >= 0 \
+		and file.origin.x < int(folder.cols) and file.origin.y < int(folder.rows),
+		"origin зажат в границы сетки: %s" % str(file.origin))
+	_eq(str(folder.cells.get(file.origin, "")), str(file.id),
+		"клетка origin снова принадлежит файлу")
+	_eq(str(grid._cells_owner.get(file.origin, "")), str(file.id),
+		"_cells_owner содержит восстановленный файл")
+	_eq(registry.validate().size(), 0,
+		"инварианты после self-heal: %s" % str(registry.validate()))
 	root.remove_child(grid)
 	grid.queue_free()
 

@@ -229,7 +229,10 @@ func timer_color() -> Color:
 
 ## Клетки фигуры этого пакета (для тестов/подсказки).
 func cells() -> Array:
-	return FR.shape_cells(shape_id, shape_rotation)
+	var cs: Array = FR.shape_cells(shape_id, shape_rotation)
+	if cs.is_empty():
+		cs = [Vector2i.ZERO]
+	return cs
 
 
 func cells_count() -> int:
